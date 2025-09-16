@@ -1,0 +1,29 @@
+[MANDARIN_QBIT]
+host=https://your_mandarin_qbittorrent_url.com
+port=443
+username=your_username
+password=your_password
+# Set to false if you use a self-signed certificate and understand the risks
+verify_cert=True
+
+[UNRAID_QBIT]
+host=https://your_unraid_qbittorrent_url.com
+port=443
+username=your_username
+password=your_password
+# Set to false if you use a self-signed certificate and understand the risks
+verify_cert=True
+
+[MANDARIN_SFTP]
+host=your_mandarin_sftp_ip_or_hostname
+port=22
+username=your_sftp_username
+password=your_sftp_password
+source_path=/home/aerandir/files/move
+
+[UNRAID_PATHS]
+destination_path=/mnt/user/download/moved
+
+[SETTINGS]
+# The category in qBittorrent that marks torrents for moving
+category_to_move=moving
