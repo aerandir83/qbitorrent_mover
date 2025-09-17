@@ -1,2 +1,2 @@
-python-qbittorrent-api
+qbittorrent-api
 paramiko
