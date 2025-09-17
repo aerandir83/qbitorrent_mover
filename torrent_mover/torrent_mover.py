@@ -239,17 +239,25 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, dry_run=F
         logging.info("SFTP transfer completed successfully.")
 
         # 3. Add to Unraid, paused
+        # The save path for qBit needs to be the directory that will *contain* the torrent's content.
+        unraid_save_path = os.path.join(remote_dest_base_path, os.path.dirname(relative_path))
+        unraid_save_path = unraid_save_path.replace("\\", "/") # Ensure forward slashes for cross-platform compatibility
+
         if not dry_run:
-            logging.info(f"Adding torrent to Unraid (paused) with save path '{remote_dest_base_path}': {name}")
+            # Export the .torrent file from the source client
+            logging.info(f"Exporting .torrent file for {name}")
+            torrent_file_content = mandarin_qbit.torrents_export(torrent_hash=hash)
+
+            logging.info(f"Adding torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
             unraid_qbit.torrents_add(
-                urls=torrent.magnet_uri,
-                save_path=remote_dest_base_path,
+                torrent_files=torrent_file_content,
+                save_path=unraid_save_path,
                 is_paused=True,
                 category=torrent.category
             )
             time.sleep(5)
         else:
-            logging.info(f"[DRY RUN] Would add torrent to Unraid (paused) with save path '{remote_dest_base_path}': {name}")
+            logging.info(f"[DRY RUN] Would export and add torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
 
         # 4. Force recheck on Unraid
         if not dry_run:
