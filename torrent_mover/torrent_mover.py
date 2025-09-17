@@ -181,6 +181,9 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, dry_run=F
         # 2. Transfer files via SFTP
         source_base_path = config['MANDARIN_SFTP']['source_path']
         dest_base_path = config['UNRAID_PATHS']['destination_path']
+        # Get the remote path for qBittorrent, falling back to the physical destination path
+        remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
+
         remote_content_path = torrent.content_path
         if not remote_content_path.startswith(source_base_path):
             raise ValueError(f"Content path '{remote_content_path}' not inside source path '{source_base_path}'.")
@@ -193,11 +196,16 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, dry_run=F
 
         # 3. Add to Unraid, paused
         if not dry_run:
-            logging.info(f"Adding torrent to Unraid (paused): {name}")
-            unraid_qbit.torrents_add(urls=torrent.magnet_uri, save_path=dest_base_path, is_paused=True, category=torrent.category)
+            logging.info(f"Adding torrent to Unraid (paused) with save path '{remote_dest_base_path}': {name}")
+            unraid_qbit.torrents_add(
+                urls=torrent.magnet_uri,
+                save_path=remote_dest_base_path,
+                is_paused=True,
+                category=torrent.category
+            )
             time.sleep(5)
         else:
-            logging.info(f"[DRY RUN] Would add torrent to Unraid (paused): {name}")
+            logging.info(f"[DRY RUN] Would add torrent to Unraid (paused) with save path '{remote_dest_base_path}': {name}")
 
         # 4. Force recheck on Unraid
         if not dry_run:
