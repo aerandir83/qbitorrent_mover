@@ -95,15 +95,19 @@ Now, open `config.ini` with a text editor and fill in the details for your serve
 
 ## Usage
 
-### Important: First Run
+### Execution Modes
 
-It is **strongly recommended** to perform a dry run first to ensure your configuration is correct and the script identifies the correct torrents and paths.
+It is **strongly recommended** to test your configuration before running the script normally. There are two modes for testing:
 
-```bash
-python torrent_mover.py --dry-run
-```
+*   **Dry Run (Simulation)**: This is the safest mode. It will print all the actions it *would* take (like which torrents it would move and where) without actually transferring files, adding torrents, or deleting anything. Use this to verify your paths and connections.
+    ```bash
+    python torrent_mover.py --dry-run
+    ```
 
-The `--dry-run` flag will print all the actions it *would* take without actually transferring files, adding torrents, or deleting anything. Review the output carefully.
+*   **Test Run (No Deletion)**: This mode performs a full run of the script—including pausing, transferring files, adding to the destination, and re-checking—but it **skips the final step of deleting the torrent from the source client**. This is useful for end-to-end testing of your setup without risking data loss on the source.
+    ```bash
+    python torrent_mover.py --test-run
+    ```
 
 ### Normal Run
 

@@ -301,7 +301,7 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, tracker_rules, dry_run=False):
+def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, tracker_rules, dry_run=False, test_run=False):
     """Executes the full transfer and management process for a single torrent."""
     name, hash = torrent.name, torrent.hash
     logging.info(f"--- Starting processing for torrent: {name} ---")
@@ -370,7 +370,9 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, tracker_r
             set_category_based_on_tracker(unraid_qbit, hash, tracker_rules, dry_run=dry_run)
 
             # 7. Delete from Mandarin
-            if not dry_run:
+            if test_run:
+                logging.info(f"[TEST RUN] Skipping deletion of torrent from Mandarin: {name}")
+            elif not dry_run:
                 logging.info(f"Deleting torrent and data from Mandarin: {name}")
                 mandarin_qbit.torrents_delete(torrent_hashes=hash, delete_files=True)
             else:
@@ -483,7 +485,10 @@ def main():
         default=str(default_config_path),
         help='Path to the configuration file.'
     )
-    parser.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
+
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
+    mode_group.add_argument('--test-run', action='store_true', help='Run the full process but do not delete the source torrent.')
 
     # Rule management arguments
     parser.add_argument('--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
@@ -540,6 +545,8 @@ def main():
     logging.info("--- Torrent Mover script started ---")
     if args.dry_run:
         logging.warning("!!! DRY RUN MODE ENABLED. NO CHANGES WILL BE MADE. !!!")
+    if args.test_run:
+        logging.warning("!!! TEST RUN MODE ENABLED. SOURCE TORRENTS WILL NOT BE DELETED. !!!")
 
     config = load_config(args.config)
 
@@ -564,7 +571,7 @@ def main():
             total_count = len(eligible_torrents)
             for i, torrent in enumerate(eligible_torrents, 1):
                 logging.info(f"Processing torrent {i}/{total_count}...")
-                if process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_client, config, tracker_rules, dry_run=args.dry_run):
+                if process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_client, config, tracker_rules, dry_run=args.dry_run, test_run=args.test_run):
                     processed_count += 1
             logging.info(f"Processing complete. Moved {processed_count}/{total_count} torrent(s).")
 
