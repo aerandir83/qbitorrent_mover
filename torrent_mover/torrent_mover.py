@@ -136,7 +136,6 @@ def _sftp_download_file(sftp, remote_file, local_file, dry_run=False):
             sys.stdout.write(progress_str)
             sys.stdout.flush()
 
-    logging.info(f"Preparing to download file: {remote_file} to {local_path}")
     logging.info(f"Starting download: {remote_file}")
     progress_tracker = ProgressTracker(remote_file, total_size)
     try:
@@ -154,9 +153,7 @@ def _sftp_download_dir(sftp, remote_dir, local_dir, dry_run=False):
     if not dry_run:
         Path(local_dir).mkdir(parents=True, exist_ok=True)
 
-    items = sftp.listdir(remote_dir)
-    logging.info(f"Found {len(items)} items in remote_dir='{remote_dir}': {items}")
-    for item in items:
+    for item in sftp.listdir(remote_dir):
         remote_item_path = os.path.join(remote_dir, item).replace("\\", "/")
         local_item_path = os.path.join(local_dir, item)
         transfer_content(sftp, remote_item_path, local_item_path, dry_run)
@@ -168,9 +165,7 @@ def transfer_content(sftp, remote_path, local_path, dry_run=False):
     """
     try:
         remote_stat = sftp.stat(remote_path)
-        is_dir = remote_stat.st_mode & 0o40000
-        logging.info(f"Transferring content: remote_path='{remote_path}', is_directory={is_dir}")
-        if is_dir:  # S_ISDIR
+        if remote_stat.st_mode & 0o40000:  # S_ISDIR
             _sftp_download_dir(sftp, remote_path, local_path, dry_run)
         else:
             _sftp_download_file(sftp, remote_path, local_path, dry_run)
@@ -239,7 +234,6 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, dry_run=F
         relative_path = os.path.relpath(remote_content_path, source_base_path)
         local_dest_path = os.path.join(dest_base_path, relative_path)
 
-        logging.info(f"SFTP Paths: remote_content_path='{remote_content_path}', relative_path='{relative_path}', local_dest_path='{local_dest_path}'")
         logging.info(f"Starting SFTP transfer from '{remote_content_path}' to '{local_dest_path}'")
         transfer_content(sftp, remote_content_path, local_dest_path, dry_run)
         logging.info("SFTP transfer completed successfully.")
@@ -250,16 +244,20 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, dry_run=F
         unraid_save_path = unraid_save_path.replace("\\", "/") # Ensure forward slashes for cross-platform compatibility
 
         if not dry_run:
+            # Export the .torrent file from the source client
+            logging.info(f"Exporting .torrent file for {name}")
+            torrent_file_content = mandarin_qbit.torrents_export(torrent_hashes=hash)
+
             logging.info(f"Adding torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
             unraid_qbit.torrents_add(
-                urls=torrent.magnet_uri,
+                torrent_files=torrent_file_content,
                 save_path=unraid_save_path,
                 is_paused=True,
                 category=torrent.category
             )
             time.sleep(5)
         else:
-            logging.info(f"[DRY RUN] Would add torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
+            logging.info(f"[DRY RUN] Would export and add torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
 
         # 4. Force recheck on Unraid
         if not dry_run:
