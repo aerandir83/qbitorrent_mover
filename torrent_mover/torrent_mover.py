@@ -440,12 +440,12 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan):
             print(f"   Current Category: {torrent.category or 'None'}")
 
             print(f"\nPlease choose a category for the domain '{domain_to_propose}':")
-                for i, cat in enumerate(available_categories):
-                    print(f"  {i+1}: {cat}")
-                print("  s: Skip this torrent")
-                print("  q: Quit interactive session")
+            for i, cat in enumerate(available_categories):
+                print(f"  {i+1}: {cat}")
+            print("  s: Skip this torrent")
+            print("  q: Quit interactive session")
 
-                while True:
+            while True:
                     choice = input("Enter your choice (1-N, s, q): ").lower()
                     if choice == 'q':
                         if rules_changed:
