@@ -394,14 +394,14 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, tracker_r
 
 # --- Main Execution ---
 
-def run_interactive_categorization(client, rules, script_dir):
+def run_interactive_categorization(client, rules, script_dir, category_to_scan):
     """
-    Scans torrents on the destination client and interactively prompts the user
+    Scans torrents in a specific category and interactively prompts the user
     to create categorization rules for torrents that don't have one.
     """
-    logging.info("Scanning for torrents without a known tracker rule...")
+    logging.info(f"Scanning category '{category_to_scan}' for torrents without a known tracker rule...")
     try:
-        all_torrents = client.torrents_info(sort='name')
+        torrents_in_category = client.torrents_info(category=category_to_scan, sort='name')
         available_categories = sorted(list(client.torrent_categories.categories.keys()))
 
         if not available_categories:
@@ -412,24 +412,34 @@ def run_interactive_categorization(client, rules, script_dir):
         updated_rules = rules.copy()
         rules_changed = False
 
-        for torrent in all_torrents:
+        for torrent in torrents_in_category:
             trackers = client.torrents_trackers(torrent_hash=torrent.hash)
 
-            primary_tracker = trackers[0]['url'] if trackers else "N/A"
-            torrent_domains = {get_tracker_domain(t.get('url')) for t in trackers if t.get('url')}
+            # Find the first valid http/https tracker domain that doesn't already have a rule
+            domain_to_propose = None
+            all_domains = set()
+            for tracker in trackers:
+                domain = get_tracker_domain(tracker.get('url'))
+                if domain:
+                    all_domains.add(domain)
+                    # Propose a rule if we find a domain that is not already known
+                    if domain not in known_domains:
+                        domain_to_propose = domain
+                        break # Found a candidate, stop checking trackers for this torrent
 
-            if not torrent_domains.intersection(known_domains):
-                print("-" * 60)
-                print(f"Found uncategorized torrent: {torrent.name}")
-                print(f"   Primary Tracker: {primary_tracker}")
-                print(f"   Current Category: {torrent.category or 'None'}")
+            if not domain_to_propose:
+                # This torrent has no new/unknown valid trackers, so we skip it
+                continue
 
-                primary_domain = get_tracker_domain(primary_tracker)
-                if not primary_domain:
-                    print("   Could not determine a primary domain. Skipping.")
-                    continue
+            # If we have a domain to propose, prompt the user
+            print("-" * 60)
+            print(f"Found torrent with a new tracker domain: {torrent.name}")
+            print(f"   Proposing rule for: {domain_to_propose}")
+            if len(all_domains) > 1:
+                print(f"   All Tracker Domains: {', '.join(sorted(all_domains))}")
+            print(f"   Current Category: {torrent.category or 'None'}")
 
-                print("\nPlease choose a category for this tracker domain:")
+            print(f"\nPlease choose a category for the domain '{domain_to_propose}':")
                 for i, cat in enumerate(available_categories):
                     print(f"  {i+1}: {cat}")
                 print("  s: Skip this torrent")
@@ -448,12 +458,12 @@ def run_interactive_categorization(client, rules, script_dir):
                         choice_idx = int(choice) - 1
                         if 0 <= choice_idx < len(available_categories):
                             chosen_category = available_categories[choice_idx]
-                            print(f"Applying category '{chosen_category}' and creating rule for '{primary_domain}'.")
+                            print(f"Applying category '{chosen_category}' and creating rule for '{domain_to_propose}'.")
 
                             client.torrents_set_category(torrent_hashes=torrent.hash, category=chosen_category)
 
-                            updated_rules[primary_domain] = chosen_category
-                            known_domains.add(primary_domain)
+                            updated_rules[domain_to_propose] = chosen_category
+                            known_domains.add(domain_to_propose)
                             rules_changed = True
                             break
                         else:
@@ -534,12 +544,19 @@ def main():
     if args.interactive_categorize:
         logging.info("--- Starting Interactive Categorization Mode ---")
         config = load_config(args.config)
+        try:
+            category_to_scan = config['SETTINGS']['category_to_move']
+        except KeyError:
+            logging.error("`category_to_move` not found in [SETTINGS] section of your config. Aborting.")
+            return 1
+
+        logging.info(f"Scanning for uncategorized torrents in category: '{category_to_scan}'")
         unraid_qbit = connect_qbit(config['UNRAID_QBIT'], "Unraid")
         if not unraid_qbit:
             logging.error("Could not connect to Unraid qBittorrent. Aborting.")
             return 1
 
-        run_interactive_categorization(unraid_qbit, tracker_rules, script_dir)
+        run_interactive_categorization(unraid_qbit, tracker_rules, script_dir, category_to_scan)
         return 0
 
     logging.info("--- Torrent Mover script started ---")
