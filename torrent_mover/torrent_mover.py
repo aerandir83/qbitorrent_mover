@@ -291,8 +291,19 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, dry_run=F
 
 def main():
     """Main entry point for the script."""
-    parser = argparse.ArgumentParser(description="A script to move qBittorrent torrents and data between servers.")
-    parser.add_argument('--config', default='config.ini', help='Path to the configuration file (default: config.ini)')
+    # The default config file is expected to be in the same directory as the script.
+    script_dir = Path(__file__).resolve().parent
+    default_config_path = script_dir / 'config.ini'
+
+    parser = argparse.ArgumentParser(
+        description="A script to move qBittorrent torrents and data between servers.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument(
+        '--config',
+        default=str(default_config_path),
+        help='Path to the configuration file.'
+    )
     parser.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
     args = parser.parse_args()
 
