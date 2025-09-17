@@ -78,31 +78,75 @@ def connect_sftp(config_section):
         return None, None
 
 import os
+import sys
 import time
 import argparse
 
 # --- SFTP Transfer Logic ---
 
 def _sftp_download_file(sftp, remote_file, local_file, dry_run=False):
-    """Downloads a single file, performing the size check for overwriting."""
+    """
+    Downloads a single file, showing progress and performing a size check for overwriting.
+    """
     local_path = Path(local_file)
     remote_stat = sftp.stat(remote_file)
+    total_size = remote_stat.st_size
 
     if local_path.exists():
         local_size = local_path.stat().st_size
-        if local_size == remote_stat.st_size:
+        if local_size == total_size:
             logging.info(f"Skipping file (exists and size matches): {local_path}")
             return
         else:
-            logging.warning(f"Overwriting file (size mismatch remote:{remote_stat.st_size} vs local:{local_size}): {local_path}")
+            logging.warning(f"Overwriting file (size mismatch remote:{total_size} vs local:{local_size}): {local_path}")
 
     if dry_run:
         logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
         return
 
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    logging.info(f"Downloading: {remote_file} -> {local_path}")
-    sftp.get(remote_file, str(local_path))
+
+    class ProgressTracker:
+        def __init__(self, filename, total_size):
+            self.filename = os.path.basename(filename)
+            self.total_size = total_size
+            self.start_time = time.time()
+            self._last_update_time = 0
+
+        def __call__(self, transferred, total):
+            now = time.time()
+            # Throttle updates to every half-second to avoid excessive printing
+            if now - self._last_update_time < 0.5 and transferred != total:
+                return
+            self._last_update_time = now
+
+            elapsed_time = now - self.start_time
+            speed = transferred / elapsed_time if elapsed_time > 0 else 0
+            speed_kbs = speed / 1024
+
+            percent = (transferred / self.total_size) * 100 if self.total_size > 0 else 100
+            transferred_mb = transferred / (1024 * 1024)
+            total_mb = self.total_size / (1024 * 1024)
+
+            # Use sys.stdout.write and \r to create a dynamic progress line
+            progress_str = (
+                f"\rDownloading {self.filename}: {transferred_mb:.2f}/{total_mb:.2f}MB "
+                f"({percent:.1f}%) at {speed_kbs:.2f} KB/s..."
+            )
+            sys.stdout.write(progress_str)
+            sys.stdout.flush()
+
+    logging.info(f"Starting download: {remote_file}")
+    progress_tracker = ProgressTracker(remote_file, total_size)
+    try:
+        sftp.get(remote_file, str(local_path), callback=progress_tracker)
+        sys.stdout.write('\n')  # Newline after download completes
+        sys.stdout.flush()
+        logging.info(f"Download of {progress_tracker.filename} completed.")
+    except Exception as e:
+        sys.stdout.write('\n') # Ensure we newline on error too
+        logging.error(f"Download failed for {remote_file}: {e}")
+        raise
 
 def _sftp_download_dir(sftp, remote_dir, local_dir, dry_run=False):
     """Recursively downloads the contents of a remote directory."""
