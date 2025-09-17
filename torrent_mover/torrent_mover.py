@@ -9,6 +9,8 @@ import logging
 from pathlib import Path
 import qbittorrentapi
 import paramiko
+import json
+from urllib.parse import urlparse
 
 # --- Configuration Loading ---
 
@@ -210,7 +212,96 @@ def wait_for_recheck_completion(client, torrent_hash, timeout_seconds=900, dry_r
     logging.error(f"Timeout: Recheck did not complete for torrent {torrent_hash[:10]} in {timeout_seconds}s.")
     return False
 
-def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, dry_run=False):
+# --- Tracker-based Categorization ---
+
+def load_tracker_rules(script_dir, rules_filename="tracker_rules.json"):
+    """
+    Loads tracker-to-category rules from the specified JSON file.
+    Returns an empty dictionary if the file doesn't exist or is invalid.
+    """
+    rules_file = script_dir / rules_filename
+    if not rules_file.is_file():
+        logging.warning(f"Tracker rules file not found at '{rules_file}'. Starting with empty ruleset.")
+        return {}
+    try:
+        with open(rules_file, 'r') as f:
+            rules = json.load(f)
+        logging.info(f"Successfully loaded {len(rules)} tracker rules from '{rules_file}'.")
+        return rules
+    except json.JSONDecodeError:
+        logging.error(f"Could not decode JSON from '{rules_file}'. Please check its format.")
+        return {}
+
+def save_tracker_rules(rules, script_dir, rules_filename="tracker_rules.json"):
+    """Saves the tracker rules dictionary to the specified JSON file."""
+    rules_file = script_dir / rules_filename
+    try:
+        with open(rules_file, 'w') as f:
+            json.dump(rules, f, indent=4, sort_keys=True)
+        logging.info(f"Successfully saved {len(rules)} rules to '{rules_file}'.")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to save rules to '{rules_file}': {e}")
+        return False
+
+def get_tracker_domain(tracker_url):
+    """Extracts the network location (domain) from a tracker URL."""
+    try:
+        netloc = urlparse(tracker_url).netloc
+        # Simple subdomain stripping for better matching
+        parts = netloc.split('.')
+        if len(parts) > 2:
+            # e.g., tracker.site.com -> site.com, announce.site.org -> site.org
+            if parts[0] in ['tracker', 'announce', 'www']:
+                return '.'.join(parts[1:])
+        return netloc
+    except Exception:
+        return None
+
+def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=False):
+    """
+    Sets a torrent's category based on its trackers and the predefined rules.
+    """
+    try:
+        torrent_info = client.torrents_info(torrent_hashes=torrent_hash)
+        if not torrent_info:
+            logging.warning(f"Could not find torrent {torrent_hash[:10]} on destination to categorize.")
+            return
+
+        torrent = torrent_info[0]
+        trackers = client.torrents_trackers(torrent_hash=torrent.hash)
+        logging.info(f"Checking {len(trackers)} trackers for '{torrent.name}' for categorization...")
+
+        for tracker in trackers:
+            tracker_url = tracker.get('url')
+            if not tracker_url:
+                continue
+
+            domain = get_tracker_domain(tracker_url)
+            logging.debug(f"Processing tracker '{tracker_url}' -> domain '{domain}'")
+
+            if domain and domain in tracker_rules:
+                category = tracker_rules[domain]
+                if torrent.category == category:
+                    logging.info(f"Torrent '{torrent.name}' is already in the correct category '{category}'.")
+                    return # Already correct
+
+                logging.info(f"Rule found for tracker '{domain}'. Setting category to '{category}' for '{torrent.name}'.")
+                if not dry_run:
+                    client.torrents_set_category(torrent_hashes=torrent.hash, category=category)
+                else:
+                    logging.info(f"[DRY RUN] Would set category of '{torrent.name}' to '{category}'.")
+                return # Stop after first match
+
+        logging.info(f"No matching tracker rule found for torrent '{torrent.name}'.")
+
+    except qbittorrentapi.exceptions.NotFound404Error:
+        logging.warning(f"Torrent {torrent_hash[:10]} not found on destination when trying to categorize.")
+    except Exception as e:
+        logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
+
+
+def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, tracker_rules, dry_run=False):
     """Executes the full transfer and management process for a single torrent."""
     name, hash = torrent.name, torrent.hash
     logging.info(f"--- Starting processing for torrent: {name} ---")
@@ -274,7 +365,11 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, dry_run=F
             else:
                 logging.info(f"[DRY RUN] Would start torrent on Unraid: {name}")
 
-            # 6. Delete from Mandarin
+            # 6. Set category based on tracker rules
+            logging.info(f"Attempting to categorize torrent on Unraid: {name}")
+            set_category_based_on_tracker(unraid_qbit, hash, tracker_rules, dry_run=dry_run)
+
+            # 7. Delete from Mandarin
             if not dry_run:
                 logging.info(f"Deleting torrent and data from Mandarin: {name}")
                 mandarin_qbit.torrents_delete(torrent_hashes=hash, delete_files=True)
@@ -297,6 +392,82 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, dry_run=F
 
 # --- Main Execution ---
 
+def run_interactive_categorization(client, rules, script_dir):
+    """
+    Scans torrents on the destination client and interactively prompts the user
+    to create categorization rules for torrents that don't have one.
+    """
+    logging.info("Scanning for torrents without a known tracker rule...")
+    try:
+        all_torrents = client.torrents_info(sort='name')
+        available_categories = sorted(list(client.torrent_categories.categories.keys()))
+
+        if not available_categories:
+            logging.error("No categories found on the destination client. Cannot perform categorization.")
+            return
+
+        known_domains = set(rules.keys())
+        updated_rules = rules.copy()
+        rules_changed = False
+
+        for torrent in all_torrents:
+            trackers = client.torrents_trackers(torrent_hash=torrent.hash)
+
+            primary_tracker = trackers[0]['url'] if trackers else "N/A"
+            torrent_domains = {get_tracker_domain(t.get('url')) for t in trackers if t.get('url')}
+
+            if not torrent_domains.intersection(known_domains):
+                print("-" * 60)
+                print(f"Found uncategorized torrent: {torrent.name}")
+                print(f"   Primary Tracker: {primary_tracker}")
+                print(f"   Current Category: {torrent.category or 'None'}")
+
+                primary_domain = get_tracker_domain(primary_tracker)
+                if not primary_domain:
+                    print("   Could not determine a primary domain. Skipping.")
+                    continue
+
+                print("\nPlease choose a category for this tracker domain:")
+                for i, cat in enumerate(available_categories):
+                    print(f"  {i+1}: {cat}")
+                print("  s: Skip this torrent")
+                print("  q: Quit interactive session")
+
+                while True:
+                    choice = input("Enter your choice (1-N, s, q): ").lower()
+                    if choice == 'q':
+                        if rules_changed:
+                            save_tracker_rules(updated_rules, script_dir)
+                        return
+                    if choice == 's':
+                        break
+
+                    try:
+                        choice_idx = int(choice) - 1
+                        if 0 <= choice_idx < len(available_categories):
+                            chosen_category = available_categories[choice_idx]
+                            print(f"Applying category '{chosen_category}' and creating rule for '{primary_domain}'.")
+
+                            client.torrents_set_category(torrent_hashes=torrent.hash, category=chosen_category)
+
+                            updated_rules[primary_domain] = chosen_category
+                            known_domains.add(primary_domain)
+                            rules_changed = True
+                            break
+                        else:
+                            print("Invalid number. Please try again.")
+                    except ValueError:
+                        print("Invalid input. Please enter a number, 's', or 'q'.")
+
+        if rules_changed:
+            save_tracker_rules(updated_rules, script_dir)
+
+        print("-" * 60)
+        logging.info("Interactive categorization session finished.")
+
+    except Exception as e:
+        logging.error(f"An error occurred during interactive categorization: {e}", exc_info=True)
+
 def main():
     """Main entry point for the script."""
     # The default config file is expected to be in the same directory as the script.
@@ -313,9 +484,59 @@ def main():
         help='Path to the configuration file.'
     )
     parser.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
+
+    # Rule management arguments
+    parser.add_argument('--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
+    parser.add_argument('--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
+    parser.add_argument('--delete-rule', metavar='TRACKER_DOMAIN', help='Delete a rule and exit.')
+    parser.add_argument('--interactive-categorize', action='store_true', help='Interactively categorize torrents on destination without a rule.')
+
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+    tracker_rules = load_tracker_rules(script_dir)
+
+    # --- Handle Rule Management ---
+    if args.list_rules:
+        logging.info("--- Current Tracker Rules ---")
+        if not tracker_rules:
+            print("No rules defined.")
+        else:
+            for domain, category in sorted(tracker_rules.items()):
+                print(f"{domain:<30} -> {category}")
+        return 0 # Exit after listing
+
+    if args.add_rule:
+        domain, category = args.add_rule
+        logging.info(f"Adding/updating rule: '{domain}' -> '{category}'")
+        tracker_rules[domain] = category
+        save_tracker_rules(tracker_rules, script_dir)
+        return 0 # Exit after adding
+
+    if args.delete_rule:
+        domain = args.delete_rule
+        if domain in tracker_rules:
+            logging.info(f"Deleting rule for domain: '{domain}'")
+            del tracker_rules[domain]
+            save_tracker_rules(tracker_rules, script_dir)
+        else:
+            logging.error(f"Rule for domain '{domain}' not found.")
+            return 1 # Exit with error
+        return 0 # Exit after deleting
+
+    # --- Handle Interactive Mode ---
+    if args.interactive_categorize:
+        logging.info("--- Starting Interactive Categorization Mode ---")
+        config = load_config(args.config)
+        unraid_qbit = connect_qbit(config['UNRAID_QBIT'], "Unraid")
+        if not unraid_qbit:
+            logging.error("Could not connect to Unraid qBittorrent. Aborting.")
+            return 1
+
+        run_interactive_categorization(unraid_qbit, tracker_rules, script_dir)
+        return 0
+
     logging.info("--- Torrent Mover script started ---")
     if args.dry_run:
         logging.warning("!!! DRY RUN MODE ENABLED. NO CHANGES WILL BE MADE. !!!")
@@ -343,7 +564,7 @@ def main():
             total_count = len(eligible_torrents)
             for i, torrent in enumerate(eligible_torrents, 1):
                 logging.info(f"Processing torrent {i}/{total_count}...")
-                if process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_client, config, dry_run=args.dry_run):
+                if process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_client, config, tracker_rules, dry_run=args.dry_run):
                     processed_count += 1
             logging.info(f"Processing complete. Moved {processed_count}/{total_count} torrent(s).")
 

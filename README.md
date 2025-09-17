@@ -18,6 +18,16 @@ A Python script to automatically move completed torrents and their data from a s
 *   **Safe Dry Run Mode**: Includes a `--dry-run` flag to simulate the entire process without making any actual changes, allowing you to safely test your configuration.
 *   **Flexible Configuration**: All server details, credentials, and paths are stored in a simple `config.ini` file.
 
+## Advanced Features
+
+### Tracker-Based Categorization
+
+This script can automatically assign a category to torrents on the destination client based on their trackers. This helps in organizing your library without manual intervention.
+
+*   **Learning System**: The script "learns" which category to apply to a tracker domain. When it processes a torrent with a tracker it hasn't seen before, you can run the script in interactive mode to teach it a new rule.
+*   **Rule-Based**: The rules are stored in a simple `tracker_rules.json` file in the `torrent_mover` directory, which can be edited manually or via command-line options.
+*   **Automatic Application**: During a normal run, after a torrent is transferred and re-checked on the destination client, the script will look up its tracker in the rules and apply the corresponding category.
+
 ## Requirements
 
 *   Python 3.6+
@@ -102,6 +112,32 @@ Once you have confirmed the dry run looks correct, you can run the script normal
 ```bash
 python torrent_mover.py
 ```
+
+### Managing Tracker Categorization Rules
+
+You can manage the tracker-to-category rules directly from the command line. These commands do not require a full run of the mover script.
+
+*   **List All Rules**:
+    ```bash
+    python torrent_mover.py --list-rules
+    ```
+
+*   **Add or Update a Rule**:
+    This command maps a tracker domain (e.g., `some-tracker.org`) to a category name that exists in your destination qBittorrent client.
+    ```bash
+    python torrent_mover.py --add-rule "some-tracker.org" "My-TV-Shows"
+    ```
+
+*   **Delete a Rule**:
+    ```bash
+    python torrent_mover.py --delete-rule "some-tracker.org"
+    ```
+
+*   **Interactively Create Rules (Learning Mode)**:
+    The script will scan all torrents on your destination client. For any torrent whose tracker domain does not have a rule, it will prompt you to choose from a list of your existing qBittorrent categories. It's recommended to run this periodically to teach the script about new trackers.
+    ```bash
+    python torrent_mover.py --interactive-categorize
+    ```
 
 ### Specifying a Config File
 
