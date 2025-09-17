@@ -246,7 +246,7 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, dry_run=F
         if not dry_run:
             # Export the .torrent file from the source client
             logging.info(f"Exporting .torrent file for {name}")
-            torrent_file_content = mandarin_qbit.torrents_export(torrent_hashes=hash)
+            torrent_file_content = mandarin_qbit.torrents_export(torrent_hash=hash)
 
             logging.info(f"Adding torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
             unraid_qbit.torrents_add(
