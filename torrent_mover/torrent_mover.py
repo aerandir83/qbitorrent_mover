@@ -82,26 +82,61 @@ import os
 import sys
 import time
 import argparse
+from tqdm import tqdm
 
-# --- SFTP Transfer Logic ---
+# --- SFTP Transfer Logic with Progress Bar ---
+
+class DownloadProgress:
+    """
+    A thread-safe progress bar callback for Paramiko's SFTP get method.
+    Initializes a tqdm progress bar and updates it based on bytes transferred.
+    """
+    def __init__(self, description, total_size):
+        self._pbar = tqdm(
+            total=total_size,
+            initial=0,
+            unit='B',
+            unit_scale=True,
+            desc=description,
+            ncols=80,
+            leave=False
+        )
+        self._last_bytes = 0
+
+    def __call__(self, bytes_transferred, total_bytes):
+        """
+        The callback method invoked by Paramiko.
+        Calculates the increment and updates the progress bar.
+        """
+        increment = bytes_transferred - self._last_bytes
+        self._pbar.update(increment)
+        self._last_bytes = bytes_transferred
+
+    def close(self):
+        """Safely closes the progress bar."""
+        self._pbar.close()
 
 def _sftp_download_file(sftp, remote_file, local_file, dry_run=False):
     """
-    Downloads a single file, performing a size check for overwriting.
-    Logging is simplified for cleaner parallel output.
+    Downloads a single file with a progress bar, performing a size check.
     """
     local_path = Path(local_file)
-    remote_stat = sftp.stat(remote_file)
-    total_size = remote_stat.st_size
     file_name = os.path.basename(remote_file)
+
+    try:
+        remote_stat = sftp.stat(remote_file)
+        total_size = remote_stat.st_size
+    except FileNotFoundError:
+        logging.error(f"Remote file not found: {remote_file}")
+        raise
 
     if local_path.exists():
         local_size = local_path.stat().st_size
         if local_size == total_size:
-            logging.info(f"Skipping file (exists and size matches): {file_name}")
+            logging.info(f"Skipping (exists and size matches): {file_name}")
             return
         else:
-            logging.warning(f"Overwriting file (size mismatch remote:{total_size} vs local:{local_size}): {file_name}")
+            logging.warning(f"Overwriting (size mismatch r:{total_size}/l:{local_size}): {file_name}")
 
     if dry_run:
         logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
@@ -109,21 +144,33 @@ def _sftp_download_file(sftp, remote_file, local_file, dry_run=False):
 
     local_path.parent.mkdir(parents=True, exist_ok=True)
 
-    logging.info(f"Starting download: {file_name}")
+    progress = None
     try:
-        sftp.get(remote_file, str(local_path))
-        logging.info(f"Download of {file_name} completed.")
+        # To avoid clutter, only show progress bar for files > 1MB
+        if total_size > 1_000_000:
+            progress = DownloadProgress(file_name, total_size)
+
+        sftp.get(remote_file, str(local_path), callback=progress)
+
+        # For small files without a progress bar, log completion here.
+        # For large files, the bar's disappearance signifies completion.
+        if progress is None:
+            logging.info(f"Download of {file_name} completed.")
+
     except Exception as e:
         logging.error(f"Download failed for {file_name}: {e}")
         raise
+    finally:
+        if progress:
+            progress.close()
 
 def _sftp_download_dir(sftp, remote_dir, local_dir, dry_run=False):
-    """Recursively downloads the contents of a remote directory."""
+    """Recursively downloads the contents of a remote directory sequentially."""
     if not dry_run:
         Path(local_dir).mkdir(parents=True, exist_ok=True)
 
     for item in sftp.listdir(remote_dir):
-        remote_item_path = os.path.join(remote_dir, item).replace("\\", "/")
+        remote_item_path = f"{remote_dir.rstrip('/')}/{item}"
         local_item_path = os.path.join(local_dir, item)
         transfer_content(sftp, remote_item_path, local_item_path, dry_run)
 
