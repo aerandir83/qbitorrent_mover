@@ -1,2 +1,3 @@
 qbittorrent-api
 paramiko
+tqdm

@@ -11,8 +11,7 @@ import qbittorrentapi
 import paramiko
 import json
 from urllib.parse import urlparse
-
-# --- Configuration Loading ---
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def load_config(config_path="config.ini"):
     """
@@ -83,24 +82,60 @@ import os
 import sys
 import time
 import argparse
+from tqdm import tqdm
 
-# --- SFTP Transfer Logic ---
+# --- SFTP Transfer Logic with Progress Bar ---
+
+class DownloadProgress:
+    """
+    A thread-safe progress bar callback for Paramiko's SFTP get method.
+    Initializes a tqdm progress bar and updates it based on bytes transferred.
+    """
+    def __init__(self, description, total_size):
+        self._pbar = tqdm(
+            total=total_size,
+            initial=0,
+            unit='B',
+            unit_scale=True,
+            desc=description,
+            leave=False
+        )
+        self._last_bytes = 0
+
+    def __call__(self, bytes_transferred, total_bytes):
+        """
+        The callback method invoked by Paramiko.
+        Calculates the increment and updates the progress bar.
+        """
+        increment = bytes_transferred - self._last_bytes
+        self._pbar.update(increment)
+        self._last_bytes = bytes_transferred
+
+    def close(self):
+        """Safely closes the progress bar."""
+        self._pbar.close()
 
 def _sftp_download_file(sftp, remote_file, local_file, dry_run=False):
     """
-    Downloads a single file, showing progress and performing a size check for overwriting.
+    Downloads a single file with a progress bar, performing a size check.
     """
     local_path = Path(local_file)
-    remote_stat = sftp.stat(remote_file)
-    total_size = remote_stat.st_size
+    file_name = os.path.basename(remote_file)
+
+    try:
+        remote_stat = sftp.stat(remote_file)
+        total_size = remote_stat.st_size
+    except FileNotFoundError:
+        logging.error(f"Remote file not found: {remote_file}")
+        raise
 
     if local_path.exists():
         local_size = local_path.stat().st_size
         if local_size == total_size:
-            logging.info(f"Skipping file (exists and size matches): {local_path}")
+            logging.info(f"Skipping (exists and size matches): {file_name}")
             return
         else:
-            logging.warning(f"Overwriting file (size mismatch remote:{total_size} vs local:{local_size}): {local_path}")
+            logging.warning(f"Overwriting (size mismatch r:{total_size}/l:{local_size}): {file_name}")
 
     if dry_run:
         logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
@@ -108,55 +143,33 @@ def _sftp_download_file(sftp, remote_file, local_file, dry_run=False):
 
     local_path.parent.mkdir(parents=True, exist_ok=True)
 
-    class ProgressTracker:
-        def __init__(self, filename, total_size):
-            self.filename = os.path.basename(filename)
-            self.total_size = total_size
-            self.start_time = time.time()
-            self._last_update_time = 0
-
-        def __call__(self, transferred, total):
-            now = time.time()
-            # Throttle updates to every half-second to avoid excessive printing
-            if now - self._last_update_time < 0.5 and transferred != total:
-                return
-            self._last_update_time = now
-
-            elapsed_time = now - self.start_time
-            speed = transferred / elapsed_time if elapsed_time > 0 else 0
-            speed_kbs = speed / 1024
-
-            percent = (transferred / self.total_size) * 100 if self.total_size > 0 else 100
-            transferred_mb = transferred / (1024 * 1024)
-            total_mb = self.total_size / (1024 * 1024)
-
-            # Use sys.stdout.write and \r to create a dynamic progress line
-            progress_str = (
-                f"\rDownloading {self.filename}: {transferred_mb:.2f}/{total_mb:.2f}MB "
-                f"({percent:.1f}%) at {speed_kbs:.2f} KB/s..."
-            )
-            sys.stdout.write(progress_str)
-            sys.stdout.flush()
-
-    logging.info(f"Starting download: {remote_file}")
-    progress_tracker = ProgressTracker(remote_file, total_size)
+    progress = None
     try:
-        sftp.get(remote_file, str(local_path), callback=progress_tracker)
-        sys.stdout.write('\n')  # Newline after download completes
-        sys.stdout.flush()
-        logging.info(f"Download of {progress_tracker.filename} completed.")
+        # To avoid clutter, only show progress bar for files > 1MB
+        if total_size > 1_000_000:
+            progress = DownloadProgress(file_name, total_size)
+
+        sftp.get(remote_file, str(local_path), callback=progress)
+
+        # For small files without a progress bar, log completion here.
+        # For large files, the bar's disappearance signifies completion.
+        if progress is None:
+            logging.info(f"Download of {file_name} completed.")
+
     except Exception as e:
-        sys.stdout.write('\n') # Ensure we newline on error too
-        logging.error(f"Download failed for {remote_file}: {e}")
+        logging.error(f"Download failed for {file_name}: {e}")
         raise
+    finally:
+        if progress:
+            progress.close()
 
 def _sftp_download_dir(sftp, remote_dir, local_dir, dry_run=False):
-    """Recursively downloads the contents of a remote directory."""
+    """Recursively downloads the contents of a remote directory sequentially."""
     if not dry_run:
         Path(local_dir).mkdir(parents=True, exist_ok=True)
 
     for item in sftp.listdir(remote_dir):
-        remote_item_path = os.path.join(remote_dir, item).replace("\\", "/")
+        remote_item_path = f"{remote_dir.rstrip('/')}/{item}"
         local_item_path = os.path.join(local_dir, item)
         transfer_content(sftp, remote_item_path, local_item_path, dry_run)
 
@@ -301,11 +314,22 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, tracker_rules, dry_run=False, test_run=False):
-    """Executes the full transfer and management process for a single torrent."""
+def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, dry_run=False, test_run=False):
+    """
+    Executes the full transfer and management process for a single torrent.
+    Establishes its own SFTP connection to be thread-safe.
+    """
     name, hash = torrent.name, torrent.hash
     logging.info(f"--- Starting processing for torrent: {name} ---")
+
+    sftp = None
+    transport = None
     try:
+        # Connect to SFTP for this specific job
+        sftp, transport = connect_sftp(sftp_config)
+        if not sftp:
+            raise Exception("Failed to establish SFTP connection for this thread.")
+
         # 1. Pause torrent on Mandarin
         if not dry_run:
             logging.info(f"Pausing torrent on Mandarin: {name}")
@@ -316,7 +340,6 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, tracker_r
         # 2. Transfer files via SFTP
         source_base_path = config['MANDARIN_SFTP']['source_path']
         dest_base_path = config['UNRAID_PATHS']['destination_path']
-        # Get the remote path for qBittorrent, falling back to the physical destination path
         remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
 
         remote_content_path = torrent.content_path
@@ -325,9 +348,9 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, tracker_r
         relative_path = os.path.relpath(remote_content_path, source_base_path)
         local_dest_path = os.path.join(dest_base_path, relative_path)
 
-        logging.info(f"Starting SFTP transfer from '{remote_content_path}' to '{local_dest_path}'")
+        logging.info(f"Starting SFTP transfer for '{name}'")
         transfer_content(sftp, remote_content_path, local_dest_path, dry_run)
-        logging.info("SFTP transfer completed successfully.")
+        logging.info(f"SFTP transfer completed successfully for '{name}'.")
 
         # 3. Add to Unraid, paused
         # The save path for qBit needs to be the directory that will *contain* the torrent's content.
@@ -391,6 +414,11 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp, config, tracker_r
             except Exception as resume_e:
                 logging.error(f"Failed to resume torrent {name} on Mandarin after error: {resume_e}")
         return False
+    finally:
+        if sftp:
+            sftp.close()
+        if transport:
+            transport.close()
 
 # --- Main Execution ---
 
@@ -500,6 +528,15 @@ def main():
     mode_group.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
     mode_group.add_argument('--test-run', action='store_true', help='Run the full process but do not delete the source torrent.')
 
+    # Concurrency arguments
+    parser.add_argument(
+        '--parallel-jobs',
+        type=int,
+        default=1,
+        metavar='N',
+        help='Number of torrents to process in parallel.'
+    )
+
     # Rule management arguments
     parser.add_argument('--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
     parser.add_argument('--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
@@ -569,13 +606,12 @@ def main():
 
     mandarin_qbit = connect_qbit(config['MANDARIN_QBIT'], "Mandarin")
     unraid_qbit = connect_qbit(config['UNRAID_QBIT'], "Unraid")
-    sftp_client, sftp_transport = connect_sftp(config['MANDARIN_SFTP'])
 
-    if not all([mandarin_qbit, unraid_qbit, sftp_client]):
-        logging.error("One or more connections failed. Please check config and logs. Aborting.")
+    if not all([mandarin_qbit, unraid_qbit]):
+        logging.error("One or more qBittorrent connections failed. Please check config and logs. Aborting.")
         return 1
 
-    logging.info("All connections established successfully.")
+    logging.info("qBittorrent connections established successfully.")
 
     try:
         category_to_move = config['SETTINGS']['category_to_move']
@@ -583,21 +619,36 @@ def main():
 
         if not eligible_torrents:
             logging.info("No torrents to move at this time.")
-        else:
-            processed_count = 0
-            total_count = len(eligible_torrents)
-            for i, torrent in enumerate(eligible_torrents, 1):
-                logging.info(f"Processing torrent {i}/{total_count}...")
-                if process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_client, config, tracker_rules, dry_run=args.dry_run, test_run=args.test_run):
-                    processed_count += 1
-            logging.info(f"Processing complete. Moved {processed_count}/{total_count} torrent(s).")
+            return 0
 
-    finally:
-        if sftp_client:
-            sftp_client.close()
-        if sftp_transport:
-            sftp_transport.close()
-            logging.info("SFTP connection closed.")
+        total_count = len(eligible_torrents)
+        processed_count = 0
+        logging.info(f"Starting parallel processing for {total_count} torrent(s) with {args.parallel_jobs} worker(s)...")
+
+        with ThreadPoolExecutor(max_workers=args.parallel_jobs) as executor:
+            # The sftp_config is passed to each thread, which will create its own connection
+            sftp_config = config['MANDARIN_SFTP']
+            future_to_torrent = {
+                executor.submit(process_torrent, torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, args.dry_run, args.test_run): torrent
+                for torrent in eligible_torrents
+            }
+
+            for future in as_completed(future_to_torrent):
+                torrent = future_to_torrent[future]
+                try:
+                    if future.result():
+                        processed_count += 1
+                except Exception as e:
+                    logging.error(f"An exception was thrown while processing torrent '{torrent.name}': {e}", exc_info=True)
+
+        logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
+
+    except KeyError as e:
+        logging.error(f"Configuration key missing: {e}. Please check your config.ini.")
+        return 1
+    except Exception as e:
+        logging.error(f"An unexpected error occurred in main: {e}", exc_info=True)
+        return 1
 
     logging.info("--- Torrent Mover script finished ---")
     return 0
