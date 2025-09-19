@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # Torrent Mover
 #
 # A script to automatically move completed torrents from a source qBittorrent client
