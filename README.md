@@ -117,6 +117,38 @@ Once you have confirmed the dry run looks correct, you can run the script normal
 python torrent_mover.py
 ```
 
+### Command-Line Arguments
+
+The script supports several command-line arguments to customize its behavior:
+
+| Argument | Description |
+|---|---|
+| `--config [PATH]` | Specifies the path to the `config.ini` file. Defaults to `config.ini` in the script directory. |
+| `--dry-run` | Simulates the entire process, printing actions without making any changes. |
+| `--test-run` | Performs a full run but **skips deleting torrents** from the source client. |
+| `--parallel-jobs [N]` | Sets the number of torrents to process concurrently. Defaults to `4`. |
+| `--list-rules` | Lists all saved tracker-to-category rules and exits. |
+| `--add-rule [DOMAIN] [CATEGORY]` | Adds or updates a categorization rule and exits. |
+| `--delete-rule [DOMAIN]` | Deletes a specific categorization rule and exits. |
+| `--interactive-categorize` | Starts an interactive session to create rules for uncategorized torrents. |
+
+### Enabling Bash Auto-Completion (Optional)
+
+To make using the command-line arguments easier, you can enable bash auto-completion. This will allow you to press the `Tab` key to auto-complete arguments and their values.
+
+1.  **Ensure you have installed the dependencies from `requirements.txt`**, as this includes the `argcomplete` library.
+
+2.  **Run the global registration command:**
+    ```bash
+    eval "$(register-python-argcomplete torrent_mover.py)"
+    ```
+
+3.  **To make the change permanent**, add the command to your shell's startup file (e.g., `~/.bashrc` or `~/.zshrc`):
+    ```bash
+    echo 'eval "$(register-python-argcomplete torrent_mover.py)"' >> ~/.bashrc
+    ```
+    You will need to restart your shell or run `source ~/.bashrc` for the changes to take effect.
+
 ### Managing Tracker Categorization Rules
 
 You can manage the tracker-to-category rules directly from the command line. These commands do not require a full run of the mover script.

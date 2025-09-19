@@ -82,6 +82,7 @@ import os
 import sys
 import time
 import argparse
+import argcomplete
 from tqdm import tqdm
 
 # --- SFTP Transfer Logic with Progress Bar ---
@@ -534,7 +535,7 @@ def main():
     parser.add_argument(
         '--parallel-jobs',
         type=int,
-        default=1,
+        default=4,
         metavar='N',
         help='Number of torrents to process in parallel.'
     )
@@ -545,6 +546,7 @@ def main():
     parser.add_argument('--delete-rule', metavar='TRACKER_DOMAIN', help='Delete a rule and exit.')
     parser.add_argument('--interactive-categorize', action='store_true', help='Interactively categorize torrents on destination without a rule.')
 
+    argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
