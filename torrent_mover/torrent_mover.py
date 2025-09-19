@@ -98,7 +98,6 @@ class DownloadProgress:
             unit='B',
             unit_scale=True,
             desc=description,
-            ncols=80,
             leave=False
         )
         self._last_bytes = 0
