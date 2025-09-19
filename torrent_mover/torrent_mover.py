@@ -324,20 +324,14 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
 
     sftp = None
     transport = None
+    source_paused = False
     try:
         # Connect to SFTP for this specific job
         sftp, transport = connect_sftp(sftp_config)
         if not sftp:
             raise Exception("Failed to establish SFTP connection for this thread.")
 
-        # 1. Pause torrent on Mandarin
-        if not dry_run:
-            logging.info(f"Pausing torrent on Mandarin: {name}")
-            mandarin_qbit.torrents_pause(torrent_hashes=hash)
-        else:
-            logging.info(f"[DRY RUN] Would pause torrent on Mandarin: {name}")
-
-        # 2. Transfer files via SFTP
+        # 1. Transfer files via SFTP
         source_base_path = config['MANDARIN_SFTP']['source_path']
         dest_base_path = config['UNRAID_PATHS']['destination_path']
         remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
@@ -352,8 +346,7 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
         transfer_content(sftp, remote_content_path, local_dest_path, dry_run)
         logging.info(f"SFTP transfer completed successfully for '{name}'.")
 
-        # 3. Add to Unraid, paused
-        # The save path for qBit needs to be the directory that will *contain* the torrent's content.
+        # 2. Add to Unraid, paused
         unraid_save_path = os.path.join(remote_dest_base_path, os.path.dirname(relative_path))
         unraid_save_path = unraid_save_path.replace("\\", "/") # Ensure forward slashes for cross-platform compatibility
 
@@ -373,15 +366,16 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
         else:
             logging.info(f"[DRY RUN] Would export and add torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
 
-        # 4. Force recheck on Unraid
+        # 3. Force recheck on Unraid
         if not dry_run:
             logging.info(f"Triggering force recheck on Unraid for: {name}")
             unraid_qbit.torrents_recheck(torrent_hashes=hash)
         else:
             logging.info(f"[DRY RUN] Would trigger force recheck on Unraid for: {name}")
 
-        # 5. Wait for recheck and then start
+        # 4. Wait for recheck and then start
         if wait_for_recheck_completion(unraid_qbit, hash, dry_run=dry_run):
+            # 5. Start destination torrent
             if not dry_run:
                 logging.info(f"Starting torrent on Unraid: {name}")
                 unraid_qbit.torrents_resume(torrent_hashes=hash)
@@ -392,7 +386,15 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
             logging.info(f"Attempting to categorize torrent on Unraid: {name}")
             set_category_based_on_tracker(unraid_qbit, hash, tracker_rules, dry_run=dry_run)
 
-            # 7. Delete from Mandarin
+            # 7. Pause source torrent on Mandarin before deletion
+            if not dry_run and not test_run:
+                logging.info(f"Pausing torrent on Mandarin before deletion: {name}")
+                mandarin_qbit.torrents_pause(torrent_hashes=hash)
+                source_paused = True
+            else:
+                logging.info(f"[DRY RUN/TEST RUN] Would pause torrent on Mandarin: {name}")
+
+            # 8. Delete from Mandarin
             if test_run:
                 logging.info(f"[TEST RUN] Skipping deletion of torrent from Mandarin: {name}")
             elif not dry_run:
@@ -408,7 +410,7 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
             return False
     except Exception as e:
         logging.error(f"An error occurred while processing torrent {name}: {e}", exc_info=True)
-        if not dry_run:
+        if not dry_run and source_paused:
             try:
                 mandarin_qbit.torrents_resume(torrent_hashes=hash)
             except Exception as resume_e:
