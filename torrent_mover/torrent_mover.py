@@ -272,6 +272,21 @@ def get_tracker_domain(tracker_url):
     except Exception:
         return None
 
+def get_category_from_rules(torrent, rules, client):
+    """
+    Checks a torrent's trackers against the rules to find a matching category.
+    Returns the category name or None if no rule matches.
+    """
+    try:
+        trackers = client.torrents_trackers(torrent_hash=torrent.hash)
+        for tracker in trackers:
+            domain = get_tracker_domain(tracker.get('url'))
+            if domain and domain in rules:
+                return rules[domain]
+    except Exception as e:
+        logging.warning(f"Could not check trackers for torrent '{torrent.name}': {e}")
+    return None
+
 def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=False):
     """
     Sets a torrent's category based on its trackers and the predefined rules.
@@ -283,31 +298,24 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
             return
 
         torrent = torrent_info[0]
-        trackers = client.torrents_trackers(torrent_hash=torrent.hash)
-        logging.info(f"Checking {len(trackers)} trackers for '{torrent.name}' for categorization...")
+        category = get_category_from_rules(torrent, tracker_rules, client)
 
-        for tracker in trackers:
-            tracker_url = tracker.get('url')
-            if not tracker_url:
-                continue
+        if category:
+            if category == "ignore":
+                logging.info(f"Rule is to ignore torrent '{torrent.name}'. Doing nothing.")
+                return
 
-            domain = get_tracker_domain(tracker_url)
-            logging.debug(f"Processing tracker '{tracker_url}' -> domain '{domain}'")
+            if torrent.category == category:
+                logging.info(f"Torrent '{torrent.name}' is already in the correct category '{category}'.")
+                return
 
-            if domain and domain in tracker_rules:
-                category = tracker_rules[domain]
-                if torrent.category == category:
-                    logging.info(f"Torrent '{torrent.name}' is already in the correct category '{category}'.")
-                    return # Already correct
-
-                logging.info(f"Rule found for tracker '{domain}'. Setting category to '{category}' for '{torrent.name}'.")
-                if not dry_run:
-                    client.torrents_set_category(torrent_hashes=torrent.hash, category=category)
-                else:
-                    logging.info(f"[DRY RUN] Would set category of '{torrent.name}' to '{category}'.")
-                return # Stop after first match
-
-        logging.info(f"No matching tracker rule found for torrent '{torrent.name}'.")
+            logging.info(f"Rule found. Setting category to '{category}' for '{torrent.name}'.")
+            if not dry_run:
+                client.torrents_set_category(torrent_hashes=torrent.hash, category=category)
+            else:
+                logging.info(f"[DRY RUN] Would set category of '{torrent.name}' to '{category}'.")
+        else:
+            logging.info(f"No matching tracker rule found for torrent '{torrent.name}'.")
 
     except qbittorrentapi.exceptions.NotFound404Error:
         logging.warning(f"Torrent {torrent_hash[:10]} not found on destination when trying to categorize.")
@@ -427,80 +435,109 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
 
 def run_interactive_categorization(client, rules, script_dir, category_to_scan):
     """
-    Scans torrents in a specific category and interactively prompts the user
-    to create categorization rules for torrents that don't have one.
+    Interactively prompts the user to categorize torrents that do not match any existing rules.
     """
-    logging.info(f"Scanning category '{category_to_scan}' for torrents without a known tracker rule...")
+    logging.info("Starting interactive categorization...")
     try:
-        torrents_in_category = client.torrents_info(category=category_to_scan, sort='name')
+        torrents_to_check = client.torrents_info(category=category_to_scan, sort='name')
         available_categories = sorted(list(client.torrent_categories.categories.keys()))
 
         if not available_categories:
             logging.error("No categories found on the destination client. Cannot perform categorization.")
             return
 
-        known_domains = set(rules.keys())
         updated_rules = rules.copy()
         rules_changed = False
 
-        for torrent in torrents_in_category:
-            trackers = client.torrents_trackers(torrent_hash=torrent.hash)
+        for torrent in torrents_to_check:
+            # Check if the torrent already has a category based on existing rules
+            auto_category = get_category_from_rules(torrent, updated_rules, client)
+            if auto_category:
+                if auto_category == "ignore":
+                    logging.info(f"Skipping torrent '{torrent.name}' due to 'ignore' rule.")
+                else:
+                    logging.info(f"Rule found for '{torrent.name}'. Setting category to '{auto_category}'.")
+                    client.torrents_set_category(torrent_hashes=torrent.hash, category=auto_category)
+                continue # Move to the next torrent
 
-            # Find the first valid http/https tracker domain that doesn't already have a rule
-            domain_to_propose = None
-            all_domains = set()
-            for tracker in trackers:
-                domain = get_tracker_domain(tracker.get('url'))
-                if domain:
-                    all_domains.add(domain)
-                    # Propose a rule if we find a domain that is not already known
-                    if domain not in known_domains:
-                        domain_to_propose = domain
-                        break # Found a candidate, stop checking trackers for this torrent
-
-            if not domain_to_propose:
-                # This torrent has no new/unknown valid trackers, so we skip it
-                continue
-
-            # If we have a domain to propose, prompt the user
+            # --- If no rule is found, start the interactive prompt ---
             print("-" * 60)
-            print(f"Found torrent with a new tracker domain: {torrent.name}")
-            print(f"   Proposing rule for: {domain_to_propose}")
-            if len(all_domains) > 1:
-                print(f"   All Tracker Domains: {', '.join(sorted(all_domains))}")
+            print(f"Torrent needs categorization: {torrent.name}")
             print(f"   Current Category: {torrent.category or 'None'}")
 
-            print(f"\nPlease choose a category for the domain '{domain_to_propose}':")
+            trackers = client.torrents_trackers(torrent_hash=torrent.hash)
+            torrent_domains = sorted(list(set(d for d in [get_tracker_domain(t.get('url')) for t in trackers] if d)))
+            print(f"   Tracker Domains: {', '.join(torrent_domains) if torrent_domains else 'None found'}")
+
+            print("\nPlease choose an action:")
             for i, cat in enumerate(available_categories):
-                print(f"  {i+1}: {cat}")
-            print("  s: Skip this torrent")
+                print(f"  {i+1}: Set category to '{cat}'")
+            print("\n  s: Skip this torrent (no changes)")
+            print("  i: Ignore this torrent's trackers permanently")
             print("  q: Quit interactive session")
 
-            while True:
-                    choice = input("Enter your choice (1-N, s, q): ").lower()
-                    if choice == 'q':
-                        if rules_changed:
-                            save_tracker_rules(updated_rules, script_dir)
-                        return
-                    if choice == 's':
+            while True: # Loop for user input
+                choice = input("Enter your choice: ").lower()
+                if choice == 'q':
+                    if rules_changed:
+                        save_tracker_rules(updated_rules, script_dir)
+                    return
+                if choice == 's':
+                    break # Skips to the next torrent
+
+                if choice == 'i':
+                    if not torrent_domains:
+                        print("No domains to ignore. Skipping.")
                         break
-
-                    try:
-                        choice_idx = int(choice) - 1
-                        if 0 <= choice_idx < len(available_categories):
-                            chosen_category = available_categories[choice_idx]
-                            print(f"Applying category '{chosen_category}' and creating rule for '{domain_to_propose}'.")
-
-                            client.torrents_set_category(torrent_hashes=torrent.hash, category=chosen_category)
-
-                            updated_rules[domain_to_propose] = chosen_category
-                            known_domains.add(domain_to_propose)
+                    for domain in torrent_domains:
+                        if domain not in updated_rules:
+                            print(f"Creating 'ignore' rule for domain: {domain}")
+                            updated_rules[domain] = "ignore"
                             rules_changed = True
-                            break
-                        else:
-                            print("Invalid number. Please try again.")
-                    except ValueError:
-                        print("Invalid input. Please enter a number, 's', or 'q'.")
+                    break
+
+                try:
+                    choice_idx = int(choice) - 1
+                    if 0 <= choice_idx < len(available_categories):
+                        chosen_category = available_categories[choice_idx]
+                        print(f"Setting category to '{chosen_category}'.")
+                        client.torrents_set_category(torrent_hashes=torrent.hash, category=chosen_category)
+
+                        # Ask to create a rule
+                        if torrent_domains:
+                            while True:
+                                learn = input("Create a rule for this choice? (y/n): ").lower()
+                                if learn in ['y', 'yes']:
+                                    if len(torrent_domains) == 1:
+                                        domain_to_rule = torrent_domains[0]
+                                        print(f"Creating rule: '{domain_to_rule}' -> '{chosen_category}'")
+                                        updated_rules[domain_to_rule] = chosen_category
+                                        rules_changed = True
+                                        break
+                                    else:
+                                        print("Choose a domain for the rule:")
+                                        for j, domain in enumerate(torrent_domains):
+                                            print(f"  {j+1}: {domain}")
+                                        domain_choice = input(f"Enter number (1-{len(torrent_domains)}): ")
+                                        try:
+                                            domain_idx = int(domain_choice) - 1
+                                            if 0 <= domain_idx < len(torrent_domains):
+                                                domain_to_rule = torrent_domains[domain_idx]
+                                                print(f"Creating rule: '{domain_to_rule}' -> '{chosen_category}'")
+                                                updated_rules[domain_to_rule] = chosen_category
+                                                rules_changed = True
+                                                break
+                                            else:
+                                                print("Invalid number.")
+                                        except ValueError:
+                                            print("Invalid input.")
+                                elif learn in ['n', 'no']:
+                                    break
+                        break # Exit input loop
+                    else:
+                        print("Invalid number. Please try again.")
+                except ValueError:
+                    print("Invalid input. Please enter a number or a valid command (s, i, q).")
 
         if rules_changed:
             save_tracker_rules(updated_rules, script_dir)
