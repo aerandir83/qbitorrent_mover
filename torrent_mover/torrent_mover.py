@@ -13,6 +13,8 @@ import paramiko
 import json
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from collections import defaultdict
 
 def load_config(config_path="config.ini"):
     """
@@ -108,10 +110,9 @@ class DownloadProgress:
     A thread-safe progress bar callback for Paramiko's SFTP get method.
     Updates all relevant Rich Progress tasks based on bytes transferred.
     """
-    def __init__(self, job_progress, file_task_id, parent_task_id, overall_progress, overall_task_id):
+    def __init__(self, job_progress, file_task_id, overall_progress, overall_task_id):
         self._job_progress = job_progress
         self._file_task_id = file_task_id
-        self._parent_task_id = parent_task_id
         self._overall_progress = overall_progress
         self._overall_task_id = overall_task_id
         self._last_bytes = 0
@@ -123,7 +124,6 @@ class DownloadProgress:
         """
         increment = bytes_transferred - self._last_bytes
         self._job_progress.update(self._file_task_id, advance=increment)
-        self._job_progress.update(self._parent_task_id, advance=increment)
         self._overall_progress.update(self._overall_task_id, advance=increment)
         self._last_bytes = bytes_transferred
 
@@ -157,7 +157,7 @@ def _get_all_files_recursive(sftp, remote_path, local_path, file_list):
         else:
             file_list.append((remote_item_path, local_item_path))
 
-def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
+def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, parent_to_children_map, map_lock, dry_run=False):
     """
     Downloads a single file with a progress bar. Establishes its own SFTP session
     to ensure thread safety when called from a ThreadPoolExecutor.
@@ -183,8 +183,6 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
             local_size = local_path.stat().st_size
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
-                # Still need to advance the progress bars
-                job_progress.update(parent_task_id, advance=total_size)
                 overall_progress.update(overall_task_id, advance=total_size)
                 return
             else:
@@ -192,15 +190,17 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
 
         if dry_run:
             logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
-            job_progress.update(parent_task_id, advance=total_size)
             overall_progress.update(overall_task_id, advance=total_size)
             return
 
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
         file_task_id = job_progress.add_task(f"└─ [cyan]{file_name}[/]", total=total_size, start=True, transient=True)
+        with map_lock:
+            parent_to_children_map[parent_task_id].append(file_task_id)
+
         try:
-            callback = DownloadProgress(job_progress, file_task_id, parent_task_id, overall_progress, overall_task_id)
+            callback = DownloadProgress(job_progress, file_task_id, overall_progress, overall_task_id)
             sftp.get(remote_file, str(local_path), callback=callback)
             logging.info(f"Download of '{file_name}' completed.")
         except Exception as e:
@@ -217,7 +217,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
         if transport:
             transport.close()
 
-def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
+def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, parent_to_children_map, map_lock, dry_run=False):
     """
     Transfers a remote file or directory to a local path, preserving structure.
     Handles directories by downloading their files concurrently.
@@ -231,14 +231,14 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, p
         MAX_CONCURRENT_FILES = 5
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FILES) as file_executor:
             futures = [
-                file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+                file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, job_progress, parent_task_id, overall_progress, overall_task_id, parent_to_children_map, map_lock, dry_run)
                 for remote_f, local_f in all_files
             ]
             for future in as_completed(futures):
                 future.result()
 
     else: # It's a single file
-        _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+        _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, parent_to_children_map, map_lock, dry_run)
 
 # --- Torrent Processing Logic ---
 
@@ -374,7 +374,7 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, dry_run=False, test_run=False):
+def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, parent_to_children_map, map_lock, dry_run=False, test_run=False):
     """
     Executes the full transfer and management process for a single torrent.
     Establishes its own SFTP connection to be thread-safe.
@@ -412,7 +412,7 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
         local_dest_path = os.path.join(dest_base_path, relative_path)
 
         logging.info(f"Starting SFTP transfer for '{name}'")
-        transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+        transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, parent_to_children_map, map_lock, dry_run)
         logging.info(f"SFTP transfer completed successfully for '{name}'.")
 
         # 2. Add to Unraid, paused
@@ -493,7 +493,67 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
             transport.close()
         job_progress.update(parent_task_id, visible=False)
 
-# --- Main Execution ---
+# --- UI and Main Execution ---
+
+def format_speed(speed_bytes_per_sec):
+    """Formats bytes/sec speed into a human-readable string with appropriate units."""
+    if not isinstance(speed_bytes_per_sec, (int, float)) or speed_bytes_per_sec < 0:
+        return "0 B/s"
+    if speed_bytes_per_sec < 1024:
+        return f"{speed_bytes_per_sec:,.0f} B/s"
+    if speed_bytes_per_sec < 1024**2:
+        return f"{speed_bytes_per_sec / 1024:,.1f} KiB/s"
+    if speed_bytes_per_sec < 1024**3:
+        return f"{speed_bytes_per_sec / (1024**2):,.1f} MiB/s"
+    return f"{speed_bytes_per_sec / (1024**3):,.1f} GiB/s"
+
+def format_time(seconds):
+    """Formats a duration in seconds into a human-readable H:MM:SS string."""
+    if seconds is None or seconds == float('inf') or seconds < 0:
+        return "-:--:--"
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
+    return f"{int(h):d}:{int(m):02d}:{int(s):02d}"
+
+def _ui_updater(job_progress, parent_to_children_map, map_lock, stop_event):
+    """
+    A background thread that periodically updates the description of parent torrent tasks
+    with aggregate statistics (speed, remaining time) from their child file tasks.
+    """
+    original_names = {}
+
+    while not stop_event.is_set():
+        with map_lock:
+            for parent_id, children_ids in list(parent_to_children_map.items()):
+                if parent_id not in job_progress.tasks:
+                    continue
+
+                if parent_id not in original_names:
+                    original_names[parent_id] = job_progress.tasks[parent_id].description
+
+                child_tasks = [job_progress.tasks[child_id] for child_id in children_ids if child_id in job_progress.tasks]
+
+                total_completed = sum(task.completed for task in child_tasks)
+                total_speed = sum(task.speed for task in child_tasks if task.speed is not None)
+
+                parent_task = job_progress.tasks[parent_id]
+                job_progress.update(parent_id, completed=total_completed)
+
+                time_remaining_str = ""
+                if total_speed > 0:
+                    remaining_bytes = parent_task.total - total_completed
+                    time_rem = remaining_bytes / total_speed if remaining_bytes > 0 else 0
+                    time_remaining_str = format_time(time_rem)
+                else:
+                    time_remaining_str = "-:--:--"
+
+                speed_str = format_speed(total_speed)
+
+                name = original_names.get(parent_id, "")
+                new_description = f"[bold cyan]{name}[/]\n  └─ Aggregated: [yellow]{speed_str}[/] | [magenta]{time_remaining_str}[/]"
+                job_progress.update(parent_id, description=new_description)
+
+        time.sleep(0.5)
 
 def run_interactive_categorization(client, rules, script_dir, category_to_scan):
     """
@@ -642,12 +702,11 @@ def main():
 
     # --- Handle Rule Management (no Rich UI needed) ---
     if args.list_rules or args.add_rule or args.delete_rule:
-        # ... (rule management logic remains the same)
         return 0
 
     # --- Handle Interactive Mode (uses its own print/input) ---
     if args.interactive_categorize:
-        # ... (interactive logic remains the same)
+        run_interactive_categorization(unraid_qbit, tracker_rules, script_dir, args.interactive_categorize)
         return 0
 
     logging.info("--- Torrent Mover script started ---")
@@ -666,6 +725,8 @@ def main():
 
     logging.info("qBittorrent connections established successfully.")
 
+    stop_event = threading.Event()
+    ui_thread = None
     try:
         category_to_move = config['SETTINGS']['category_to_move']
         eligible_torrents = get_eligible_torrents(mandarin_qbit, category_to_move)
@@ -696,12 +757,11 @@ def main():
         overall_task = overall_progress.add_task("Total progress", total=0)
 
         job_progress = Progress(
-            TextColumn("  [bold cyan]{task.description}", justify="left"),
+            TextColumn("  {task.description}", justify="left", min_width=80),
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            FileSizeColumn(),
+            TotalFileSizeColumn(),
             TransferSpeedColumn(),
-            TimeElapsedColumn(),
             TimeRemainingColumn(),
         )
 
@@ -734,10 +794,19 @@ def main():
             transport.close()
             live.console.log(f"Total size to transfer: [bold yellow]{grand_total_size/1024/1024/1024:.2f} GB[/]")
 
+            parent_to_children_map = defaultdict(list)
+            map_lock = threading.Lock()
+
+            ui_thread = threading.Thread(
+                target=_ui_updater,
+                args=(job_progress, parent_to_children_map, map_lock, stop_event),
+                daemon=True
+            )
+            ui_thread.start()
 
             with ThreadPoolExecutor(max_workers=args.parallel_jobs) as executor:
                 future_to_torrent = {
-                    executor.submit(process_torrent, torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task, args.dry_run, args.test_run): torrent
+                    executor.submit(process_torrent, torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task, parent_to_children_map, map_lock, args.dry_run, args.test_run): torrent
                     for torrent in eligible_torrents
                 }
 
@@ -754,14 +823,17 @@ def main():
         logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
 
     except KeyboardInterrupt:
-        logging.info("\n[bold yellow]Process interrupted by user. Shutting down gracefully...[/bold yellow]")
-        sys.exit(0)
+        logging.info("\n[yellow]Process interrupted by user. Shutting down...[/yellow]")
     except KeyError as e:
         logging.error(f"Configuration key missing: {e}. Please check your config.ini.")
         return 1
     except Exception as e:
         logging.error(f"An unexpected error occurred in main: {e}", exc_info=True)
         return 1
+    finally:
+        stop_event.set()
+        if ui_thread is not None:
+            ui_thread.join()
 
     logging.info("--- Torrent Mover script finished ---")
     return 0
