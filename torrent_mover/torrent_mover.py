@@ -700,8 +700,6 @@ def main():
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             FileSizeColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn(),
             TimeElapsedColumn(),
         )
 
