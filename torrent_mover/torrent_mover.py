@@ -172,12 +172,8 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
         if not sftp:
             raise Exception(f"Failed to establish SFTP connection for thread downloading {file_name}")
 
-        try:
-            remote_stat = sftp.stat(remote_file)
-            total_size = remote_stat.st_size
-        except FileNotFoundError:
-            logging.error(f"Remote file not found: {remote_file}")
-            raise
+        remote_stat = sftp.stat(remote_file)
+        total_size = remote_stat.st_size
 
         if total_size == 0:
             logging.warning(f"Skipping zero-byte file: {file_name}")
@@ -187,6 +183,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
             local_size = local_path.stat().st_size
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
+                # Still need to advance the progress bars
                 job_progress.update(parent_task_id, advance=total_size)
                 overall_progress.update(overall_task_id, advance=total_size)
                 return
@@ -220,37 +217,28 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
         if transport:
             transport.close()
 
-
 def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
     """
     Transfers a remote file or directory to a local path, preserving structure.
-    This version handles directories by downloading their files concurrently.
+    Handles directories by downloading their files concurrently.
     """
-    try:
-        remote_stat = sftp.stat(remote_path)
-        if remote_stat.st_mode & 0o40000:  # S_ISDIR
-            logging.info(f"Directory detected. Finding all files for concurrent download...")
-            all_files = []
-            _get_all_files_recursive(sftp, remote_path, local_path, all_files)
+    remote_stat = sftp.stat(remote_path)
+    if remote_stat.st_mode & 0o40000:  # S_ISDIR
+        logging.info(f"Directory detected. Finding all files for concurrent download...")
+        all_files = []
+        _get_all_files_recursive(sftp, remote_path, local_path, all_files)
 
-            MAX_CONCURRENT_FILES = 5
-            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FILES) as file_executor:
-                futures = [
-                    file_executor.submit(_sftp_download_file, sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
-                    for remote_file, local_file in all_files
-                ]
-                for future in as_completed(futures):
-                    future.result()
+        MAX_CONCURRENT_FILES = 5
+        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FILES) as file_executor:
+            futures = [
+                file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+                for remote_f, local_f in all_files
+            ]
+            for future in as_completed(futures):
+                future.result()
 
-        else: # It's a single file
-            # For a single file, we don't need to create a new SFTP session.
-            # We can use the one from the parent `process_torrent` thread.
-            # So, we call a modified _sftp_download_file that accepts an sftp client.
-            # Let's just call the main one and let it create a session for simplicity and consistency.
-            _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
-    except FileNotFoundError:
-        logging.error(f"Remote path not found during SFTP transfer: {remote_path}")
-        raise
+    else: # It's a single file
+        _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
 
 # --- Torrent Processing Logic ---
 
@@ -416,7 +404,7 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
         if total_size == 0:
             logging.warning(f"Skipping torrent with no content or zero size: {name}")
             job_progress.update(parent_task_id, description=f"[yellow]Skipped (zero size): {name}[/]")
-            return True # Return True to mark as "processed" in the main loop
+            return True
 
         job_progress.update(parent_task_id, total=total_size, start=True)
 
