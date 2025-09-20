@@ -700,7 +700,9 @@ def main():
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             FileSizeColumn(),
+            TransferSpeedColumn(),
             TimeElapsedColumn(),
+            TimeRemainingColumn(),
         )
 
         layout = Group(
@@ -751,6 +753,9 @@ def main():
 
         logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
 
+    except KeyboardInterrupt:
+        logging.info("\n[bold yellow]Process interrupted by user. Shutting down gracefully...[/bold yellow]")
+        sys.exit(0)
     except KeyError as e:
         logging.error(f"Configuration key missing: {e}. Please check your config.ini.")
         return 1
