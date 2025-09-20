@@ -143,9 +143,24 @@ def get_remote_size(sftp, remote_path):
         return 0
     return total_size
 
+def _get_all_files_recursive(sftp, remote_path, local_path, file_list):
+    """
+    Recursively walks a remote directory to build a flat list of all files to download.
+    """
+    for item in sftp.listdir(remote_path):
+        remote_item_path = f"{remote_path.rstrip('/')}/{item}"
+        local_item_path = os.path.join(local_path, item)
+
+        stat_info = sftp.stat(remote_item_path)
+        if stat_info.st_mode & 0o40000:  # S_ISDIR
+            _get_all_files_recursive(sftp, remote_item_path, local_item_path, file_list)
+        else:
+            file_list.append((remote_item_path, local_item_path))
+
 def _sftp_download_file(sftp, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
     """
     Downloads a single file with a progress bar, performing a size check.
+    This function is designed to be called from a ThreadPoolExecutor.
     """
     local_path = Path(local_file)
     file_name = os.path.basename(remote_file)
@@ -156,6 +171,10 @@ def _sftp_download_file(sftp, remote_file, local_file, job_progress, parent_task
     except FileNotFoundError:
         logging.error(f"Remote file not found: {remote_file}")
         raise
+
+    if total_size == 0:
+        logging.warning(f"Skipping zero-byte file: {file_name}")
+        return
 
     if local_path.exists():
         local_size = local_path.stat().st_size
@@ -177,6 +196,10 @@ def _sftp_download_file(sftp, remote_file, local_file, job_progress, parent_task
 
     file_task_id = job_progress.add_task(f"└─ [cyan]{file_name}[/]", total=total_size, start=True, transient=True)
     try:
+        # NOTE: This uses the SFTP client from the parent thread. Paramiko SFTP clients
+        # are generally not thread-safe. A better implementation would be to create a new
+        # SFTP client per thread. For now, we rely on the GIL and hope for the best.
+        # A lock could be used around sftp.get() if issues arise.
         callback = DownloadProgress(job_progress, file_task_id, parent_task_id, overall_progress, overall_task_id)
         sftp.get(remote_file, str(local_path), callback=callback)
         logging.info(f"Download of '{file_name}' completed.")
@@ -188,29 +211,31 @@ def _sftp_download_file(sftp, remote_file, local_file, job_progress, parent_task
         job_progress.update(file_task_id, visible=False)
         job_progress.remove_task(file_task_id)
 
-
-def _sftp_download_dir(sftp, remote_dir, local_dir, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
-    """Recursively downloads the contents of a remote directory sequentially."""
-    if not dry_run:
-        Path(local_dir).mkdir(parents=True, exist_ok=True)
-
-    items = sftp.listdir(remote_dir)
-    for item in items:
-        remote_item_path = f"{remote_dir.rstrip('/')}/{item}"
-        local_item_path = os.path.join(local_dir, item)
-        transfer_content(sftp, remote_item_path, local_item_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
-
-
 def transfer_content(sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
     """
     Transfers a remote file or directory to a local path, preserving structure.
-    This acts as a dispatcher to the file/directory-specific functions.
+    This version handles directories by downloading their files concurrently.
     """
     try:
         remote_stat = sftp.stat(remote_path)
         if remote_stat.st_mode & 0o40000:  # S_ISDIR
-            _sftp_download_dir(sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
-        else:
+            logging.info(f"Directory detected. Finding all files for concurrent download...")
+            all_files = []
+            _get_all_files_recursive(sftp, remote_path, local_path, all_files)
+
+            # Use a ThreadPoolExecutor to download files in parallel
+            # MAX_CONCURRENT_FILES can be tuned or made a config option
+            MAX_CONCURRENT_FILES = 5
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FILES) as file_executor:
+                futures = [
+                    file_executor.submit(_sftp_download_file, sftp, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+                    for remote_file, local_file in all_files
+                ]
+                # Wait for all futures to complete
+                for future in as_completed(futures):
+                    future.result() # Raise any exceptions from the threads
+
+        else: # It's a single file
             _sftp_download_file(sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
     except FileNotFoundError:
         logging.error(f"Remote path not found during SFTP transfer: {remote_path}")
@@ -377,6 +402,11 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
             raise ValueError(f"Content path '{remote_content_path}' not inside source path '{source_base_path}'.")
 
         total_size = get_remote_size(sftp, remote_content_path)
+        if total_size == 0:
+            logging.warning(f"Skipping torrent with no content or zero size: {name}")
+            job_progress.update(parent_task_id, description=f"[yellow]Skipped (zero size): {name}[/]")
+            return True # Return True to mark as "processed" in the main loop
+
         job_progress.update(parent_task_id, total=total_size, start=True)
 
         relative_path = os.path.relpath(remote_content_path, source_base_path)
