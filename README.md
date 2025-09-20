@@ -134,20 +134,37 @@ The script supports several command-line arguments to customize its behavior:
 
 ### Enabling Bash Auto-Completion (Optional)
 
-To make using the command-line arguments easier, you can enable bash auto-completion. This will allow you to press the `Tab` key to auto-complete arguments and their values.
+To make using the command-line arguments easier, you can enable bash auto-completion. This will allow you to press the `Tab` key to auto-complete arguments like `--interactive-categorize`.
 
-1.  **Ensure you have installed the dependencies from `requirements.txt`**, as this includes the `argcomplete` library.
+The setup requires three steps: ensuring the script is executable, telling `argcomplete` where to find the script, and adding this to your shell's startup file.
 
-2.  **Run the global registration command:**
+1.  **Make the script executable:**
+    Navigate to the `torrent_mover` directory and run the following command:
     ```bash
-    eval "$(register-python-argcomplete torrent_mover.py)"
+    chmod +x torrent_mover.py
     ```
 
-3.  **To make the change permanent**, add the command to your shell's startup file (e.g., `~/.bashrc` or `~/.zshrc`):
+2.  **Find the absolute path to the script:**
+    While still in the `torrent_mover` directory, run the `pwd` command to get the full path to your script.
     ```bash
-    echo 'eval "$(register-python-argcomplete torrent_mover.py)"' >> ~/.bashrc
+    # This will print the full path, e.g., /home/user/project/torrent_mover
+    pwd
     ```
-    You will need to restart your shell or run `source ~/.bashrc` for the changes to take effect.
+    The absolute path to your script will be the output of that command plus `/torrent_mover.py`. For example: `/home/user/project/torrent_mover/torrent_mover.py`.
+
+3.  **Add the registration command to your `.bashrc`:**
+    Add the following line to the end of your `~/.bashrc` file. **Remember to replace `/path/to/your/script/torrent_mover.py` with the actual absolute path you found in the previous step.**
+    ```bash
+    # Add this to ~/.bashrc, replacing the path with your own
+    eval "$(register-python-argcomplete /path/to/your/script/torrent_mover.py)"
+    ```
+
+4.  **Reload your shell:**
+    For the changes to take effect, either restart your shell or run:
+    ```bash
+    source ~/.bashrc
+    ```
+    Auto-completion for the script's arguments should now be active.
 
 ### Managing Tracker Categorization Rules
 
