@@ -105,6 +105,12 @@ from rich.logging import RichHandler
 
 # --- SFTP Transfer Logic with Progress Bar ---
 
+class CustomProgress(Progress):
+    """A custom Progress class that adds a method to get a live task."""
+    def get_task(self, task_id):
+        """Gets a live task object by its ID."""
+        return self._tasks[task_id]
+
 class DownloadProgress:
     """
     A thread-safe progress bar callback for Paramiko's SFTP get method.
@@ -525,34 +531,36 @@ def _ui_updater(job_progress, parent_to_children_map, map_lock, stop_event):
     while not stop_event.is_set():
         with map_lock:
             for parent_id, children_ids in list(parent_to_children_map.items()):
-                if parent_id not in job_progress.tasks:
+                try:
+                    if parent_id not in original_names:
+                        # Get the parent task to store its original name
+                        original_names[parent_id] = job_progress.get_task(parent_id).description
+
+                    # Get live task objects using the new method
+                    child_tasks = [job_progress.get_task(child_id) for child_id in children_ids]
+
+                    total_completed = sum(task.completed for task in child_tasks)
+                    total_speed = sum(task.speed for task in child_tasks if task.speed is not None)
+
+                    parent_task = job_progress.get_task(parent_id)
+                    job_progress.update(parent_id, completed=total_completed)
+
+                    time_remaining_str = ""
+                    if total_speed > 0:
+                        remaining_bytes = parent_task.total - total_completed
+                        time_rem = remaining_bytes / total_speed if remaining_bytes > 0 else 0
+                        time_remaining_str = format_time(time_rem)
+                    else:
+                        time_remaining_str = "-:--:--"
+
+                    speed_str = format_speed(total_speed)
+
+                    name = original_names.get(parent_id, "")
+                    new_description = f"[bold cyan]{name}[/]\n  └─ Aggregated: [yellow]{speed_str}[/] | [magenta]{time_remaining_str}[/]"
+                    job_progress.update(parent_id, description=new_description)
+                except KeyError:
+                    # A task was likely removed, which is fine.
                     continue
-
-                if parent_id not in original_names:
-                    original_names[parent_id] = job_progress.tasks[parent_id].description
-
-                child_tasks = [job_progress.tasks[child_id] for child_id in children_ids if child_id in job_progress.tasks]
-
-                total_completed = sum(task.completed for task in child_tasks)
-                total_speed = sum(task.speed for task in child_tasks if task.speed is not None)
-
-                parent_task = job_progress.tasks[parent_id]
-                job_progress.update(parent_id, completed=total_completed)
-
-                time_remaining_str = ""
-                if total_speed > 0:
-                    remaining_bytes = parent_task.total - total_completed
-                    time_rem = remaining_bytes / total_speed if remaining_bytes > 0 else 0
-                    time_remaining_str = format_time(time_rem)
-                else:
-                    time_remaining_str = "-:--:--"
-
-                speed_str = format_speed(total_speed)
-
-                name = original_names.get(parent_id, "")
-                new_description = f"[bold cyan]{name}[/]\n  └─ Aggregated: [yellow]{speed_str}[/] | [magenta]{time_remaining_str}[/]"
-                job_progress.update(parent_id, description=new_description)
-
         time.sleep(0.5)
 
 def run_interactive_categorization(client, rules, script_dir, category_to_scan):
@@ -756,7 +764,7 @@ def main():
         )
         overall_task = overall_progress.add_task("Total progress", total=0)
 
-        job_progress = Progress(
+        job_progress = CustomProgress(
             TextColumn("  {task.description}", justify="left"),
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
