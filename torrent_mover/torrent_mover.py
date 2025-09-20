@@ -143,7 +143,7 @@ class FixedWidthTotalFileSizeColumn(TotalFileSizeColumn):
 
     def render(self, task: "Task") -> Text:
         """Renders the file size, right-aligned within the specified width."""
-        text = super().render(task).text
+        text = super().render(task).plain
         return Text(text.rjust(self.width))
 
 class FixedWidthTransferSpeedColumn(TransferSpeedColumn):
@@ -154,7 +154,7 @@ class FixedWidthTransferSpeedColumn(TransferSpeedColumn):
 
     def render(self, task: "Task") -> Text:
         """Renders the transfer speed, right-aligned within the specified width."""
-        text = super().render(task).text
+        text = super().render(task).plain
         return Text(text.rjust(self.width))
 
 class FixedWidthPercentageColumn(TextColumn):
