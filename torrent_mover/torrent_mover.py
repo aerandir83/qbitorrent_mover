@@ -157,6 +157,17 @@ class FixedWidthTransferSpeedColumn(TransferSpeedColumn):
         text = super().render(task).text
         return Text(text.rjust(self.width))
 
+class FixedWidthPercentageColumn(TextColumn):
+    """A column for displaying percentage, with fixed width."""
+    def __init__(self, text_format="[progress.percentage]{task.percentage:>3.0f}%", width=5, *args, **kwargs):
+        super().__init__(text_format, *args, **kwargs)
+        self.width = width
+
+    def render(self, task: "Task") -> Text:
+        """Renders the percentage, right-aligned within the specified width."""
+        text_obj = super().render(task)
+        return Text(text_obj.plain.rjust(self.width))
+
 # --- SFTP Transfer Logic with Progress Bar ---
 
 class DownloadProgress:
@@ -667,7 +678,7 @@ def main():
         job_progress = Progress(
             TextColumn("  {task.description}", justify="left"),
             BarColumn(bar_width=30),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%", width=5),
+            FixedWidthPercentageColumn(),
             FixedWidthTotalFileSizeColumn(),
             FixedWidthTransferSpeedColumn(),
             ConditionalTimeElapsedColumn(file_counts),
