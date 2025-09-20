@@ -13,6 +13,8 @@ import paramiko
 import json
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from collections import defaultdict
 
 def load_config(config_path="config.ini"):
     """
@@ -99,7 +101,33 @@ from rich.progress import (
 )
 from rich.live import Live
 from rich.logging import RichHandler
+from rich.text import Text
 
+# --- Custom Columns ---
+
+class FileCountColumn(TextColumn):
+    """A column to display the number of completed files vs total files for parent tasks."""
+    def __init__(self, file_counts, *args, **kwargs):
+        super().__init__("", *args, **kwargs)
+        self.file_counts = file_counts
+
+    def render(self, task: "Task") -> Text:
+        if task.id in self.file_counts:
+            completed, total = self.file_counts[task.id]
+            return Text(f"{completed}/{total}", style="progress.percentage")
+        return Text("")
+
+class ConditionalTimeElapsedColumn(TimeElapsedColumn):
+    """A column that displays the elapsed time only for child tasks."""
+    def __init__(self, file_counts, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.file_counts = file_counts
+
+    def render(self, task: "Task") -> Text:
+        # If it's a parent task, don't render anything
+        if task.id in self.file_counts:
+            return Text("")
+        return super().render(task)
 
 # --- SFTP Transfer Logic with Progress Bar ---
 
@@ -157,7 +185,7 @@ def _get_all_files_recursive(sftp, remote_path, local_path, file_list):
         else:
             file_list.append((remote_item_path, local_item_path))
 
-def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
+def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, dry_run=False):
     """
     Downloads a single file with a progress bar. Establishes its own SFTP session
     to ensure thread safety when called from a ThreadPoolExecutor.
@@ -177,15 +205,18 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
 
         if total_size == 0:
             logging.warning(f"Skipping zero-byte file: {file_name}")
+            with count_lock:
+                file_counts[parent_task_id][0] += 1
             return
 
         if local_path.exists():
             local_size = local_path.stat().st_size
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
-                # Still need to advance the progress bars
                 job_progress.update(parent_task_id, advance=total_size)
                 overall_progress.update(overall_task_id, advance=total_size)
+                with count_lock:
+                    file_counts[parent_task_id][0] += 1
                 return
             else:
                 logging.warning(f"Overwriting (size mismatch r:{total_size}/l:{local_size}): {file_name}")
@@ -194,6 +225,8 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
             logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
             job_progress.update(parent_task_id, advance=total_size)
             overall_progress.update(overall_task_id, advance=total_size)
+            with count_lock:
+                file_counts[parent_task_id][0] += 1
             return
 
         local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,6 +241,8 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
             job_progress.update(file_task_id, description=f"[bold red]Failed: {file_name}[/]")
             raise
         finally:
+            with count_lock:
+                file_counts[parent_task_id][0] += 1
             job_progress.update(file_task_id, visible=False)
             job_progress.remove_task(file_task_id)
 
@@ -217,7 +252,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
         if transport:
             transport.close()
 
-def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
+def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, dry_run=False):
     """
     Transfers a remote file or directory to a local path, preserving structure.
     Handles directories by downloading their files concurrently.
@@ -228,22 +263,26 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, p
         all_files = []
         _get_all_files_recursive(sftp, remote_path, local_path, all_files)
 
+        with count_lock:
+            file_counts[parent_task_id] = [0, len(all_files)]
+
         MAX_CONCURRENT_FILES = 5
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FILES) as file_executor:
             futures = [
-                file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+                file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, dry_run)
                 for remote_f, local_f in all_files
             ]
             for future in as_completed(futures):
                 future.result()
 
     else: # It's a single file
-        _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+        with count_lock:
+            file_counts[parent_task_id] = [0, 1]
+        _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, dry_run)
 
 # --- Torrent Processing Logic ---
 
 def get_eligible_torrents(client, category):
-    """Gets a list of completed torrents from the client that match the specified category."""
     try:
         torrents = client.torrents_info(category=category, status_filter='completed')
         logging.info(f"Found {len(torrents)} completed torrent(s) in category '{category}'.")
@@ -253,11 +292,9 @@ def get_eligible_torrents(client, category):
         return []
 
 def wait_for_recheck_completion(client, torrent_hash, timeout_seconds=900, dry_run=False):
-    """Waits for a torrent to complete its recheck. Returns True on success."""
     if dry_run:
         logging.info(f"[DRY RUN] Would wait for recheck on {torrent_hash[:10]}. Assuming success.")
         return True
-
     start_time = time.time()
     logging.info(f"Waiting for recheck to complete for torrent {torrent_hash[:10]}...")
     while time.time() - start_time < timeout_seconds:
@@ -280,10 +317,6 @@ def wait_for_recheck_completion(client, torrent_hash, timeout_seconds=900, dry_r
 # --- Tracker-based Categorization ---
 
 def load_tracker_rules(script_dir, rules_filename="tracker_rules.json"):
-    """
-    Loads tracker-to-category rules from the specified JSON file.
-    Returns an empty dictionary if the file doesn't exist or is invalid.
-    """
     rules_file = script_dir / rules_filename
     if not rules_file.is_file():
         logging.warning(f"Tracker rules file not found at '{rules_file}'. Starting with empty ruleset.")
@@ -298,7 +331,6 @@ def load_tracker_rules(script_dir, rules_filename="tracker_rules.json"):
         return {}
 
 def save_tracker_rules(rules, script_dir, rules_filename="tracker_rules.json"):
-    """Saves the tracker rules dictionary to the specified JSON file."""
     rules_file = script_dir / rules_filename
     try:
         with open(rules_file, 'w') as f:
@@ -310,13 +342,10 @@ def save_tracker_rules(rules, script_dir, rules_filename="tracker_rules.json"):
         return False
 
 def get_tracker_domain(tracker_url):
-    """Extracts the network location (domain) from a tracker URL."""
     try:
         netloc = urlparse(tracker_url).netloc
-        # Simple subdomain stripping for better matching
         parts = netloc.split('.')
         if len(parts) > 2:
-            # e.g., tracker.site.com -> site.com, announce.site.org -> site.org
             if parts[0] in ['tracker', 'announce', 'www']:
                 return '.'.join(parts[1:])
         return netloc
@@ -324,10 +353,6 @@ def get_tracker_domain(tracker_url):
         return None
 
 def get_category_from_rules(torrent, rules, client):
-    """
-    Checks a torrent's trackers against the rules to find a matching category.
-    Returns the category name or None if no rule matches.
-    """
     try:
         trackers = client.torrents_trackers(torrent_hash=torrent.hash)
         for tracker in trackers:
@@ -339,27 +364,20 @@ def get_category_from_rules(torrent, rules, client):
     return None
 
 def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=False):
-    """
-    Sets a torrent's category based on its trackers and the predefined rules.
-    """
     try:
         torrent_info = client.torrents_info(torrent_hashes=torrent_hash)
         if not torrent_info:
             logging.warning(f"Could not find torrent {torrent_hash[:10]} on destination to categorize.")
             return
-
         torrent = torrent_info[0]
         category = get_category_from_rules(torrent, tracker_rules, client)
-
         if category:
             if category == "ignore":
                 logging.info(f"Rule is to ignore torrent '{torrent.name}'. Doing nothing.")
                 return
-
             if torrent.category == category:
                 logging.info(f"Torrent '{torrent.name}' is already in the correct category '{category}'.")
                 return
-
             logging.info(f"Rule found. Setting category to '{category}' for '{torrent.name}'.")
             if not dry_run:
                 client.torrents_set_category(torrent_hashes=torrent.hash, category=category)
@@ -367,63 +385,48 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
                 logging.info(f"[DRY RUN] Would set category of '{torrent.name}' to '{category}'.")
         else:
             logging.info(f"No matching tracker rule found for torrent '{torrent.name}'.")
-
     except qbittorrentapi.exceptions.NotFound404Error:
         logging.warning(f"Torrent {torrent_hash[:10]} not found on destination when trying to categorize.")
     except Exception as e:
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, dry_run=False, test_run=False):
+def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, dry_run=False, test_run=False):
     """
     Executes the full transfer and management process for a single torrent.
     Establishes its own SFTP connection to be thread-safe.
     """
     name, hash = torrent.name, torrent.hash
-
     sftp = None
     transport = None
     source_paused = False
-
     parent_task_id = job_progress.add_task(f"{name}", total=1, start=False, visible=True)
-
     try:
         sftp, transport = connect_sftp(sftp_config)
         if not sftp:
             raise Exception("Failed to establish SFTP connection for this thread.")
-
         source_base_path = config['MANDARIN_SFTP']['source_path']
         dest_base_path = config['UNRAID_PATHS']['destination_path']
         remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
-
         remote_content_path = torrent.content_path
         if not remote_content_path.startswith(source_base_path):
             raise ValueError(f"Content path '{remote_content_path}' not inside source path '{source_base_path}'.")
-
         total_size = get_remote_size(sftp, remote_content_path)
         if total_size == 0:
             logging.warning(f"Skipping torrent with no content or zero size: {name}")
             job_progress.update(parent_task_id, description=f"[yellow]Skipped (zero size): {name}[/]")
             return True
-
         job_progress.update(parent_task_id, total=total_size, start=True)
-
         relative_path = os.path.relpath(remote_content_path, source_base_path)
         local_dest_path = os.path.join(dest_base_path, relative_path)
-
         logging.info(f"Starting SFTP transfer for '{name}'")
-        transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+        transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, dry_run)
         logging.info(f"SFTP transfer completed successfully for '{name}'.")
-
-        # 2. Add to Unraid, paused
         unraid_save_path = os.path.join(remote_dest_base_path, os.path.dirname(relative_path))
-        unraid_save_path = unraid_save_path.replace("\\", "/") # Ensure forward slashes for cross-platform compatibility
-
+        unraid_save_path = unraid_save_path.replace("\\", "/")
         if not dry_run:
-            # Export the .torrent file from the source client
             logging.info(f"Exporting .torrent file for {name}")
             torrent_file_content = mandarin_qbit.torrents_export(torrent_hash=hash)
-
             logging.info(f"Adding torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
             unraid_qbit.torrents_add(
                 torrent_files=torrent_file_content,
@@ -434,36 +437,25 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
             time.sleep(5)
         else:
             logging.info(f"[DRY RUN] Would export and add torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
-
-        # 3. Force recheck on Unraid
         if not dry_run:
             logging.info(f"Triggering force recheck on Unraid for: {name}")
             unraid_qbit.torrents_recheck(torrent_hashes=hash)
         else:
             logging.info(f"[DRY RUN] Would trigger force recheck on Unraid for: {name}")
-
-        # 4. Wait for recheck and then start
         if wait_for_recheck_completion(unraid_qbit, hash, dry_run=dry_run):
-            # 5. Start destination torrent
             if not dry_run:
                 logging.info(f"Starting torrent on Unraid: {name}")
                 unraid_qbit.torrents_resume(torrent_hashes=hash)
             else:
                 logging.info(f"[DRY RUN] Would start torrent on Unraid: {name}")
-
-            # 6. Set category based on tracker rules
             logging.info(f"Attempting to categorize torrent on Unraid: {name}")
             set_category_based_on_tracker(unraid_qbit, hash, tracker_rules, dry_run=dry_run)
-
-            # 7. Pause source torrent on Mandarin before deletion
             if not dry_run and not test_run:
                 logging.info(f"Pausing torrent on Mandarin before deletion: {name}")
                 mandarin_qbit.torrents_pause(torrent_hashes=hash)
                 source_paused = True
             else:
                 logging.info(f"[DRY RUN/TEST RUN] Would pause torrent on Mandarin: {name}")
-
-            # 8. Delete from Mandarin
             if test_run:
                 logging.info(f"[TEST RUN] Skipping deletion of torrent from Mandarin: {name}")
             elif not dry_run:
@@ -471,7 +463,6 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
                 mandarin_qbit.torrents_delete(torrent_hashes=hash, delete_files=True)
             else:
                 logging.info(f"[DRY RUN] Would delete torrent and data from Mandarin: {name}")
-
             logging.info(f"--- Successfully processed torrent: {name} ---")
             return True
         else:
@@ -496,23 +487,16 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
 # --- Main Execution ---
 
 def run_interactive_categorization(client, rules, script_dir, category_to_scan):
-    """
-    Interactively prompts the user to categorize torrents that do not match any existing rules.
-    """
     logging.info("Starting interactive categorization...")
     try:
         torrents_to_check = client.torrents_info(category=category_to_scan, sort='name')
         available_categories = sorted(list(client.torrent_categories.categories.keys()))
-
         if not available_categories:
             logging.error("No categories found on the destination client. Cannot perform categorization.")
             return
-
         updated_rules = rules.copy()
         rules_changed = False
-
         for torrent in torrents_to_check:
-            # Check if the torrent already has a category based on existing rules
             auto_category = get_category_from_rules(torrent, updated_rules, client)
             if auto_category:
                 if auto_category == "ignore":
@@ -524,33 +508,27 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan):
                     except Exception as e:
                         logging.error(f"Failed to set category for '{torrent.name}': {e}", exc_info=True)
                         print(f"    ERROR: Could not set category for '{torrent.name}'. See log for details.")
-                continue # Move to the next torrent
-
-            # --- If no rule is found, start the interactive prompt ---
+                continue
             print("-" * 60)
             print(f"Torrent needs categorization: {torrent.name}")
             print(f"   Current Category: {torrent.category or 'None'}")
-
             trackers = client.torrents_trackers(torrent_hash=torrent.hash)
             torrent_domains = sorted(list(set(d for d in [get_tracker_domain(t.get('url')) for t in trackers] if d)))
             print(f"   Tracker Domains: {', '.join(torrent_domains) if torrent_domains else 'None found'}")
-
             print("\nPlease choose an action:")
             for i, cat in enumerate(available_categories):
                 print(f"  {i+1}: Set category to '{cat}'")
             print("\n  s: Skip this torrent (no changes)")
             print("  i: Ignore this torrent's trackers permanently")
             print("  q: Quit interactive session")
-
-            while True: # Loop for user input
+            while True:
                 choice = input("Enter your choice: ").lower()
                 if choice == 'q':
                     if rules_changed:
                         save_tracker_rules(updated_rules, script_dir)
                     return
                 if choice == 's':
-                    break # Skips to the next torrent
-
+                    break
                 if choice == 'i':
                     if not torrent_domains:
                         print("No domains to ignore. Skipping.")
@@ -561,15 +539,12 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan):
                             updated_rules[domain] = "ignore"
                             rules_changed = True
                     break
-
                 try:
                     choice_idx = int(choice) - 1
                     if 0 <= choice_idx < len(available_categories):
                         chosen_category = available_categories[choice_idx]
                         print(f"Setting category to '{chosen_category}'.")
                         client.torrents_set_category(torrent_hashes=torrent.hash, category=chosen_category)
-
-                        # Ask to create a rule
                         if torrent_domains:
                             while True:
                                 learn = input("Create a rule for this choice? (y/n): ").lower()
@@ -599,18 +574,15 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan):
                                             print("Invalid input.")
                                 elif learn in ['n', 'no']:
                                     break
-                        break # Exit input loop
+                        break
                     else:
                         print("Invalid number. Please try again.")
                 except ValueError:
                     print("Invalid input. Please enter a number or a valid command (s, i, q).")
-
         if rules_changed:
             save_tracker_rules(updated_rules, script_dir)
-
         print("-" * 60)
         logging.info("Interactive categorization session finished.")
-
     except Exception as e:
         logging.error(f"An error occurred during interactive categorization: {e}", exc_info=True)
 
@@ -618,11 +590,7 @@ def main():
     """Main entry point for the script."""
     script_dir = Path(__file__).resolve().parent
     default_config_path = script_dir / 'config.ini'
-
-    parser = argparse.ArgumentParser(
-        description="A script to move qBittorrent torrents and data between servers.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+    parser = argparse.ArgumentParser(description="A script to move qBittorrent torrents and data between servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--config', default=str(default_config_path), help='Path to the configuration file.')
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
@@ -632,83 +600,56 @@ def main():
     parser.add_argument('--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
     parser.add_argument('--delete-rule', metavar='TRACKER_DOMAIN', help='Delete a rule and exit.')
     parser.add_argument('--interactive-categorize', action='store_true', help='Interactively categorize torrents on destination without a rule.')
-
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
-
     logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[RichHandler(show_path=False, rich_tracebacks=True, markup=True)])
-
     tracker_rules = load_tracker_rules(script_dir)
-
-    # --- Handle Rule Management (no Rich UI needed) ---
     if args.list_rules or args.add_rule or args.delete_rule:
-        # ... (rule management logic remains the same)
         return 0
-
-    # --- Handle Interactive Mode (uses its own print/input) ---
     if args.interactive_categorize:
-        # ... (interactive logic remains the same)
         return 0
-
     logging.info("--- Torrent Mover script started ---")
     if args.dry_run:
         logging.warning("!!! DRY RUN MODE ENABLED. NO CHANGES WILL BE MADE. !!!")
     if args.test_run:
         logging.warning("!!! TEST RUN MODE ENABLED. SOURCE TORRENTS WILL NOT BE DELETED. !!!")
-
     config = load_config(args.config)
     mandarin_qbit = connect_qbit(config['MANDARIN_QBIT'], "Mandarin")
     unraid_qbit = connect_qbit(config['UNRAID_QBIT'], "Unraid")
-
     if not all([mandarin_qbit, unraid_qbit]):
         logging.error("One or more qBittorrent connections failed. Aborting.")
         return 1
-
     logging.info("qBittorrent connections established successfully.")
-
     try:
         category_to_move = config['SETTINGS']['category_to_move']
         eligible_torrents = get_eligible_torrents(mandarin_qbit, category_to_move)
-
         if not eligible_torrents:
             logging.info("No torrents to move at this time.")
             return 0
-
         total_count = len(eligible_torrents)
         processed_count = 0
-
-        # --- Rich UI Layout ---
-        torrent_progress = Progress(
-            TextColumn("[bold blue]Torrents"),
-            BarColumn(),
-            MofNCompleteColumn(),
-        )
+        torrent_progress = Progress(TextColumn("[bold blue]Torrents"), BarColumn(), MofNCompleteColumn())
         torrent_task = torrent_progress.add_task("Processing torrents", total=total_count)
+        overall_progress = Progress(TextColumn("[bold green]Overall"), BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), TotalFileSizeColumn(), TransferSpeedColumn(), TimeRemainingColumn())
+        overall_task = overall_progress.add_task("Total progress", total=0)
 
-        overall_progress = Progress(
-            TextColumn("[bold green]Overall"),
+        file_counts = defaultdict(lambda: [0, 0])
+        count_lock = threading.Lock()
+
+        job_progress = Progress(
+            TextColumn("  {task.description}", justify="left"),
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TotalFileSizeColumn(),
             TransferSpeedColumn(),
-            TimeRemainingColumn(),
+            ConditionalTimeElapsedColumn(file_counts),
+            FileCountColumn(file_counts)
         )
-        overall_task = overall_progress.add_task("Total progress", total=0)
-
-        job_progress = Progress(
-            TextColumn("  [bold cyan]{task.description}", justify="left"),
-            BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            FileSizeColumn(),
-            TimeElapsedColumn(),
-        )
-
         layout = Group(
             Panel(torrent_progress, title="Torrent Queue", border_style="blue"),
             Panel(overall_progress, title="Total Progress", border_style="green"),
             Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2))
         )
-
         with Live(layout, refresh_per_second=10) as live:
             sftp_config = config['MANDARIN_SFTP']
             live.console.log("Calculating total size of all eligible torrents...")
@@ -716,7 +657,6 @@ def main():
             if not sftp:
                 live.console.log("[bold red]Failed to establish a preliminary SFTP connection. Aborting.[/]")
                 return 1
-
             grand_total_size = 0
             source_base_path = sftp_config['source_path']
             for torrent in eligible_torrents:
@@ -725,20 +665,16 @@ def main():
                     live.console.log(f"[yellow]Warning: Skipping size calculation for torrent with invalid path: {torrent.name}[/]")
                     continue
                 grand_total_size += get_remote_size(sftp, remote_content_path)
-
             overall_progress.update(overall_task, total=grand_total_size, description="[bold green]Overall")
-
             sftp.close()
             transport.close()
             live.console.log(f"Total size to transfer: [bold yellow]{grand_total_size/1024/1024/1024:.2f} GB[/]")
-
-
-            with ThreadPoolExecutor(max_workers=args.parallel_jobs) as executor:
+            executor = ThreadPoolExecutor(max_workers=args.parallel_jobs)
+            try:
                 future_to_torrent = {
-                    executor.submit(process_torrent, torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task, args.dry_run, args.test_run): torrent
+                    executor.submit(process_torrent, torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task, file_counts, count_lock, args.dry_run, args.test_run): torrent
                     for torrent in eligible_torrents
                 }
-
                 for future in as_completed(future_to_torrent):
                     torrent = future_to_torrent[future]
                     try:
@@ -748,16 +684,19 @@ def main():
                         live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]", exc_info=True)
                     finally:
                         torrent_progress.update(torrent_task, advance=1)
-
+            except KeyboardInterrupt:
+                live.console.log("[bold red]\nProcess interrupted by user. Shutting down immediately...[/bold red]")
+                executor.shutdown(wait=False)
+                raise
         logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
-
+    except KeyboardInterrupt:
+        pass
     except KeyError as e:
         logging.error(f"Configuration key missing: {e}. Please check your config.ini.")
         return 1
     except Exception as e:
         logging.error(f"An unexpected error occurred in main: {e}", exc_info=True)
         return 1
-
     logging.info("--- Torrent Mover script finished ---")
     return 0
 
