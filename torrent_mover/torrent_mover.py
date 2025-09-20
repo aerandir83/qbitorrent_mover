@@ -643,8 +643,7 @@ def main():
             TotalFileSizeColumn(),
             TransferSpeedColumn(),
             ConditionalTimeElapsedColumn(file_counts),
-            FileCountColumn(file_counts),
-            header_style="bold magenta"
+            FileCountColumn(file_counts)
         )
         layout = Group(
             Panel(torrent_progress, title="Torrent Queue", border_style="blue"),
