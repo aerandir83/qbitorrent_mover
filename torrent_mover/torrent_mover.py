@@ -102,6 +102,8 @@ from rich.progress import (
 from rich.live import Live
 from rich.logging import RichHandler
 from rich.text import Text
+from rich.table import Table
+from rich.prompt import Prompt
 
 # --- Custom Columns ---
 
@@ -638,17 +640,38 @@ def main():
 
         job_progress = Progress(
             TextColumn("  {task.description}", justify="left"),
-            BarColumn(),
+            BarColumn(bar_width=30),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TotalFileSizeColumn(),
             TransferSpeedColumn(),
             ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts)
         )
+
+        transfer_header = Table.grid(expand=True, padding=(0, 1))
+        transfer_header.add_column("Name", justify="left", ratio=1)
+        transfer_header.add_column("Progress", width=32)
+        transfer_header.add_column(" %", width=5)
+        transfer_header.add_column("Size", width=20, justify="right")
+        transfer_header.add_column("Speed", width=15, justify="right")
+        transfer_header.add_column("Elapsed", width=10, justify="right")
+        transfer_header.add_column("Files", width=10, justify="right")
+        transfer_header.add_row(
+            "[bold yellow]Name[/bold yellow]",
+            "[bold yellow]Progress[/bold yellow]",
+            "[bold yellow]%[/bold yellow]",
+            "[bold yellow]Size[/bold yellow]",
+            "[bold yellow]Speed[/bold yellow]",
+            "[bold yellow]Elapsed[/bold yellow]",
+            "[bold yellow]Files[/bold yellow]",
+        )
+
+        active_transfers_group = Group(transfer_header, job_progress)
+
         layout = Group(
             Panel(torrent_progress, title="Torrent Queue", border_style="blue"),
             Panel(overall_progress, title="Total Progress", border_style="green"),
-            Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2))
+            Panel(active_transfers_group, title="Active Transfers", border_style="yellow", padding=(0, 2))
         )
         with Live(layout, refresh_per_second=10) as live:
             sftp_config = config['MANDARIN_SFTP']
@@ -685,8 +708,27 @@ def main():
                     finally:
                         torrent_progress.update(torrent_task, advance=1)
             except KeyboardInterrupt:
-                live.console.log("[bold red]\nProcess interrupted by user. Shutting down immediately...[/bold red]")
-                executor.shutdown(wait=False)
+                live.stop()
+                live.console.print("\n[bold yellow]Process interrupted by user.[/bold yellow]")
+                choice = Prompt.ask(
+                    "Do you want to (s)top active transfers or (w)ait for them to complete?",
+                    choices=["s", "w"],
+                    default="s"
+                )
+
+                if choice == 'w':
+                    live.console.log("[bold green]Waiting for active transfers to complete...[/bold green]")
+                    live.console.log("[bold yellow]This may take some time. Press Ctrl+C again to force stop.[/bold yellow]")
+                    try:
+                        # We can't show progress as the live display is stopped for the prompt.
+                        executor.shutdown(wait=True)
+                        live.console.log("[bold green]All active transfers completed.[/bold green]")
+                    except KeyboardInterrupt:
+                        live.console.log("[bold red]\nForce stopping transfers...[/bold red]")
+                        executor.shutdown(wait=False, cancel_futures=True)
+                else:
+                    live.console.log("[bold red]Stopping transfers...[/bold red]")
+                    executor.shutdown(wait=False, cancel_futures=True)
                 raise
         logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
     except KeyboardInterrupt:
