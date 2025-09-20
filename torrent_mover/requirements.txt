@@ -1,4 +1,5 @@
-qbittorrent-api
-paramiko
-tqdm
 argcomplete
+paramiko
+qbittorrent-api
+rich
+tqdm
