@@ -157,61 +157,71 @@ def _get_all_files_recursive(sftp, remote_path, local_path, file_list):
         else:
             file_list.append((remote_item_path, local_item_path))
 
-def _sftp_download_file(sftp, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
+def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
     """
-    Downloads a single file with a progress bar, performing a size check.
-    This function is designed to be called from a ThreadPoolExecutor.
+    Downloads a single file with a progress bar. Establishes its own SFTP session
+    to ensure thread safety when called from a ThreadPoolExecutor.
     """
     local_path = Path(local_file)
     file_name = os.path.basename(remote_file)
 
+    sftp = None
+    transport = None
     try:
-        remote_stat = sftp.stat(remote_file)
-        total_size = remote_stat.st_size
-    except FileNotFoundError:
-        logging.error(f"Remote file not found: {remote_file}")
-        raise
+        sftp, transport = connect_sftp(sftp_config)
+        if not sftp:
+            raise Exception(f"Failed to establish SFTP connection for thread downloading {file_name}")
 
-    if total_size == 0:
-        logging.warning(f"Skipping zero-byte file: {file_name}")
-        return
+        try:
+            remote_stat = sftp.stat(remote_file)
+            total_size = remote_stat.st_size
+        except FileNotFoundError:
+            logging.error(f"Remote file not found: {remote_file}")
+            raise
 
-    if local_path.exists():
-        local_size = local_path.stat().st_size
-        if local_size == total_size:
-            logging.info(f"Skipping (exists and size matches): {file_name}")
+        if total_size == 0:
+            logging.warning(f"Skipping zero-byte file: {file_name}")
+            return
+
+        if local_path.exists():
+            local_size = local_path.stat().st_size
+            if local_size == total_size:
+                logging.info(f"Skipping (exists and size matches): {file_name}")
+                job_progress.update(parent_task_id, advance=total_size)
+                overall_progress.update(overall_task_id, advance=total_size)
+                return
+            else:
+                logging.warning(f"Overwriting (size mismatch r:{total_size}/l:{local_size}): {file_name}")
+
+        if dry_run:
+            logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
             job_progress.update(parent_task_id, advance=total_size)
             overall_progress.update(overall_task_id, advance=total_size)
             return
-        else:
-            logging.warning(f"Overwriting (size mismatch r:{total_size}/l:{local_size}): {file_name}")
 
-    if dry_run:
-        logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
-        job_progress.update(parent_task_id, advance=total_size)
-        overall_progress.update(overall_task_id, advance=total_size)
-        return
+        local_path.parent.mkdir(parents=True, exist_ok=True)
 
-    local_path.parent.mkdir(parents=True, exist_ok=True)
+        file_task_id = job_progress.add_task(f"└─ [cyan]{file_name}[/]", total=total_size, start=True, transient=True)
+        try:
+            callback = DownloadProgress(job_progress, file_task_id, parent_task_id, overall_progress, overall_task_id)
+            sftp.get(remote_file, str(local_path), callback=callback)
+            logging.info(f"Download of '{file_name}' completed.")
+        except Exception as e:
+            logging.error(f"Download failed for {file_name}: {e}")
+            job_progress.update(file_task_id, description=f"[bold red]Failed: {file_name}[/]")
+            raise
+        finally:
+            job_progress.update(file_task_id, visible=False)
+            job_progress.remove_task(file_task_id)
 
-    file_task_id = job_progress.add_task(f"└─ [cyan]{file_name}[/]", total=total_size, start=True, transient=True)
-    try:
-        # NOTE: This uses the SFTP client from the parent thread. Paramiko SFTP clients
-        # are generally not thread-safe. A better implementation would be to create a new
-        # SFTP client per thread. For now, we rely on the GIL and hope for the best.
-        # A lock could be used around sftp.get() if issues arise.
-        callback = DownloadProgress(job_progress, file_task_id, parent_task_id, overall_progress, overall_task_id)
-        sftp.get(remote_file, str(local_path), callback=callback)
-        logging.info(f"Download of '{file_name}' completed.")
-    except Exception as e:
-        logging.error(f"Download failed for {file_name}: {e}")
-        job_progress.update(file_task_id, description=f"[bold red]Failed: {file_name}[/]")
-        raise
     finally:
-        job_progress.update(file_task_id, visible=False)
-        job_progress.remove_task(file_task_id)
+        if sftp:
+            sftp.close()
+        if transport:
+            transport.close()
 
-def transfer_content(sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
+
+def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
     """
     Transfers a remote file or directory to a local path, preserving structure.
     This version handles directories by downloading their files concurrently.
@@ -223,20 +233,21 @@ def transfer_content(sftp, remote_path, local_path, job_progress, parent_task_id
             all_files = []
             _get_all_files_recursive(sftp, remote_path, local_path, all_files)
 
-            # Use a ThreadPoolExecutor to download files in parallel
-            # MAX_CONCURRENT_FILES can be tuned or made a config option
             MAX_CONCURRENT_FILES = 5
             with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FILES) as file_executor:
                 futures = [
-                    file_executor.submit(_sftp_download_file, sftp, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+                    file_executor.submit(_sftp_download_file, sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
                     for remote_file, local_file in all_files
                 ]
-                # Wait for all futures to complete
                 for future in as_completed(futures):
-                    future.result() # Raise any exceptions from the threads
+                    future.result()
 
         else: # It's a single file
-            _sftp_download_file(sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+            # For a single file, we don't need to create a new SFTP session.
+            # We can use the one from the parent `process_torrent` thread.
+            # So, we call a modified _sftp_download_file that accepts an sftp client.
+            # Let's just call the main one and let it create a session for simplicity and consistency.
+            _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
     except FileNotFoundError:
         logging.error(f"Remote path not found during SFTP transfer: {remote_path}")
         raise
@@ -413,7 +424,7 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
         local_dest_path = os.path.join(dest_base_path, relative_path)
 
         logging.info(f"Starting SFTP transfer for '{name}'")
-        transfer_content(sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+        transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
         logging.info(f"SFTP transfer completed successfully for '{name}'.")
 
         # 2. Add to Unraid, paused
