@@ -741,7 +741,8 @@ def main():
                         if future.result():
                             processed_count += 1
                     except Exception as e:
-                        live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]", exc_info=True)
+                        live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]")
+                        live.console.print_exception(show_locals=False)
                     finally:
                         torrent_progress.update(torrent_task, advance=1)
             except KeyboardInterrupt:
