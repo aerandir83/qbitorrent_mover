@@ -665,7 +665,7 @@ def main():
         count_lock = threading.Lock()
 
         job_progress = Progress(
-            TextColumn("  {task.description}", justify="left", overflow="ellipsis"),
+            TextColumn("  {task.description}", justify="left"),
             BarColumn(bar_width=30),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%", width=5),
             FixedWidthTotalFileSizeColumn(),
