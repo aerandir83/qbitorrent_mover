@@ -455,10 +455,14 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan):
             auto_category = get_category_from_rules(torrent, updated_rules, client)
             if auto_category:
                 if auto_category == "ignore":
-                    logging.info(f"Skipping torrent '{torrent.name}' due to 'ignore' rule.")
+                    print(f" -> Ignoring '{torrent.name}' based on rule.")
                 else:
-                    logging.info(f"Rule found for '{torrent.name}'. Setting category to '{auto_category}'.")
-                    client.torrents_set_category(torrent_hashes=torrent.hash, category=auto_category)
+                    print(f" -> Rule found for '{torrent.name}'. Setting category to '{auto_category}'.")
+                    try:
+                        client.torrents_set_category(torrent_hashes=torrent.hash, category=auto_category)
+                    except Exception as e:
+                        logging.error(f"Failed to set category for '{torrent.name}': {e}", exc_info=True)
+                        print(f"    ERROR: Could not set category for '{torrent.name}'. See log for details.")
                 continue # Move to the next torrent
 
             # --- If no rule is found, start the interactive prompt ---
