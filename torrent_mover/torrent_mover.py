@@ -103,8 +103,10 @@ from rich.live import Live
 from rich.logging import RichHandler
 from rich.text import Text
 
+# --- Custom Columns ---
+
 class FileCountColumn(TextColumn):
-    """A column to display the number of completed files vs total files."""
+    """A column to display the number of completed files vs total files for parent tasks."""
     def __init__(self, file_counts, *args, **kwargs):
         super().__init__("", *args, **kwargs)
         self.file_counts = file_counts
@@ -112,8 +114,20 @@ class FileCountColumn(TextColumn):
     def render(self, task: "Task") -> Text:
         if task.id in self.file_counts:
             completed, total = self.file_counts[task.id]
-            return Text(f"{completed}/{total} files", style="progress.percentage")
+            return Text(f"{completed}/{total}", style="progress.percentage")
         return Text("")
+
+class ConditionalTimeElapsedColumn(TimeElapsedColumn):
+    """A column that displays the elapsed time only for child tasks."""
+    def __init__(self, file_counts, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.file_counts = file_counts
+
+    def render(self, task: "Task") -> Text:
+        # If it's a parent task, don't render anything
+        if task.id in self.file_counts:
+            return Text("")
+        return super().render(task)
 
 # --- SFTP Transfer Logic with Progress Bar ---
 
@@ -628,7 +642,9 @@ def main():
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TotalFileSizeColumn(),
             TransferSpeedColumn(),
+            ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts),
+            header_style="bold magenta"
         )
         layout = Group(
             Panel(torrent_progress, title="Torrent Queue", border_style="blue"),
