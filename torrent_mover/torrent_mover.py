@@ -108,28 +108,54 @@ from rich.prompt import Prompt
 # --- Custom Columns ---
 
 class FileCountColumn(TextColumn):
-    """A column to display the number of completed files vs total files for parent tasks."""
-    def __init__(self, file_counts, *args, **kwargs):
+    """A column to display the number of completed files vs total files, with fixed width."""
+    def __init__(self, file_counts, width=8, *args, **kwargs):
         super().__init__("", *args, **kwargs)
         self.file_counts = file_counts
+        self.width = width
 
     def render(self, task: "Task") -> Text:
         if task.id in self.file_counts:
             completed, total = self.file_counts[task.id]
-            return Text(f"{completed}/{total}", style="progress.percentage")
-        return Text("")
+            text = f"{completed}/{total}"
+            return Text(text.rjust(self.width), style="progress.percentage")
+        return Text(" " * self.width)
 
 class ConditionalTimeElapsedColumn(TimeElapsedColumn):
-    """A column that displays the elapsed time only for child tasks."""
-    def __init__(self, file_counts, *args, **kwargs):
+    """A column that displays the elapsed time only for child tasks, with fixed width."""
+    def __init__(self, file_counts, width=10, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.file_counts = file_counts
+        self.width = width
 
     def render(self, task: "Task") -> Text:
-        # If it's a parent task, don't render anything
+        # If it's a parent task, render empty space to maintain alignment
         if task.id in self.file_counts:
-            return Text("")
+            return Text(" " * self.width)
+        # The parent render is already fixed width, so we can just return it
         return super().render(task)
+
+class FixedWidthTotalFileSizeColumn(TotalFileSizeColumn):
+    """A column for displaying total file size, with fixed width."""
+    def __init__(self, width=18, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.width = width
+
+    def render(self, task: "Task") -> Text:
+        """Renders the file size, right-aligned within the specified width."""
+        text = super().render(task).text
+        return Text(text.rjust(self.width))
+
+class FixedWidthTransferSpeedColumn(TransferSpeedColumn):
+    """A column for displaying transfer speed, with fixed width."""
+    def __init__(self, width=15, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.width = width
+
+    def render(self, task: "Task") -> Text:
+        """Renders the transfer speed, right-aligned within the specified width."""
+        text = super().render(task).text
+        return Text(text.rjust(self.width))
 
 # --- SFTP Transfer Logic with Progress Bar ---
 
@@ -639,23 +665,23 @@ def main():
         count_lock = threading.Lock()
 
         job_progress = Progress(
-            TextColumn("  {task.description}", justify="left"),
+            TextColumn("  {task.description}", justify="left", overflow="ellipsis"),
             BarColumn(bar_width=30),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TotalFileSizeColumn(),
-            TransferSpeedColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%", width=5),
+            FixedWidthTotalFileSizeColumn(),
+            FixedWidthTransferSpeedColumn(),
             ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts)
         )
 
         transfer_header = Table.grid(expand=True, padding=(0, 1))
         transfer_header.add_column("Name", justify="left", ratio=1)
-        transfer_header.add_column("Progress", width=32)
-        transfer_header.add_column(" %", width=5)
-        transfer_header.add_column("Size", width=20, justify="right")
+        transfer_header.add_column("Progress", width=30)
+        transfer_header.add_column(" %", width=5, justify="right")
+        transfer_header.add_column("Size", width=18, justify="right")
         transfer_header.add_column("Speed", width=15, justify="right")
         transfer_header.add_column("Elapsed", width=10, justify="right")
-        transfer_header.add_column("Files", width=10, justify="right")
+        transfer_header.add_column("Files", width=8, justify="right")
         transfer_header.add_row(
             "[bold yellow]Name[/bold yellow]",
             "[bold yellow]Progress[/bold yellow]",
