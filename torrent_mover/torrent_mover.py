@@ -106,7 +106,7 @@ from rich.text import Text
 class FileCountColumn(TextColumn):
     """A column to display the number of completed files vs total files."""
     def __init__(self, file_counts, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__("", *args, **kwargs)
         self.file_counts = file_counts
 
     def render(self, task: "Task") -> Text:
