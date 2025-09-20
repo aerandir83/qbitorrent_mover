@@ -757,7 +757,7 @@ def main():
         overall_task = overall_progress.add_task("Total progress", total=0)
 
         job_progress = Progress(
-            TextColumn("  {task.description}", justify="left", min_width=80),
+            TextColumn("  {task.description}", justify="left"),
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TotalFileSizeColumn(),
