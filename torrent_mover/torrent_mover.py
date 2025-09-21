@@ -753,7 +753,8 @@ def main():
             plan_text.append("─" * 70 + "\n", style="dim")
             for torrent in eligible_torrents:
                 size_gb = torrent_sizes.get(torrent.hash, 0) / 1024**3
-                plan_text.append(f" • {torrent.name} ([bold]{size_gb:.2f} GB[/bold])\n", style="default")
+                markup = f" • {torrent.name} ([bold]{size_gb:.2f} GB[/bold])\n"
+                plan_text.append(Text.from_markup(markup))
 
             plan_panel = Panel(plan_text, title="[bold magenta]Transfer Plan[/bold magenta]", border_style="magenta", expand=False)
             layout.renderables.insert(0, plan_panel)
