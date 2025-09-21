@@ -141,6 +141,17 @@ class FixedWidthTimeRemainingColumn(TimeRemainingColumn):
         padded_text = f"{original_text:>10}"
         return Text(padded_text, style=original_text_obj.style)
 
+class FixedWidthTransferSpeedColumn(TransferSpeedColumn):
+    """Renders transfer speed with a fixed width to prevent flickering."""
+    def render(self, task: "Task") -> Text:
+        """Render transfer speed in a fixed-width column."""
+        # Get the text from the parent class
+        original_text_obj = super().render(task)
+        original_text = original_text_obj.plain
+        # Pad the text to a fixed width to prevent the column from changing size
+        padded_text = f"{original_text:>12}"
+        return Text(padded_text, style=original_text_obj.style)
+
 # --- SFTP Transfer Logic with Progress Bar ---
 
 class DownloadProgress:
@@ -478,8 +489,7 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
                 torrent_files=torrent_file_content,
                 save_path=unraid_save_path,
                 is_paused=True,
-                category=torrent.category,
-                use_auto_torrent_management=True
+                category=torrent.category
             )
             time.sleep(5)
         else:
@@ -530,7 +540,11 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
         if transport:
             transport.close()
         if parent_task_id is not None:
-            job_progress.update(parent_task_id, visible=False)
+            job_progress.stop_task(parent_task_id)
+            # Prepend a checkmark to the original description
+            original_description = job_progress.tasks[parent_task_id].description
+            job_progress.update(parent_task_id, description=f"[green]✓[/green] {original_description}")
+            job_progress.add_task("", total=None) # Add a blank line as a separator
 
 # --- Main Execution ---
 
@@ -690,6 +704,7 @@ def main():
             BarColumn(finished_style="green"),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TotalFileSizeColumn(),
+            FixedWidthTransferSpeedColumn(),
             FixedWidthTimeRemainingColumn(),
             ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts)
