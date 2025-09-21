@@ -102,6 +102,7 @@ from rich.progress import (
 from rich.live import Live
 from rich.logging import RichHandler
 from rich.text import Text
+from rich.prompt import Prompt
 
 # --- Custom Columns ---
 
@@ -642,6 +643,7 @@ def main():
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TotalFileSizeColumn(),
             TransferSpeedColumn(),
+            TimeRemainingColumn(),
             ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts)
         )
@@ -685,8 +687,26 @@ def main():
                     finally:
                         torrent_progress.update(torrent_task, advance=1)
             except KeyboardInterrupt:
-                live.console.log("[bold red]\nProcess interrupted by user. Shutting down immediately...[/bold red]")
-                executor.shutdown(wait=False)
+                live.stop()
+                live.console.print("\n[bold yellow]Process interrupted by user.[/bold yellow]")
+                choice = Prompt.ask(
+                    "Do you want to (s)top active transfers or (w)ait for them to complete?",
+                    choices=["s", "w"],
+                    default="s"
+                )
+
+                if choice == 'w':
+                    live.console.log("[bold green]Waiting for active transfers to complete...[/bold green]")
+                    live.console.log("[bold yellow]This may take some time. Press Ctrl+C again to force stop.[/bold yellow]")
+                    try:
+                        executor.shutdown(wait=True)
+                        live.console.log("[bold green]All active transfers completed.[/bold green]")
+                    except KeyboardInterrupt:
+                        live.console.log("[bold red]\nForce stopping transfers...[/bold red]")
+                        executor.shutdown(wait=False, cancel_futures=True)
+                else:
+                    live.console.log("[bold red]Stopping transfers...[/bold red]")
+                    executor.shutdown(wait=False, cancel_futures=True)
                 raise
         logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
     except KeyboardInterrupt:
