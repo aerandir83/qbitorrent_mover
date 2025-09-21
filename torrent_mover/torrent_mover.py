@@ -544,7 +544,6 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
             # Prepend a checkmark to the original description
             original_description = job_progress.tasks[parent_task_id].description
             job_progress.update(parent_task_id, description=f"[green]✓[/green] {original_description}")
-            job_progress.add_task("", total=None) # Add a blank line as a separator
 
 # --- Main Execution ---
 
@@ -748,6 +747,7 @@ def main():
                         live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]", exc_info=True)
                     finally:
                         torrent_progress.update(torrent_task, advance=1)
+                        job_progress.add_task(" ", total=None) # Add a blank line as a separator
             except KeyboardInterrupt:
                 live.stop()
                 live.console.print("\n[bold yellow]Process interrupted by user.[/bold yellow]")
