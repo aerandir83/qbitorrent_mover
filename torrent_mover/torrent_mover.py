@@ -412,11 +412,10 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
     sftp = None
     transport = None
     source_paused = False
-    parent_task_id = job_progress.add_task(f"{name}", total=1, start=False, visible=False)
+    parent_task_id = None
     try:
         sftp, transport = connect_sftp(sftp_config)
         if not sftp:
-            job_progress.remove_task(parent_task_id)
             raise Exception("Failed to establish SFTP connection for this thread.")
 
         source_base_path = config['MANDARIN_SFTP']['source_path']
@@ -424,7 +423,6 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
         remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
         remote_content_path = torrent.content_path
         if not remote_content_path.startswith(source_base_path):
-            job_progress.remove_task(parent_task_id)
             raise ValueError(f"Content path '{remote_content_path}' not inside source path '{source_base_path}'.")
 
         relative_path = os.path.relpath(remote_content_path, source_base_path)
@@ -433,10 +431,8 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
         total_size = get_remote_size(sftp, remote_content_path)
         if total_size == 0:
             logging.warning(f"Skipping torrent with no content or zero size: {name}")
-            job_progress.remove_task(parent_task_id)
             return True
 
-        # Get all files and create tasks under lock
         all_files = []
         remote_stat = sftp.stat(remote_content_path)
         if remote_stat.st_mode & 0o40000:  # S_ISDIR
@@ -446,8 +442,7 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
 
         file_task_map = {}
         with task_add_lock:
-            job_progress.update(parent_task_id, total=total_size, visible=True)
-            job_progress.start_task(parent_task_id)
+            parent_task_id = job_progress.add_task(name, total=total_size, start=True)
             if len(all_files) > 1:
                 for remote_f, _ in all_files:
                     file_name = os.path.basename(remote_f)
@@ -521,7 +516,8 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
             sftp.close()
         if transport:
             transport.close()
-        job_progress.update(parent_task_id, visible=False)
+        if parent_task_id is not None:
+            job_progress.update(parent_task_id, visible=False)
 
 # --- Main Execution ---
 
