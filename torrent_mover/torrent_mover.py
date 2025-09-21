@@ -709,14 +709,19 @@ def main():
             ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts)
         )
+        size_calc_progress = Progress(TextColumn("[bold cyan]Calculating sizes..."), BarColumn(), MofNCompleteColumn())
+        size_calc_task = size_calc_progress.add_task("...", total=len(eligible_torrents))
+        size_calc_panel = Panel(size_calc_progress, title="[bold]Initialization[/bold]", border_style="cyan", expand=False)
+
         layout = Group(
+            size_calc_panel,
             Panel(torrent_progress, title="Torrent Queue", border_style="blue"),
             Panel(overall_progress, title="Total Progress", border_style="green"),
             Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2))
         )
+
         with Live(layout, refresh_per_second=4, transient=True) as live:
             sftp_config = config['MANDARIN_SFTP']
-            live.console.log("Connecting to SFTP server to calculate torrent sizes...")
             sftp, transport = connect_sftp(sftp_config)
             if not sftp:
                 live.console.log("[bold red]Failed to establish a preliminary SFTP connection. Aborting.[/]")
@@ -725,22 +730,23 @@ def main():
             grand_total_size = 0
             torrent_sizes = {}
             source_base_path = sftp_config['source_path']
-            with Progress(TextColumn("{task.description}")) as progress:
-                task = progress.add_task("Calculating...", total=len(eligible_torrents))
-                for torrent in eligible_torrents:
-                    progress.update(task, description=f"Calculating size for [bold]{torrent.name[:50]}[/bold]...")
-                    remote_content_path = torrent.content_path
-                    if not remote_content_path.startswith(source_base_path):
-                        live.console.log(f"[yellow]Warning: Skipping size calculation for torrent with invalid path: {torrent.name}[/]")
-                        continue
-                    size = get_remote_size(sftp, remote_content_path)
-                    torrent_sizes[torrent.hash] = size
-                    grand_total_size += size
-                    progress.advance(task)
+            for torrent in eligible_torrents:
+                size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
+                remote_content_path = torrent.content_path
+                if not remote_content_path.startswith(source_base_path):
+                    live.console.log(f"[yellow]Warning: Skipping size calculation for torrent with invalid path: {torrent.name}[/]")
+                    continue
+                size = get_remote_size(sftp, remote_content_path)
+                torrent_sizes[torrent.hash] = size
+                grand_total_size += size
+                size_calc_progress.advance(size_calc_task)
 
             overall_progress.update(overall_task, total=grand_total_size, description="[bold green]Overall")
             sftp.close()
             transport.close()
+
+            # --- Swap out the calculation panel for the plan panel ---
+            layout.renderables.pop(0) # Remove the calculation panel
 
             plan_text = Text()
             plan_text.append(f"Found {len(eligible_torrents)} torrents to move. Total size: {grand_total_size/1024**3:.2f} GB\n", style="bold")
@@ -751,6 +757,7 @@ def main():
 
             plan_panel = Panel(plan_text, title="[bold magenta]Transfer Plan[/bold magenta]", border_style="magenta", expand=False)
             layout.renderables.insert(0, plan_panel)
+            # ---------------------------------------------------------
 
             live.console.log("Plan generated. Starting transfers...")
             executor = ThreadPoolExecutor(max_workers=args.parallel_jobs)
