@@ -102,71 +102,33 @@ from rich.progress import (
 from rich.live import Live
 from rich.logging import RichHandler
 from rich.text import Text
-from rich.table import Table
 from rich.prompt import Prompt
 
 # --- Custom Columns ---
 
 class FileCountColumn(TextColumn):
-    """A column to display the number of completed files vs total files, with fixed width."""
-    def __init__(self, file_counts, width=8, *args, **kwargs):
+    """A column to display the number of completed files vs total files for parent tasks."""
+    def __init__(self, file_counts, *args, **kwargs):
         super().__init__("", *args, **kwargs)
         self.file_counts = file_counts
-        self.width = width
 
     def render(self, task: "Task") -> Text:
         if task.id in self.file_counts:
             completed, total = self.file_counts[task.id]
-            text = f"{completed}/{total}"
-            return Text(text.rjust(self.width), style="progress.percentage")
-        return Text(" " * self.width)
+            return Text(f"{completed}/{total}", style="progress.percentage")
+        return Text("")
 
 class ConditionalTimeElapsedColumn(TimeElapsedColumn):
-    """A column that displays the elapsed time only for child tasks, with fixed width."""
-    def __init__(self, file_counts, width=10, *args, **kwargs):
+    """A column that displays the elapsed time only for child tasks."""
+    def __init__(self, file_counts, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.file_counts = file_counts
-        self.width = width
 
     def render(self, task: "Task") -> Text:
-        # If it's a parent task, render empty space to maintain alignment
+        # If it's a parent task, don't render anything
         if task.id in self.file_counts:
-            return Text(" " * self.width)
-        # The parent render is already fixed width, so we can just return it
+            return Text("")
         return super().render(task)
-
-class FixedWidthTotalFileSizeColumn(TotalFileSizeColumn):
-    """A column for displaying total file size, with fixed width."""
-    def __init__(self, width=18, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.width = width
-
-    def render(self, task: "Task") -> Text:
-        """Renders the file size, right-aligned within the specified width."""
-        text = super().render(task).plain
-        return Text(text.rjust(self.width))
-
-class FixedWidthTransferSpeedColumn(TransferSpeedColumn):
-    """A column for displaying transfer speed, with fixed width."""
-    def __init__(self, width=15, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.width = width
-
-    def render(self, task: "Task") -> Text:
-        """Renders the transfer speed, right-aligned within the specified width."""
-        text = super().render(task).plain
-        return Text(text.rjust(self.width))
-
-class FixedWidthPercentageColumn(TextColumn):
-    """A column for displaying percentage, with fixed width."""
-    def __init__(self, text_format="[progress.percentage]{task.percentage:>3.0f}%", width=5, *args, **kwargs):
-        super().__init__(text_format, *args, **kwargs)
-        self.width = width
-
-    def render(self, task: "Task") -> Text:
-        """Renders the percentage, right-aligned within the specified width."""
-        text_obj = super().render(task)
-        return Text(text_obj.plain.rjust(self.width))
 
 # --- SFTP Transfer Logic with Progress Bar ---
 
@@ -677,38 +639,18 @@ def main():
 
         job_progress = Progress(
             TextColumn("  {task.description}", justify="left"),
-            BarColumn(bar_width=30),
-            FixedWidthPercentageColumn(),
-            FixedWidthTotalFileSizeColumn(),
-            FixedWidthTransferSpeedColumn(),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TotalFileSizeColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
             ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts)
         )
-
-        transfer_header = Table.grid(expand=True, padding=(0, 1))
-        transfer_header.add_column("Name", justify="left", ratio=1)
-        transfer_header.add_column("Progress", width=30)
-        transfer_header.add_column(" %", width=5, justify="right")
-        transfer_header.add_column("Size", width=18, justify="right")
-        transfer_header.add_column("Speed", width=15, justify="right")
-        transfer_header.add_column("Elapsed", width=10, justify="right")
-        transfer_header.add_column("Files", width=8, justify="right")
-        transfer_header.add_row(
-            "[bold yellow]Name[/bold yellow]",
-            "[bold yellow]Progress[/bold yellow]",
-            "[bold yellow]%[/bold yellow]",
-            "[bold yellow]Size[/bold yellow]",
-            "[bold yellow]Speed[/bold yellow]",
-            "[bold yellow]Elapsed[/bold yellow]",
-            "[bold yellow]Files[/bold yellow]",
-        )
-
-        active_transfers_group = Group(transfer_header, job_progress)
-
         layout = Group(
             Panel(torrent_progress, title="Torrent Queue", border_style="blue"),
             Panel(overall_progress, title="Total Progress", border_style="green"),
-            Panel(active_transfers_group, title="Active Transfers", border_style="yellow", padding=(0, 2))
+            Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2))
         )
         with Live(layout, refresh_per_second=10) as live:
             sftp_config = config['MANDARIN_SFTP']
@@ -741,8 +683,7 @@ def main():
                         if future.result():
                             processed_count += 1
                     except Exception as e:
-                        live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]")
-                        live.console.print_exception(show_locals=False)
+                        live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]", exc_info=True)
                     finally:
                         torrent_progress.update(torrent_task, advance=1)
             except KeyboardInterrupt:
@@ -758,7 +699,6 @@ def main():
                     live.console.log("[bold green]Waiting for active transfers to complete...[/bold green]")
                     live.console.log("[bold yellow]This may take some time. Press Ctrl+C again to force stop.[/bold yellow]")
                     try:
-                        # We can't show progress as the live display is stopped for the prompt.
                         executor.shutdown(wait=True)
                         live.console.log("[bold green]All active transfers completed.[/bold green]")
                     except KeyboardInterrupt:
