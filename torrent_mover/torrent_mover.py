@@ -130,6 +130,17 @@ class ConditionalTimeElapsedColumn(TimeElapsedColumn):
             return Text("")
         return super().render(task)
 
+class FixedWidthTimeRemainingColumn(TimeRemainingColumn):
+    """Renders time remaining with a fixed width to prevent flickering."""
+    def render(self, task: "Task") -> Text:
+        """Render time remaining in a fixed-width column."""
+        # Get the text from the parent class
+        original_text_obj = super().render(task)
+        original_text = original_text_obj.plain
+        # Pad the text to a fixed width to prevent the column from changing size
+        padded_text = f"{original_text:>10}"
+        return Text(padded_text, style=original_text_obj.style)
+
 # --- SFTP Transfer Logic with Progress Bar ---
 
 class DownloadProgress:
@@ -678,6 +689,7 @@ def main():
             BarColumn(finished_style="green"),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TotalFileSizeColumn(),
+            FixedWidthTimeRemainingColumn(),
             ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts)
         )
