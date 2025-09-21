@@ -256,7 +256,8 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
             with count_lock:
                 file_counts[parent_task_id][0] += 1
             if file_task_id is not None:
-                job_progress.update(file_task_id, visible=False)
+                job_progress.stop_task(file_task_id)
+                job_progress.update(file_task_id, description=f"└─ [green]✓[/green] [cyan]{file_name}[/]")
 
     finally:
         if sftp:
@@ -687,7 +688,7 @@ def main():
             Panel(overall_progress, title="Total Progress", border_style="green"),
             Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2))
         )
-        with Live(layout, refresh_per_second=10) as live:
+        with Live(layout, refresh_per_second=4) as live:
             sftp_config = config['MANDARIN_SFTP']
             live.console.log("Calculating total size of all eligible torrents...")
             sftp, transport = connect_sftp(sftp_config)
