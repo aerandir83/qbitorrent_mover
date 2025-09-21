@@ -675,11 +675,9 @@ def main():
 
         job_progress = Progress(
             TextColumn("  {task.description}", justify="left"),
-            BarColumn(),
+            BarColumn(finished_style="green"),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TotalFileSizeColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn(),
             ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts)
         )
