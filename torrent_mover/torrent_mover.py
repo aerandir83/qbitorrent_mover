@@ -152,7 +152,10 @@ class DownloadProgress:
         """
         increment = bytes_transferred - self._last_bytes
         self._job_progress.update(self._file_task_id, advance=increment)
-        self._job_progress.update(self._parent_task_id, advance=increment)
+        # For single-file torrents, parent and file task are the same.
+        # Avoid advancing the same task twice.
+        if self._file_task_id != self._parent_task_id:
+            self._job_progress.update(self._parent_task_id, advance=increment)
         self._overall_progress.update(self._overall_task_id, advance=increment)
         self._last_bytes = bytes_transferred
 
@@ -186,10 +189,11 @@ def _get_all_files_recursive(sftp, remote_path, local_path, file_list):
         else:
             file_list.append((remote_item_path, local_item_path))
 
-def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, dry_run=False):
+def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_id, dry_run=False):
     """
     Downloads a single file with a progress bar. Establishes its own SFTP session
     to ensure thread safety when called from a ThreadPoolExecutor.
+    Uses a pre-existing task_id for the file progress bar.
     """
     local_path = Path(local_file)
     file_name = os.path.basename(remote_file)
@@ -232,20 +236,27 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
 
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
-        file_task_id = job_progress.add_task(f"└─ [cyan]{file_name}[/]", total=total_size, start=True, transient=True)
+        effective_task_id = file_task_id if file_task_id is not None else parent_task_id
+        if file_task_id is not None:
+            job_progress.update(file_task_id, visible=True)
+            job_progress.start_task(file_task_id)
+
         try:
-            callback = DownloadProgress(job_progress, file_task_id, parent_task_id, overall_progress, overall_task_id)
+            callback = DownloadProgress(job_progress, effective_task_id, parent_task_id, overall_progress, overall_task_id)
             sftp.get(remote_file, str(local_path), callback=callback)
             logging.info(f"Download of '{file_name}' completed.")
         except Exception as e:
             logging.error(f"Download failed for {file_name}: {e}")
-            job_progress.update(file_task_id, description=f"[bold red]Failed: {file_name}[/]")
+            if file_task_id is not None:
+                job_progress.update(file_task_id, description=f"[bold red]Failed: {file_name}[/]")
+            else:
+                job_progress.update(parent_task_id, description=f"[bold red]Failed: {job_progress.tasks[parent_task_id].description} -> {file_name}[/]")
             raise
         finally:
             with count_lock:
                 file_counts[parent_task_id][0] += 1
-            job_progress.update(file_task_id, visible=False)
-            job_progress.remove_task(file_task_id)
+            if file_task_id is not None:
+                job_progress.update(file_task_id, visible=False)
 
     finally:
         if sftp:
@@ -253,14 +264,13 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
         if transport:
             transport.close()
 
-def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, dry_run=False):
+def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run=False):
     """
     Transfers a remote file or directory to a local path, preserving structure.
     Handles directories by downloading their files concurrently.
     """
     remote_stat = sftp.stat(remote_path)
     if remote_stat.st_mode & 0o40000:  # S_ISDIR
-        logging.info(f"Directory detected. Finding all files for concurrent download...")
         all_files = []
         _get_all_files_recursive(sftp, remote_path, local_path, all_files)
 
@@ -270,7 +280,7 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, p
         MAX_CONCURRENT_FILES = 5
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FILES) as file_executor:
             futures = [
-                file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, dry_run)
+                file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map.get(remote_f), dry_run)
                 for remote_f, local_f in all_files
             ]
             for future in as_completed(futures):
@@ -279,7 +289,8 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, p
     else: # It's a single file
         with count_lock:
             file_counts[parent_task_id] = [0, 1]
-        _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, dry_run)
+        # For single-file torrents, there is no sub-task, so we pass None for file_task_id
+        _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, None, dry_run)
 
 # --- Torrent Processing Logic ---
 
@@ -392,7 +403,7 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, dry_run=False, test_run=False):
+def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
     """
     Executes the full transfer and management process for a single torrent.
     Establishes its own SFTP connection to be thread-safe.
@@ -401,27 +412,54 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
     sftp = None
     transport = None
     source_paused = False
-    parent_task_id = job_progress.add_task(f"{name}", total=1, start=False, visible=True)
+    parent_task_id = job_progress.add_task(f"{name}", total=1, start=False, visible=False)
     try:
         sftp, transport = connect_sftp(sftp_config)
         if not sftp:
+            job_progress.remove_task(parent_task_id)
             raise Exception("Failed to establish SFTP connection for this thread.")
+
         source_base_path = config['MANDARIN_SFTP']['source_path']
         dest_base_path = config['UNRAID_PATHS']['destination_path']
         remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
         remote_content_path = torrent.content_path
         if not remote_content_path.startswith(source_base_path):
+            job_progress.remove_task(parent_task_id)
             raise ValueError(f"Content path '{remote_content_path}' not inside source path '{source_base_path}'.")
+
+        relative_path = os.path.relpath(remote_content_path, source_base_path)
+        local_dest_path = os.path.join(dest_base_path, relative_path)
+
         total_size = get_remote_size(sftp, remote_content_path)
         if total_size == 0:
             logging.warning(f"Skipping torrent with no content or zero size: {name}")
-            job_progress.update(parent_task_id, description=f"[yellow]Skipped (zero size): {name}[/]")
+            job_progress.remove_task(parent_task_id)
             return True
-        job_progress.update(parent_task_id, total=total_size, start=True)
-        relative_path = os.path.relpath(remote_content_path, source_base_path)
-        local_dest_path = os.path.join(dest_base_path, relative_path)
+
+        # Get all files and create tasks under lock
+        all_files = []
+        remote_stat = sftp.stat(remote_content_path)
+        if remote_stat.st_mode & 0o40000:  # S_ISDIR
+            _get_all_files_recursive(sftp, remote_content_path, local_dest_path, all_files)
+        else: # It's a single file
+            all_files.append((remote_content_path, local_dest_path))
+
+        file_task_map = {}
+        with task_add_lock:
+            job_progress.update(parent_task_id, total=total_size, visible=True)
+            job_progress.start_task(parent_task_id)
+            if len(all_files) > 1:
+                for remote_f, _ in all_files:
+                    file_name = os.path.basename(remote_f)
+                    try:
+                        file_size = sftp.stat(remote_f).st_size
+                    except FileNotFoundError:
+                        file_size = 0
+                    task_id = job_progress.add_task(f"└─ [cyan]{file_name}[/]", total=file_size, start=False, visible=False)
+                    file_task_map[remote_f] = task_id
+
         logging.info(f"Starting SFTP transfer for '{name}'")
-        transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, dry_run)
+        transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run)
         logging.info(f"SFTP transfer completed successfully for '{name}'.")
         unraid_save_path = os.path.join(remote_dest_base_path, os.path.dirname(relative_path))
         unraid_save_path = unraid_save_path.replace("\\", "/")
@@ -636,6 +674,7 @@ def main():
 
         file_counts = defaultdict(lambda: [0, 0])
         count_lock = threading.Lock()
+        task_add_lock = threading.Lock()
 
         job_progress = Progress(
             TextColumn("  {task.description}", justify="left"),
@@ -674,7 +713,7 @@ def main():
             executor = ThreadPoolExecutor(max_workers=args.parallel_jobs)
             try:
                 future_to_torrent = {
-                    executor.submit(process_torrent, torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task, file_counts, count_lock, args.dry_run, args.test_run): torrent
+                    executor.submit(process_torrent, torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task, file_counts, count_lock, task_add_lock, args.dry_run, args.test_run): torrent
                     for torrent in eligible_torrents
                 }
                 for future in as_completed(future_to_torrent):
