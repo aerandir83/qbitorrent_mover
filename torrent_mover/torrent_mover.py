@@ -664,6 +664,7 @@ def main():
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[RichHandler(show_path=False, rich_tracebacks=True, markup=True)])
+    logging.getLogger("paramiko").setLevel(logging.WARNING)
     tracker_rules = load_tracker_rules(script_dir)
     if args.list_rules or args.add_rule or args.delete_rule:
         return 0
@@ -708,30 +709,59 @@ def main():
             ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts)
         )
+        size_calc_progress = Progress(TextColumn("[bold cyan]Calculating sizes..."), BarColumn(), MofNCompleteColumn())
+        size_calc_task = size_calc_progress.add_task("...", total=len(eligible_torrents))
+        size_calc_panel = Panel(size_calc_progress, title="[bold]Initialization[/bold]", border_style="cyan", expand=False)
+
         layout = Group(
+            size_calc_panel,
             Panel(torrent_progress, title="Torrent Queue", border_style="blue"),
             Panel(overall_progress, title="Total Progress", border_style="green"),
             Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2))
         )
-        with Live(layout, refresh_per_second=4) as live:
+
+        with Live(layout, refresh_per_second=4, transient=True) as live:
             sftp_config = config['MANDARIN_SFTP']
-            live.console.log("Calculating total size of all eligible torrents...")
             sftp, transport = connect_sftp(sftp_config)
             if not sftp:
                 live.console.log("[bold red]Failed to establish a preliminary SFTP connection. Aborting.[/]")
                 return 1
+
             grand_total_size = 0
+            torrent_sizes = {}
             source_base_path = sftp_config['source_path']
             for torrent in eligible_torrents:
+                size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
                 remote_content_path = torrent.content_path
                 if not remote_content_path.startswith(source_base_path):
                     live.console.log(f"[yellow]Warning: Skipping size calculation for torrent with invalid path: {torrent.name}[/]")
                     continue
-                grand_total_size += get_remote_size(sftp, remote_content_path)
+                size = get_remote_size(sftp, remote_content_path)
+                torrent_sizes[torrent.hash] = size
+                grand_total_size += size
+                size_calc_progress.advance(size_calc_task)
+
             overall_progress.update(overall_task, total=grand_total_size, description="[bold green]Overall")
             sftp.close()
             transport.close()
-            live.console.log(f"Total size to transfer: [bold yellow]{grand_total_size/1024/1024/1024:.2f} GB[/]")
+
+            # --- Swap out the calculation panel for the plan panel ---
+            layout.renderables.pop(0) # Remove the calculation panel
+
+            plan_text = Text()
+            plan_text.append(f"Found {len(eligible_torrents)} torrents to move. Total size: {grand_total_size/1024**3:.2f} GB\n", style="bold")
+            plan_text.append("─" * 70 + "\n", style="dim")
+            for torrent in eligible_torrents:
+                size_gb = torrent_sizes.get(torrent.hash, 0) / 1024**3
+                plan_text.append(f" • {torrent.name} (")
+                plan_text.append(f"{size_gb:.2f} GB", style="bold")
+                plan_text.append(")\n")
+
+            plan_panel = Panel(plan_text, title="[bold magenta]Transfer Plan[/bold magenta]", border_style="magenta", expand=False)
+            layout.renderables.insert(0, plan_panel)
+            # ---------------------------------------------------------
+
+            live.console.log("Plan generated. Starting transfers...")
             executor = ThreadPoolExecutor(max_workers=args.parallel_jobs)
             try:
                 future_to_torrent = {
@@ -747,7 +777,9 @@ def main():
                         live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]", exc_info=True)
                     finally:
                         torrent_progress.update(torrent_task, advance=1)
-                        job_progress.add_task(" ", total=None) # Add a blank line as a separator
+                        if job_progress.tasks[-1].description != " ": # Avoid adding multiple separators
+                            job_progress.add_task(" ", total=1, completed=1) # Add a blank line as a separator
+
             except KeyboardInterrupt:
                 live.stop()
                 live.console.print("\n[bold yellow]Process interrupted by user.[/bold yellow]")
