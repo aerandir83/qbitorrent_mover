@@ -34,3 +34,6 @@ remote_destination_path=
 [SETTINGS]
 # The category in qBittorrent that marks torrents for moving
 category_to_move=moving
+# The transfer mode to use. Options: sftp, rsync.
+# rsync mode requires 'sshpass' to be installed on the system running the script.
+transfer_mode=sftp
