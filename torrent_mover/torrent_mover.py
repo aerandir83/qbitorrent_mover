@@ -230,7 +230,7 @@ def get_remote_size_rsync(sftp_config, remote_path):
         "sshpass", "-p", password,
         "rsync",
         "-a", "--dry-run", "--stats",
-        "-e", f"ssh -p {port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+        "-e", f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
         remote_spec,
         # A dummy local path is required. The path must exist.
         # We use the current directory '.' as it's guaranteed to exist.
@@ -383,11 +383,12 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
-        "-a",  # Archive mode (preserves permissions, ownership, etc.)
+        "-aW",  # Archive mode + Whole file (no delta-xfer), faster on fast networks
         "--info=progress2",  # Machine-readable progress
-        "-e", f"ssh -p {port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+        # Use a faster cipher and disable known_hosts checking for non-interactive use
+        "-e", f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
         remote_spec,
-        local_parent_dir # Destination directory
+        local_parent_dir  # Destination directory
     ]
 
     if dry_run:
