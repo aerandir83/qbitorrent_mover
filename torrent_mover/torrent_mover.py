@@ -404,6 +404,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
     logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}'")
     process = None
     try:
+        start_time = time.time()
         process = subprocess.Popen(
             rsync_cmd,
             stdout=subprocess.PIPE,
@@ -436,6 +437,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
                     logging.debug(f"rsync stdout: {line}")
 
         process.wait()
+        end_time = time.time()
         stderr_output = process.stderr.read() if process.stderr else ""
 
         if process.returncode != 0 and process.returncode != 24:
@@ -447,8 +449,18 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
         elif process.returncode == 24:
             logging.warning(f"Rsync finished with code 24 (some source files vanished) for '{os.path.basename(remote_path)}'.")
 
-        # Ensure the progress bar is marked as complete at the end
+        # Log performance details
+        duration = end_time - start_time
         task = job_progress.tasks[parent_task_id]
+        total_size_bytes = task.total
+        if duration > 0:
+            speed_mbps = (total_size_bytes * 8) / (duration * 1024 * 1024)
+            logging.info(f"PERF: '{os.path.basename(remote_path)}' ({total_size_bytes / 1024**2:.2f} MiB) took {duration:.2f} seconds.")
+            logging.info(f"PERF: Average speed: {speed_mbps:.2f} Mbps.")
+        else:
+            logging.info(f"PERF: '{os.path.basename(remote_path)}' completed in < 1 second.")
+
+        # Ensure the progress bar is marked as complete at the end
         if task.completed < task.total:
             remaining = task.total - task.completed
             if remaining > 0:
