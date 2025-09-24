@@ -19,7 +19,6 @@ host=your_mandarin_sftp_ip_or_hostname
 port=22
 username=your_sftp_username
 password=your_sftp_password
-source_path=/home/aerandir/files/move
 
 [UNRAID_PATHS]
 # The absolute path on the Unraid server where the torrent data should be physically moved.

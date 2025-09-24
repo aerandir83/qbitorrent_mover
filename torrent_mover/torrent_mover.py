@@ -679,15 +679,15 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
     source_paused = False
     parent_task_id = None
     try:
-        source_base_path = config['MANDARIN_SFTP']['source_path']
         dest_base_path = config['UNRAID_PATHS']['destination_path']
         remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
-        remote_content_path = torrent.content_path
-        if not remote_content_path.startswith(source_base_path):
-            raise ValueError(f"Content path '{remote_content_path}' not inside source path '{source_base_path}'.")
 
-        relative_path = os.path.relpath(remote_content_path, source_base_path)
-        local_dest_path = os.path.join(dest_base_path, relative_path)
+        # The remote_content_path is the full, absolute path from the qBittorrent API
+        remote_content_path = torrent.content_path
+        content_name = os.path.basename(remote_content_path)
+
+        # The local destination path is the destination base + the torrent's content name (file or folder)
+        local_dest_path = os.path.join(dest_base_path, content_name)
 
         if total_size == 0:
             logging.warning(f"Skipping torrent with no content or zero size: {name}")
@@ -731,8 +731,10 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
             logging.info(f"Starting SFTP transfer for '{name}'")
             transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run)
             logging.info(f"SFTP transfer completed successfully for '{name}'.")
-        unraid_save_path = os.path.join(remote_dest_base_path, os.path.dirname(relative_path))
-        unraid_save_path = unraid_save_path.replace("\\", "/")
+        # The save path for the destination client is the remote equivalent of our destination base path.
+        # qBittorrent will automatically create a sub-folder for the torrent content if it's a directory.
+        unraid_save_path = remote_dest_base_path.replace("\\", "/")
+
         if not dry_run:
             logging.info(f"Exporting .torrent file for {name}")
             torrent_file_content = mandarin_qbit.torrents_export(torrent_hash=hash)
@@ -995,12 +997,7 @@ def main():
                 # Use the faster rsync method for size calculation
                 for torrent in eligible_torrents:
                     size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
-                    remote_content_path = torrent.content_path
-                    if not remote_content_path.startswith(source_base_path):
-                        live.console.log(f"[yellow]Warning: Skipping torrent with invalid path: {torrent.name}[/]")
-                        size_calc_progress.advance(size_calc_task)
-                        continue
-
+                    remote_content_path = torrent.content_path # Use the full path directly
                     size = get_remote_size_rsync(sftp_config, remote_content_path)
                     if size == 0:
                         live.console.log(f"[yellow]Warning: Skipping zero-size torrent or failed size check for: {torrent.name}[/]")
@@ -1017,12 +1014,7 @@ def main():
                 try:
                     for torrent in eligible_torrents:
                         size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
-                        remote_content_path = torrent.content_path
-                        if not remote_content_path.startswith(source_base_path):
-                            live.console.log(f"[yellow]Warning: Skipping torrent with invalid path: {torrent.name}[/]")
-                            size_calc_progress.advance(size_calc_task)
-                            continue
-
+                        remote_content_path = torrent.content_path # Use the full path directly
                         size = get_remote_size(sftp, remote_content_path)
                         if size == 0:
                             live.console.log(f"[yellow]Warning: Skipping zero-size torrent: {torrent.name}[/]")
