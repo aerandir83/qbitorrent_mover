@@ -13,8 +13,25 @@ import paramiko
 import json
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import shutil
+import subprocess
+import re
 import threading
 from collections import defaultdict
+
+
+def check_sshpass_installed():
+    """
+    Checks if sshpass is installed, which is required for rsync with password auth.
+    Exits the script if it's not found.
+    """
+    if shutil.which("sshpass") is None:
+        logging.error("FATAL: 'sshpass' is not installed or not in the system's PATH.")
+        logging.error("Please install 'sshpass' to use the rsync transfer mode with a password.")
+        logging.error("e.g., 'sudo apt-get install sshpass' or 'sudo yum install sshpass'")
+        sys.exit(1)
+    logging.info("'sshpass' dependency check passed.")
+
 
 def load_config(config_path="config.ini"):
     """
@@ -197,6 +214,61 @@ def get_remote_size(sftp, remote_path):
         return 0
     return total_size
 
+def get_remote_size_rsync(sftp_config, remote_path):
+    """
+    Gets the total size of a remote file or directory using rsync --stats.
+    This is much faster than recursive SFTP STAT calls for directories with many files.
+    """
+    host = sftp_config['host']
+    port = sftp_config.getint('port')
+    username = sftp_config['username']
+    password = sftp_config['password']
+
+    remote_spec = f"{username}@{host}:{remote_path}"
+
+    rsync_cmd = [
+        "sshpass", "-p", password,
+        "rsync",
+        "-a", "--dry-run", "--stats",
+        "-e", f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+        remote_spec,
+        # A dummy local path is required. The path must exist.
+        # We use the current directory '.' as it's guaranteed to exist.
+        "."
+    ]
+
+    try:
+        result = subprocess.run(
+            rsync_cmd,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace'
+        )
+
+        # rsync exit code 24 ("Partial transfer due to vanished source files") is okay for a size check.
+        if result.returncode != 0 and result.returncode != 24:
+            logging.error(f"Rsync (size check) failed for '{os.path.basename(remote_path)}' with exit code {result.returncode}.")
+            logging.error(f"Rsync stderr: {result.stderr}")
+            return 0
+
+        # The 'Total file size' is what we need.
+        match = re.search(r"Total file size: ([\d,]+) bytes", result.stdout)
+        if match:
+            size_str = match.group(1).replace(',', '')
+            return int(size_str)
+        else:
+            logging.warning(f"Could not parse rsync --stats output for torrent '{os.path.basename(remote_path)}'.")
+            logging.debug(f"Rsync stdout for size check:\n{result.stdout}")
+            return 0
+
+    except FileNotFoundError:
+        logging.error("FATAL: 'rsync' or 'sshpass' command not found during size check.")
+        raise
+    except Exception as e:
+        logging.error(f"An exception occurred during rsync size check for {remote_path}: {e}")
+        return 0
+
 def _get_all_files_recursive(sftp, remote_path, local_path, file_list):
     """
     Recursively walks a remote directory to build a flat list of all files to download.
@@ -286,6 +358,125 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
             sftp.close()
         if transport:
             transport.close()
+
+def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
+    """
+    Transfers a remote file or directory to a local path using rsync.
+    """
+    host = sftp_config['host']
+    port = sftp_config.getint('port')
+    username = sftp_config['username']
+    password = sftp_config['password']
+
+    # Ensure the parent directory of the destination exists
+    # rsync will copy the source directory into this parent directory
+    local_parent_dir = os.path.dirname(local_path)
+    Path(local_parent_dir).mkdir(parents=True, exist_ok=True)
+
+    # The remote path needs to be handled carefully.
+    # rsync treats paths with a trailing slash differently.
+    # The source torrent's content_path is what we get.
+    # If it's a directory, we want to copy the directory itself.
+    remote_spec = f"{username}@{host}:{remote_path}"
+
+    # Use -o UserKnownHostsFile=/dev/null to avoid prompts for unknown hosts
+    rsync_cmd = [
+        "sshpass", "-p", password,
+        "rsync",
+        "-aW",  # Archive mode + Whole file (no delta-xfer), faster on fast networks
+        "--info=progress2",  # Machine-readable progress
+        # Use a faster cipher and disable known_hosts checking for non-interactive use
+        "-e", f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+        remote_spec,
+        local_parent_dir  # Destination directory
+    ]
+
+    if dry_run:
+        # In a dry run, rsync doesn't transfer, so we can't show progress.
+        # We'll just log what would have happened and advance the progress bar fully.
+        logging.info(f"[DRY RUN] Would execute rsync for: {os.path.basename(remote_path)}")
+        logging.info(f"[DRY RUN] Command: {' '.join(rsync_cmd)}")
+        task = job_progress.tasks[parent_task_id]
+        job_progress.update(parent_task_id, advance=task.total)
+        overall_progress.update(overall_task_id, advance=task.total)
+        return
+
+    logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}'")
+    process = None
+    try:
+        start_time = time.time()
+        process = subprocess.Popen(
+            rsync_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace', # Avoid crashing on weird characters
+            bufsize=1  # Line-buffered
+        )
+
+        last_total_transferred = 0
+        progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
+
+        if process.stdout:
+            for line in iter(process.stdout.readline, ''):
+                line = line.strip()
+                match = progress_regex.match(line)
+                if match:
+                    try:
+                        total_transferred_str = match.group(1).replace(',', '')
+                        total_transferred = int(total_transferred_str)
+                        advance = total_transferred - last_total_transferred
+                        if advance > 0:
+                            job_progress.update(parent_task_id, advance=advance)
+                            overall_progress.update(overall_task_id, advance=advance)
+                            last_total_transferred = total_transferred
+                    except (ValueError, IndexError):
+                        logging.warning(f"Could not parse rsync progress line: {line}")
+                else:
+                    logging.debug(f"rsync stdout: {line}")
+
+        process.wait()
+        end_time = time.time()
+        stderr_output = process.stderr.read() if process.stderr else ""
+
+        if process.returncode != 0 and process.returncode != 24:
+            # rsync exit code 24 means "Partial transfer due to vanished source files"
+            # This is not a fatal error for this script's purpose.
+            logging.error(f"Rsync failed for '{os.path.basename(remote_path)}' with exit code {process.returncode}.")
+            logging.error(f"Rsync stderr: {stderr_output}")
+            raise Exception(f"Rsync transfer failed for {os.path.basename(remote_path)}")
+        elif process.returncode == 24:
+            logging.warning(f"Rsync finished with code 24 (some source files vanished) for '{os.path.basename(remote_path)}'.")
+
+        # Log performance details
+        duration = end_time - start_time
+        task = job_progress.tasks[parent_task_id]
+        total_size_bytes = task.total
+        if duration > 0:
+            speed_mbps = (total_size_bytes * 8) / (duration * 1024 * 1024)
+            logging.info(f"PERF: '{os.path.basename(remote_path)}' ({total_size_bytes / 1024**2:.2f} MiB) took {duration:.2f} seconds.")
+            logging.info(f"PERF: Average speed: {speed_mbps:.2f} Mbps.")
+        else:
+            logging.info(f"PERF: '{os.path.basename(remote_path)}' completed in < 1 second.")
+
+        # Ensure the progress bar is marked as complete at the end
+        if task.completed < task.total:
+            remaining = task.total - task.completed
+            if remaining > 0:
+                job_progress.update(parent_task_id, advance=remaining)
+                overall_progress.update(overall_task_id, advance=remaining)
+
+        logging.info(f"Rsync transfer completed for '{os.path.basename(remote_path)}'.")
+
+    except FileNotFoundError:
+        logging.error("FATAL: 'rsync' or 'sshpass' command not found.")
+        raise
+    except Exception as e:
+        if process:
+            process.kill() # Ensure subprocess is terminated
+        raise e
+
 
 def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run=False):
     """
@@ -426,7 +617,7 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
+def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
     """
     Executes the full transfer and management process for a single torrent.
     Establishes its own SFTP connection to be thread-safe.
@@ -437,10 +628,6 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
     source_paused = False
     parent_task_id = None
     try:
-        sftp, transport = connect_sftp(sftp_config)
-        if not sftp:
-            raise Exception("Failed to establish SFTP connection for this thread.")
-
         source_base_path = config['MANDARIN_SFTP']['source_path']
         dest_base_path = config['UNRAID_PATHS']['destination_path']
         remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
@@ -451,34 +638,48 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
         relative_path = os.path.relpath(remote_content_path, source_base_path)
         local_dest_path = os.path.join(dest_base_path, relative_path)
 
-        total_size = get_remote_size(sftp, remote_content_path)
         if total_size == 0:
             logging.warning(f"Skipping torrent with no content or zero size: {name}")
             return True
 
-        all_files = []
-        remote_stat = sftp.stat(remote_content_path)
-        if remote_stat.st_mode & 0o40000:  # S_ISDIR
-            _get_all_files_recursive(sftp, remote_content_path, local_dest_path, all_files)
-        else: # It's a single file
-            all_files.append((remote_content_path, local_dest_path))
+        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
-        file_task_map = {}
         with task_add_lock:
             parent_task_id = job_progress.add_task(name, total=total_size, start=True)
-            if len(all_files) > 1:
-                for remote_f, _ in all_files:
-                    file_name = os.path.basename(remote_f)
-                    try:
-                        file_size = sftp.stat(remote_f).st_size
-                    except FileNotFoundError:
-                        file_size = 0
-                    task_id = job_progress.add_task(f"└─ [cyan]{file_name}[/]", total=file_size, start=False, visible=False)
-                    file_task_map[remote_f] = task_id
 
-        logging.info(f"Starting SFTP transfer for '{name}'")
-        transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run)
-        logging.info(f"SFTP transfer completed successfully for '{name}'.")
+        if transfer_mode == 'rsync':
+            # For rsync, we don't need a preliminary SFTP connection or file list.
+            # The progress bar will just be for the whole torrent.
+            transfer_content_rsync(sftp_config, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
+            logging.info(f"Rsync transfer completed successfully for '{name}'.")
+        else:  # sftp mode
+            sftp, transport = connect_sftp(sftp_config)
+            if not sftp:
+                raise Exception("Failed to establish SFTP connection for this thread.")
+
+            # This logic is for per-file progress bars in SFTP mode
+            all_files = []
+            remote_stat = sftp.stat(remote_content_path)
+            if remote_stat.st_mode & 0o40000:  # S_ISDIR
+                _get_all_files_recursive(sftp, remote_content_path, local_dest_path, all_files)
+            else:  # It's a single file
+                all_files.append((remote_content_path, local_dest_path))
+
+            file_task_map = {}
+            if len(all_files) > 1:
+                with task_add_lock:
+                    for remote_f, _ in all_files:
+                        file_name = os.path.basename(remote_f)
+                        try:
+                            file_size = sftp.stat(remote_f).st_size
+                        except FileNotFoundError:
+                            file_size = 0
+                        task_id = job_progress.add_task(f"└─ [cyan]{file_name}[/]", total=file_size, start=False, visible=False)
+                        file_task_map[remote_f] = task_id
+
+            logging.info(f"Starting SFTP transfer for '{name}'")
+            transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run)
+            logging.info(f"SFTP transfer completed successfully for '{name}'.")
         unraid_save_path = os.path.join(remote_dest_base_path, os.path.dirname(relative_path))
         unraid_save_path = unraid_save_path.replace("\\", "/")
         if not dry_run:
@@ -676,6 +877,9 @@ def main():
     if args.test_run:
         logging.warning("!!! TEST RUN MODE ENABLED. SOURCE TORRENTS WILL NOT BE DELETED. !!!")
     config = load_config(args.config)
+    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+    if transfer_mode == 'rsync':
+        check_sshpass_installed()
     mandarin_qbit = connect_qbit(config['MANDARIN_QBIT'], "Mandarin")
     unraid_qbit = connect_qbit(config['UNRAID_QBIT'], "Unraid")
     if not all([mandarin_qbit, unraid_qbit]):
@@ -722,28 +926,55 @@ def main():
 
         with Live(layout, refresh_per_second=4, transient=True) as live:
             sftp_config = config['MANDARIN_SFTP']
-            sftp, transport = connect_sftp(sftp_config)
-            if not sftp:
-                live.console.log("[bold red]Failed to establish a preliminary SFTP connection. Aborting.[/]")
-                return 1
-
+            source_base_path = sftp_config['source_path']
             grand_total_size = 0
             torrent_sizes = {}
-            source_base_path = sftp_config['source_path']
-            for torrent in eligible_torrents:
-                size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
-                remote_content_path = torrent.content_path
-                if not remote_content_path.startswith(source_base_path):
-                    live.console.log(f"[yellow]Warning: Skipping size calculation for torrent with invalid path: {torrent.name}[/]")
-                    continue
-                size = get_remote_size(sftp, remote_content_path)
-                torrent_sizes[torrent.hash] = size
-                grand_total_size += size
-                size_calc_progress.advance(size_calc_task)
+
+            # --- Calculate total size of all torrents ---
+            if transfer_mode == 'rsync':
+                # Use the faster rsync method for size calculation
+                for torrent in eligible_torrents:
+                    size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
+                    remote_content_path = torrent.content_path
+                    if not remote_content_path.startswith(source_base_path):
+                        live.console.log(f"[yellow]Warning: Skipping torrent with invalid path: {torrent.name}[/]")
+                        size_calc_progress.advance(size_calc_task)
+                        continue
+
+                    size = get_remote_size_rsync(sftp_config, remote_content_path)
+                    if size == 0:
+                        live.console.log(f"[yellow]Warning: Skipping zero-size torrent or failed size check for: {torrent.name}[/]")
+
+                    torrent_sizes[torrent.hash] = size
+                    grand_total_size += size
+                    size_calc_progress.advance(size_calc_task)
+            else:  # Default to sftp
+                sftp, transport = connect_sftp(sftp_config)
+                if not sftp:
+                    live.console.log("[bold red]Failed to establish a preliminary SFTP connection. Aborting.[/]")
+                    return 1
+
+                try:
+                    for torrent in eligible_torrents:
+                        size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
+                        remote_content_path = torrent.content_path
+                        if not remote_content_path.startswith(source_base_path):
+                            live.console.log(f"[yellow]Warning: Skipping torrent with invalid path: {torrent.name}[/]")
+                            size_calc_progress.advance(size_calc_task)
+                            continue
+
+                        size = get_remote_size(sftp, remote_content_path)
+                        if size == 0:
+                            live.console.log(f"[yellow]Warning: Skipping zero-size torrent: {torrent.name}[/]")
+
+                        torrent_sizes[torrent.hash] = size
+                        grand_total_size += size
+                        size_calc_progress.advance(size_calc_task)
+                finally:
+                    if sftp: sftp.close()
+                    if transport: transport.close()
 
             overall_progress.update(overall_task, total=grand_total_size, description="[bold green]Overall")
-            sftp.close()
-            transport.close()
 
             # --- Swap out the calculation panel for the plan panel ---
             layout.renderables.pop(0) # Remove the calculation panel
@@ -764,9 +995,12 @@ def main():
             live.console.log("Plan generated. Starting transfers...")
             executor = ThreadPoolExecutor(max_workers=args.parallel_jobs)
             try:
+                # Filter out any torrents that were skipped during size calculation
+                torrents_to_process = [t for t in eligible_torrents if torrent_sizes.get(t.hash, 0) > 0]
+
                 future_to_torrent = {
-                    executor.submit(process_torrent, torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task, file_counts, count_lock, task_add_lock, args.dry_run, args.test_run): torrent
-                    for torrent in eligible_torrents
+                    executor.submit(process_torrent, torrent, torrent_sizes[torrent.hash], mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task, file_counts, count_lock, task_add_lock, args.dry_run, args.test_run): torrent
+                    for torrent in torrents_to_process
                 }
                 for future in as_completed(future_to_torrent):
                     torrent = future_to_torrent[future]
