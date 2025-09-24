@@ -19,7 +19,6 @@ host=your_mandarin_sftp_ip_or_hostname
 port=22
 username=your_sftp_username
 password=your_sftp_password
-source_path=/home/aerandir/files/move
 
 [UNRAID_PATHS]
 # The absolute path on the Unraid server where the torrent data should be physically moved.
@@ -34,6 +33,11 @@ remote_destination_path=
 [SETTINGS]
 # The category in qBittorrent that marks torrents for moving
 category_to_move=moving
+# (Optional) The desired total size in GB for the category after moving.
+# If set, the script will only move the oldest torrents until the category's
+# total size is at or below this threshold.
+# Leave blank to move all completed torrents in the category.
+size_threshold_gb=
 # The transfer mode to use. Options: sftp, rsync.
 # rsync mode requires 'sshpass' to be installed on the system running the script.
 transfer_mode=sftp

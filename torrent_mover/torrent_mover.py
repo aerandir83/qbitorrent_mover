@@ -508,11 +508,62 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, p
 
 # --- Torrent Processing Logic ---
 
-def get_eligible_torrents(client, category):
+def get_eligible_torrents(client, category, size_threshold_gb=None):
+    """
+    Retrieves a list of torrents to be moved based on the specified category and an optional size threshold.
+
+    - If size_threshold_gb is None, it returns all completed torrents in the category.
+    - If size_threshold_gb is set, it calculates the current total size of the category and
+      selects the oldest completed torrents for moving until the category size is below the threshold.
+    """
     try:
-        torrents = client.torrents_info(category=category, status_filter='completed')
-        logging.info(f"Found {len(torrents)} completed torrent(s) in category '{category}'.")
-        return torrents
+        if size_threshold_gb is None:
+            torrents = client.torrents_info(category=category, status_filter='completed')
+            logging.info(f"Found {len(torrents)} completed torrent(s) in category '{category}' to move.")
+            return torrents
+
+        # --- Threshold logic ---
+        logging.info(f"Size threshold of {size_threshold_gb} GB is active for category '{category}'.")
+        all_torrents_in_category = client.torrents_info(category=category)
+
+        current_total_size = sum(t.size for t in all_torrents_in_category)
+        threshold_bytes = size_threshold_gb * (1024**3)
+
+        logging.info(f"Current category size: {current_total_size / (1024**3):.2f} GB. Target size: {size_threshold_gb:.2f} GB.")
+
+        if current_total_size <= threshold_bytes:
+            logging.info("Category size is already below the threshold. No torrents to move.")
+            return []
+
+        size_to_download = current_total_size - threshold_bytes
+        logging.info(f"Need to move at least {size_to_download / (1024**3):.2f} GB of torrents.")
+
+        # Filter for completed torrents and sort them by age (oldest first)
+        completed_torrents = [t for t in all_torrents_in_category if t.state == 'completed' or (t.progress == 1 and t.state not in ['checkingUP', 'checkingDL'])]
+
+        # Ensure we are using a reliable 'added_on' attribute.
+        # Some clients might have torrents without this attribute, though it's rare.
+        # We sort by 'added_on' timestamp, oldest first.
+        eligible_torrents = sorted(
+            [t for t in completed_torrents if hasattr(t, 'added_on')],
+            key=lambda t: t.added_on
+        )
+
+        torrents_to_move = []
+        size_of_selected_torrents = 0
+        for torrent in eligible_torrents:
+            if size_of_selected_torrents >= size_to_download:
+                break
+            torrents_to_move.append(torrent)
+            size_of_selected_torrents += torrent.size
+
+        if not torrents_to_move:
+            logging.warning("No completed torrents are available to move to meet the threshold.")
+            return []
+
+        logging.info(f"Selected {len(torrents_to_move)} torrent(s) to meet the threshold (Total size: {size_of_selected_torrents / (1024**3):.2f} GB).")
+        return torrents_to_move
+
     except Exception as e:
         logging.error(f"Could not retrieve torrents from client: {e}")
         return []
@@ -628,15 +679,15 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
     source_paused = False
     parent_task_id = None
     try:
-        source_base_path = config['MANDARIN_SFTP']['source_path']
         dest_base_path = config['UNRAID_PATHS']['destination_path']
         remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
-        remote_content_path = torrent.content_path
-        if not remote_content_path.startswith(source_base_path):
-            raise ValueError(f"Content path '{remote_content_path}' not inside source path '{source_base_path}'.")
 
-        relative_path = os.path.relpath(remote_content_path, source_base_path)
-        local_dest_path = os.path.join(dest_base_path, relative_path)
+        # The remote_content_path is the full, absolute path from the qBittorrent API
+        remote_content_path = torrent.content_path
+        content_name = os.path.basename(remote_content_path)
+
+        # The local destination path is the destination base + the torrent's content name (file or folder)
+        local_dest_path = os.path.join(dest_base_path, content_name)
 
         if total_size == 0:
             logging.warning(f"Skipping torrent with no content or zero size: {name}")
@@ -680,8 +731,10 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
             logging.info(f"Starting SFTP transfer for '{name}'")
             transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run)
             logging.info(f"SFTP transfer completed successfully for '{name}'.")
-        unraid_save_path = os.path.join(remote_dest_base_path, os.path.dirname(relative_path))
-        unraid_save_path = unraid_save_path.replace("\\", "/")
+        # The save path for the destination client is the remote equivalent of our destination base path.
+        # qBittorrent will automatically create a sub-folder for the torrent content if it's a directory.
+        unraid_save_path = remote_dest_base_path.replace("\\", "/")
+
         if not dry_run:
             logging.info(f"Exporting .torrent file for {name}")
             torrent_file_content = mandarin_qbit.torrents_export(torrent_hash=hash)
@@ -888,7 +941,16 @@ def main():
     logging.info("qBittorrent connections established successfully.")
     try:
         category_to_move = config['SETTINGS']['category_to_move']
-        eligible_torrents = get_eligible_torrents(mandarin_qbit, category_to_move)
+        size_threshold_gb_str = config['SETTINGS'].get('size_threshold_gb')
+        size_threshold_gb = None
+        if size_threshold_gb_str and size_threshold_gb_str.strip():
+            try:
+                size_threshold_gb = float(size_threshold_gb_str)
+            except ValueError:
+                logging.error(f"Invalid value for 'size_threshold_gb': '{size_threshold_gb_str}'. It must be a number. Disabling threshold.")
+                size_threshold_gb = None
+
+        eligible_torrents = get_eligible_torrents(mandarin_qbit, category_to_move, size_threshold_gb)
         if not eligible_torrents:
             logging.info("No torrents to move at this time.")
             return 0
@@ -935,12 +997,7 @@ def main():
                 # Use the faster rsync method for size calculation
                 for torrent in eligible_torrents:
                     size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
-                    remote_content_path = torrent.content_path
-                    if not remote_content_path.startswith(source_base_path):
-                        live.console.log(f"[yellow]Warning: Skipping torrent with invalid path: {torrent.name}[/]")
-                        size_calc_progress.advance(size_calc_task)
-                        continue
-
+                    remote_content_path = torrent.content_path # Use the full path directly
                     size = get_remote_size_rsync(sftp_config, remote_content_path)
                     if size == 0:
                         live.console.log(f"[yellow]Warning: Skipping zero-size torrent or failed size check for: {torrent.name}[/]")
@@ -957,12 +1014,7 @@ def main():
                 try:
                     for torrent in eligible_torrents:
                         size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
-                        remote_content_path = torrent.content_path
-                        if not remote_content_path.startswith(source_base_path):
-                            live.console.log(f"[yellow]Warning: Skipping torrent with invalid path: {torrent.name}[/]")
-                            size_calc_progress.advance(size_calc_task)
-                            continue
-
+                        remote_content_path = torrent.content_path # Use the full path directly
                         size = get_remote_size(sftp, remote_content_path)
                         if size == 0:
                             live.console.log(f"[yellow]Warning: Skipping zero-size torrent: {torrent.name}[/]")
