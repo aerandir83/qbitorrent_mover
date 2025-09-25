@@ -743,7 +743,8 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
                 torrent_files=torrent_file_content,
                 save_path=unraid_save_path,
                 is_paused=True,
-                category=torrent.category
+                category=torrent.category,
+                use_auto_torrent_management=True
             )
             time.sleep(5)
         else:
