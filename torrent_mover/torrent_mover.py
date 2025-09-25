@@ -535,8 +535,8 @@ def get_eligible_torrents(client, category, size_threshold_gb=None):
             logging.info("Category size is already below the threshold. No torrents to move.")
             return []
 
-        size_to_download = current_total_size - threshold_bytes
-        logging.info(f"Need to move at least {size_to_download / (1024**3):.2f} GB of torrents.")
+        size_to_move = current_total_size - threshold_bytes
+        logging.info(f"Need to move at least {size_to_move / (1024**3):.2f} GB of torrents.")
 
         # Filter for completed torrents and sort them by age (oldest first)
         completed_torrents = [t for t in all_torrents_in_category if t.state == 'completed' or (t.progress == 1 and t.state not in ['checkingUP', 'checkingDL'])]
@@ -552,7 +552,7 @@ def get_eligible_torrents(client, category, size_threshold_gb=None):
         torrents_to_move = []
         size_of_selected_torrents = 0
         for torrent in eligible_torrents:
-            if size_of_selected_torrents >= size_to_download:
+            if size_of_selected_torrents >= size_to_move:
                 break
             torrents_to_move.append(torrent)
             size_of_selected_torrents += torrent.size
@@ -988,7 +988,6 @@ def main():
 
         with Live(layout, refresh_per_second=4, transient=True) as live:
             sftp_config = config['MANDARIN_SFTP']
-            source_base_path = sftp_config['source_path']
             grand_total_size = 0
             torrent_sizes = {}
 
