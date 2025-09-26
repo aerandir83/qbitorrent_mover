@@ -902,6 +902,45 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan):
     except Exception as e:
         logging.error(f"An error occurred during interactive categorization: {e}", exc_info=True)
 
+def setup_logging(script_dir, dry_run, test_run):
+    """Configures logging to both console and a file."""
+    log_dir = script_dir / 'logs'
+    log_dir.mkdir(exist_ok=True)
+
+    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    log_file_name = f"torrent_mover_{timestamp}.log"
+    log_file_path = log_dir / log_file_name
+
+    # Get the root logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # Remove any existing handlers to avoid duplicates
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    # Create file handler
+    file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+
+    # Create console handler with Rich
+    rich_handler = RichHandler(show_path=False, rich_tracebacks=True, markup=True)
+    # The formatter for RichHandler should be minimal, as Rich handles the presentation.
+    rich_formatter = logging.Formatter('%(message)s')
+    rich_handler.setFormatter(rich_formatter)
+    logger.addHandler(rich_handler)
+
+    logging.getLogger("paramiko").setLevel(logging.WARNING)
+
+    # Initial log messages
+    logging.info("--- Torrent Mover script started ---")
+    if dry_run:
+        logging.warning("!!! DRY RUN MODE ENABLED. NO CHANGES WILL BE MADE. !!!")
+    if test_run:
+        logging.warning("!!! TEST RUN MODE ENABLED. SOURCE TORRENTS WILL NOT BE DELETED. !!!")
+
 def main():
     """Main entry point for the script."""
     script_dir = Path(__file__).resolve().parent
@@ -918,18 +957,14 @@ def main():
     parser.add_argument('--interactive-categorize', action='store_true', help='Interactively categorize torrents on destination without a rule.')
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format='%(message)s', handlers=[RichHandler(show_path=False, rich_tracebacks=True, markup=True)])
-    logging.getLogger("paramiko").setLevel(logging.WARNING)
+
+    setup_logging(script_dir, args.dry_run, args.test_run)
+
     tracker_rules = load_tracker_rules(script_dir)
     if args.list_rules or args.add_rule or args.delete_rule:
         return 0
     if args.interactive_categorize:
         return 0
-    logging.info("--- Torrent Mover script started ---")
-    if args.dry_run:
-        logging.warning("!!! DRY RUN MODE ENABLED. NO CHANGES WILL BE MADE. !!!")
-    if args.test_run:
-        logging.warning("!!! TEST RUN MODE ENABLED. SOURCE TORRENTS WILL NOT BE DELETED. !!!")
     config = load_config(args.config)
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
     if transfer_mode == 'rsync':
