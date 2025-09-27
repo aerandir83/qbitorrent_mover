@@ -1,51 +1,61 @@
 # Torrent Mover
 
-A Python script to automatically move completed torrents and their data from a source qBittorrent client (e.g., a seedbox) to a destination qBittorrent client (e.g., a home server) and transfer the files via SFTP.
+A Python script to automatically move completed torrents from a source qBittorrent client (like a seedbox) to a destination client (like a home server), transferring the data securely via SFTP or rsync.
+
+## Versioning
+
+This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
+
+*   **MAJOR**: Incremented for significant, backward-incompatible changes.
+*   **MINOR**: Incremented when new, backward-compatible functionality is added.
+*   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
+
+The current version is **0.1.1**. To check your version, run: `python torrent_mover.py --version`.
 
 ## Features
 
-*   **Connects to Two qBittorrent Clients**: Manages torrents on both a source and a destination client via their WebUIs.
-*   **Secure File Transfer**: Uses SFTP to securely transfer torrent data from the source server to the local machine where the script is run.
-*   **Category-Based Moving**: Only moves torrents that are assigned a specific, user-defined category.
-*   **Preserves Directory Structure**: Intelligently handles both single-file and multi-file torrents, perfectly recreating the directory structure on the destination.
-*   **Automated Lifecycle Management**: Automates the entire workflow:
+*   **Works with Two qBittorrent Clients**: Manages torrents on both a source and a destination client via their WebUIs.
+*   **Secure & Fast File Transfers**: Uses `rsync` (recommended) or `sftp` to securely transfer torrent data.
+*   **Category-Based Moving**: Only moves torrents assigned to a specific category you define (e.g., "move").
+*   **Fully Automated Process**:
     1.  Pauses the torrent on the source client.
-    2.  Transfers the data.
+    2.  Transfers the data to the destination server.
     3.  Adds the torrent to the destination client (paused).
     4.  Triggers a force recheck to verify data integrity.
-    5.  Starts the torrent on the destination client for seeding.
-    6.  Deletes the torrent and its data from the source client to free up space.
-*   **Safe Dry Run Mode**: Includes a `--dry-run` flag to simulate the entire process without making any actual changes, allowing you to safely test your configuration.
-*   **Flexible Configuration**: All server details, credentials, and paths are stored in a simple `config.ini` file.
-
-## Advanced Features
-
-### Tracker-Based Categorization
-
-This script can automatically assign a category to torrents on the destination client based on their trackers. This helps in organizing your library without manual intervention.
-
-*   **Learning System**: The script "learns" which category to apply to a tracker domain. When it processes a torrent with a tracker it hasn't seen before, you can run the script in interactive mode to teach it a new rule.
-*   **Rule-Based**: The rules are stored in a simple `tracker_rules.json` file in the `torrent_mover` directory, which can be edited manually or via command-line options.
-*   **Automatic Application**: During a normal run, after a torrent is transferred and re-checked on the destination client, the script will look up its tracker in the rules and apply the corresponding category.
+    5.  Starts the torrent on the destination for seeding.
+    6.  Deletes the torrent and its data from the source to free up space.
+*   **Safe Testing Modes**: Includes `--dry-run` and `--test-run` flags to simulate the process without making permanent changes, so you can safely test your configuration.
+*   **Flexible Configuration**: All settings are managed in a simple `config.ini` file.
+*   **Advanced Categorization**: Optionally, automatically assign categories on your destination client based on torrent trackers.
 
 ## Requirements
 
 *   Python 3.6+
-*   Network access from where the script is run to both qBittorrent WebUIs.
-*   SSH/SFTP access from where the script is run to the source server.
-*   A dedicated directory on the source server for torrents that are ready to be moved.
+*   Two qBittorrent clients accessible over the network from where the script is run.
+*   SSH/SFTP access to the source server.
 
-## Setup Instructions
+## Installation & Setup
 
-It is highly recommended to run this script within a Python virtual environment to avoid conflicts with system-wide packages. It is designed to run on your Unraid server (or an LXC container within it).
+It's highly recommended to run this script in a Python virtual environment to avoid conflicts with system packages.
 
-### 1. Set up Python Environment
+### 1. Get the Code
 
-If you are in an LXC container or a machine with Python, navigate to the `torrent_mover` directory and create a virtual environment:
+First, clone this repository to a directory on your destination server (e.g., your Unraid server).
 
 ```bash
-# Navigate to the project directory
-cd /path/to/torrent_mover
+# Example: Clone into the /opt directory
+cd /opt
+git clone https://github.com/your-username/torrent-mover.git
+cd torrent-mover
+```
+
+### 2. Set up Python Environment
+
+Navigate into the project's `torrent_mover` subdirectory and create a virtual environment.
+
+```bash
+# Navigate to the script directory
+cd torrent_mover
 
 # Create a virtual environment
 python3 -m venv .venv
@@ -53,151 +63,57 @@ python3 -m venv .venv
 # Activate the virtual environment
 source .venv/bin/activate
 ```
+*Note: You will need to activate the virtual environment (`source .venv/bin/activate`) every time you open a new terminal session to run the script.*
 
-### 2. Install Dependencies
+### 3. Install Dependencies
 
-Install the required Python libraries using the `requirements.txt` file:
+Install the required Python libraries.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Create Your Configuration
+### 4. Create and Edit Your Configuration
 
-Copy the template file to create your own configuration:
+Copy the template to create your own configuration file.
 
 ```bash
 cp config.ini.template config.ini
 ```
 
-Now, open `config.ini` with a text editor and fill in the details for your servers.
+Now, open `config.ini` with a text editor (like `nano`) and fill in your server details.
 
-**[MANDARIN_QBIT]** - Your source qBittorrent client
-*   `host`: The full URL to the client, e.g., `https://mandarin.example.com`
-*   `port`: The port for the WebUI (e.g., `443` for HTTPS).
-*   `username`/`password`: Your qBittorrent login credentials.
-*   `verify_cert`: Set to `False` if you use a self-signed SSL certificate.
+*   **[MANDARIN_QBIT]** - Your **source** qBittorrent client (e.g., your seedbox).
+*   **[UNRAID_QBIT]** - Your **destination** qBittorrent client (e.g., your home server).
+*   **[MANDARIN_SFTP]** - The SFTP/SSH details for your **source** server.
+    *   `source_path`: The **absolute path** where the source qBittorrent saves completed files for the moving category. This must match the path set in qBittorrent.
+*   **[UNRAID_PATHS]**
+    *   `destination_path`: The **absolute local path** on the server where the script is running. This is where the torrent files will be moved to.
+*   **[SETTINGS]**
+    *   `category_to_move`: The category in qBittorrent that tells the script which torrents to move.
 
-**[UNRAID_QBIT]** - Your destination qBittorrent client
-*   (Same fields as above, but for your Unraid/home client)
+## Basic Usage
 
-**[MANDARIN_SFTP]** - SFTP details for your source server
-*   `host`: The IP address or hostname for SFTP connection.
-*   `port`: The SFTP port (usually `22`).
-*   `username`/`password`: Your SFTP/SSH login credentials.
-*   `source_path`: The **absolute path** on the source server where qBittorrent saves completed files for the moving category. **This must match the path in qBittorrent.**
+It is **strongly recommended** to test your configuration before a normal run.
 
-**[UNRAID_PATHS]**
-*   `destination_path`: The **absolute local path** on the server running the script where files should be moved to. This script assumes it is running on the destination machine (e.g., Unraid).
+### Testing Your Setup (Recommended)
 
-**[SETTINGS]**
-*   `category_to_move`: The name of the category in qBittorrent that identifies torrents to be moved (e.g., `moving`).
-
-## Usage
-
-### Execution Modes
-
-It is **strongly recommended** to test your configuration before running the script normally. There are two modes for testing:
-
-*   **Dry Run (Simulation)**: This is the safest mode. It will print all the actions it *would* take (like which torrents it would move and where) without actually transferring files, adding torrents, or deleting anything. Use this to verify your paths and connections.
+*   **Dry Run (Simulation)**: This is the safest mode. It prints all the actions it *would* take without transferring files or changing any torrents. It's perfect for verifying your paths and connections.
     ```bash
     python torrent_mover.py --dry-run
     ```
 
-*   **Test Run (No Deletion)**: This mode performs a full run of the script—including pausing, transferring files, adding to the destination, and re-checking—but it **skips the final step of deleting the torrent from the source client**. This is useful for end-to-end testing of your setup without risking data loss on the source.
+*   **Test Run (No Deletion)**: This performs a full run—transferring files and adding them to the destination—but **skips the final step of deleting the torrent from the source**. Use this for end-to-end testing without risking data loss.
     ```bash
     python torrent_mover.py --test-run
     ```
 
 ### Normal Run
 
-Once you have confirmed the dry run looks correct, you can run the script normally:
+Once you've confirmed everything works as expected, run the script normally:
 
 ```bash
 python torrent_mover.py
-```
-
-### Command-Line Arguments
-
-The script supports several command-line arguments to customize its behavior:
-
-| Argument | Description |
-|---|---|
-| `--config [PATH]` | Specifies the path to the `config.ini` file. Defaults to `config.ini` in the script directory. |
-| `--dry-run` | Simulates the entire process, printing actions without making any changes. |
-| `--test-run` | Performs a full run but **skips deleting torrents** from the source client. |
-| `--parallel-jobs [N]` | Sets the number of torrents to process concurrently. Defaults to `4`. |
-| `--list-rules` | Lists all saved tracker-to-category rules and exits. |
-| `--add-rule [DOMAIN] [CATEGORY]` | Adds or updates a categorization rule and exits. |
-| `--delete-rule [DOMAIN]` | Deletes a specific categorization rule and exits. |
-| `--interactive-categorize` | Starts an interactive session to create rules for uncategorized torrents. |
-
-### Enabling Bash Auto-Completion (Optional)
-
-To make using the command-line arguments easier, you can enable bash auto-completion. This will allow you to press the `Tab` key to auto-complete arguments like `--interactive-categorize`.
-
-The setup requires three steps: ensuring the script is executable, telling `argcomplete` where to find the script, and adding this to your shell's startup file.
-
-1.  **Make the script executable:**
-    Navigate to the `torrent_mover` directory and run the following command:
-    ```bash
-    chmod +x torrent_mover.py
-    ```
-
-2.  **Find the absolute path to the script:**
-    While still in the `torrent_mover` directory, run the `pwd` command to get the full path to your script.
-    ```bash
-    # This will print the full path, e.g., /home/user/project/torrent_mover
-    pwd
-    ```
-    The absolute path to your script will be the output of that command plus `/torrent_mover.py`. For example: `/home/user/project/torrent_mover/torrent_mover.py`.
-
-3.  **Add the registration command to your `.bashrc`:**
-    Add the following line to the end of your `~/.bashrc` file. **Remember to replace `/path/to/your/script/torrent_mover.py` with the actual absolute path you found in the previous step.**
-    ```bash
-    # Add this to ~/.bashrc, replacing the path with your own
-    eval "$(register-python-argcomplete /path/to/your/script/torrent_mover.py)"
-    ```
-
-4.  **Reload your shell:**
-    For the changes to take effect, either restart your shell or run:
-    ```bash
-    source ~/.bashrc
-    ```
-    Auto-completion for the script's arguments should now be active.
-
-### Managing Tracker Categorization Rules
-
-You can manage the tracker-to-category rules directly from the command line. These commands do not require a full run of the mover script.
-
-*   **List All Rules**:
-    ```bash
-    python torrent_mover.py --list-rules
-    ```
-
-*   **Add or Update a Rule**:
-    This command maps a tracker domain (e.g., `some-tracker.org`) to a category name that exists in your destination qBittorrent client.
-    ```bash
-    python torrent_mover.py --add-rule "some-tracker.org" "My-TV-Shows"
-    ```
-
-*   **Delete a Rule**:
-    ```bash
-    python torrent_mover.py --delete-rule "some-tracker.org"
-    ```
-
-*   **Interactively Create Rules (Learning Mode)**:
-    The script will scan all torrents on your destination client. For any torrent whose tracker domain does not have a rule, it will prompt you to choose from a list of your existing qBittorrent categories. It's recommended to run this periodically to teach the script about new trackers.
-    ```bash
-    python torrent_mover.py --interactive-categorize
-    ```
-
-### Specifying a Config File
-
-If you named your config file something else or placed it in a different directory, use the `--config` argument:
-
-```bash
-python torrent_mover.py --config /path/to/my/configuration.ini
 ```
 
 ## Scheduling with Cron
@@ -205,17 +121,64 @@ python torrent_mover.py --config /path/to/my/configuration.ini
 To run the script automatically, you can set up a cron job.
 
 1.  Open your crontab for editing: `crontab -e`
-2.  Add a new line to schedule the script. The following example runs the script every hour.
+2.  Add a line to schedule the script. This example runs it every hour and logs the output.
 
-**Make sure to use absolute paths** for the Python interpreter and the script itself.
+**Make sure to use absolute paths** for both the Python interpreter in your virtual environment and the script itself.
 
 ```crontab
-# Run the torrent mover script every hour and log output to a file
-0 * * * * /path/to/torrent_mover/.venv/bin/python /path/to/torrent_mover/torrent_mover.py >> /path/to/torrent_mover/mover.log 2>&1
+# Run the torrent mover script every hour and log output
+0 * * * * /path/to/your/torrent_mover/.venv/bin/python /path/to/your/torrent_mover/torrent_mover.py >> /path/to/your/torrent_mover/mover.log 2>&1
 ```
+*   The `>> ... 2>&1` part is highly recommended, as it saves a log of the script's activity, which is essential for debugging.
 
-*   `0 * * * *`: This means "at minute 0 of every hour".
-*   `/path/to/torrent_mover/.venv/bin/python`: Absolute path to the Python interpreter inside your virtual environment.
-*   `/path/to/torrent_mover/torrent_mover.py`: Absolute path to the script.
-*   `>> /path/to/torrent_mover/mover.log 2>&1`: This appends all output (both standard output and errors) to a log file named `mover.log` inside the project directory. This is highly recommended for debugging.
-```
+## Command-Line Arguments
+
+| Argument | Description |
+|---|---|
+| `--config [PATH]` | Specifies the path to the `config.ini` file. Defaults to `config.ini`. |
+| `--dry-run` | Simulates the process without making any changes. |
+| `--test-run` | Performs a full run but **skips deleting torrents** from the source client. |
+| `--parallel-jobs [N]` | Sets the number of torrents to process concurrently. Defaults to `4`. |
+| `--list-rules` | Lists all saved tracker-to-category rules and exits. |
+| `--add-rule [DOMAIN] [CATEGORY]` | Adds or updates a categorization rule and exits. |
+| `--delete-rule [DOMAIN]` | Deletes a specific categorization rule and exits. |
+| `--interactive-categorize` | Starts an interactive session to create rules for uncategorized torrents. |
+| `--version` | Displays the current version of the script and exits. |
+
+## Advanced Usage
+
+### Tracker-Based Categorization
+
+This script can automatically assign a category to torrents on your destination client based on their trackers, helping you organize your library.
+
+*   **How it Works**: The script can be "taught" which category to apply to a tracker domain. These rules are stored in `tracker_rules.json`.
+*   **Interactive Learning**: The easiest way to create rules is to run the script in interactive mode. It will scan torrents on your destination client and, for any torrent whose tracker is unknown, prompt you to assign a category.
+    ```bash
+    python torrent_mover.py --interactive-categorize
+    ```
+*   **Manual Rule Management**: You can also manage rules directly from the command line:
+    *   **List All Rules**: `python torrent_mover.py --list-rules`
+    *   **Add/Update a Rule**: `python torrent_mover.py --add-rule "some-tracker.org" "My-TV-Shows"`
+    *   **Delete a Rule**: `python torrent_mover.py --delete-rule "some-tracker.org"`
+
+### Enabling Bash Auto-Completion (Optional)
+
+To enable `Tab` auto-completion for command-line arguments, follow these steps:
+
+1.  **Make the script executable:**
+    ```bash
+    chmod +x torrent_mover.py
+    ```
+
+2.  **Find the absolute path to the script:**
+    While in the `torrent_mover` directory, run `pwd`. The output is the absolute path to the directory.
+
+3.  **Add the registration command to your `.bashrc`:**
+    Add the following line to the end of your `~/.bashrc` file, replacing the placeholder path with the one you found above.
+    ```bash
+    # Add this to ~/.bashrc, replacing the path with your own
+    eval "$(register-python-argcomplete /path/to/your/torrent_mover/torrent_mover.py)"
+    ```
+
+4.  **Reload your shell:**
+    Run `source ~/.bashrc` or restart your shell. Auto-completion should now be active.
