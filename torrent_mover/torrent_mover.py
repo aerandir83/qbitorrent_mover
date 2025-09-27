@@ -4,6 +4,8 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
+__version__ = "0.1.1"
+
 import configparser
 import sys
 import logging
@@ -995,6 +997,7 @@ def main():
     parser.add_argument('--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
     parser.add_argument('--delete-rule', metavar='TRACKER_DOMAIN', help='Delete a rule and exit.')
     parser.add_argument('--interactive-categorize', action='store_true', help='Interactively categorize torrents on destination without a rule.')
+    parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
