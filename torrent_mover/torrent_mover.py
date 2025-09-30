@@ -54,7 +54,7 @@ def load_config(config_path="config.ini"):
 
 # --- Connection Functions ---
 
-@retry(tries=3, delay=10, backoff=2)
+@retry(tries=2, delay=5)
 def connect_qbit(config_section, client_name):
     """
     Connects to a qBittorrent client using details from a config section.
@@ -79,7 +79,7 @@ def connect_qbit(config_section, client_name):
     logging.info(f"Successfully connected to {client_name}. Version: {client.app.version}")
     return client
 
-@retry(tries=3, delay=10, backoff=2)
+@retry(tries=2, delay=5)
 def connect_sftp(config_section):
     """
     Connects to a server via SFTP using details from a config section.
@@ -216,7 +216,7 @@ def get_remote_size(sftp, remote_path):
         return 0
     return total_size
 
-@retry(tries=3, delay=5, backoff=2)
+@retry(tries=2, delay=5)
 def get_remote_size_rsync(sftp_config, remote_path):
     """
     Gets the total size of a remote file or directory using rsync --stats, with retries.
@@ -285,7 +285,7 @@ def _get_all_files_recursive(sftp, remote_path, local_path, file_list):
         else:
             file_list.append((remote_item_path, local_item_path))
 
-@retry(tries=3, delay=10, backoff=2)
+@retry(tries=2, delay=5)
 def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_id, dry_run=False):
     """
     Downloads a single file with a progress bar, with retries. Establishes its own SFTP session
@@ -404,14 +404,13 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
 
     logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}'")
 
-    max_retries = 3
-    retry_delay = 10  # Initial delay in seconds
+    max_retries = 2
+    retry_delay = 5  # Fixed delay in seconds
 
-    for attempt in range(max_retries):
-        if attempt > 0:
-            logging.info(f"Rsync attempt {attempt + 1}/{max_retries} for '{os.path.basename(remote_path)}'...")
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1:
+            logging.info(f"Rsync attempt {attempt}/{max_retries} for '{os.path.basename(remote_path)}'...")
             time.sleep(retry_delay)
-            retry_delay *= 2  # Exponential backoff
 
         process = None
         try:
@@ -1160,8 +1159,8 @@ def main():
                         remote_content_path = torrent.content_path
 
                         size = 0
-                        retries = 3
-                        for attempt in range(retries):
+                        retries = 2
+                        for attempt in range(1, retries + 1):
                             try:
                                 # Check if connection is alive, or reconnect if it's the first attempt on a failed torrent
                                 if not transport or not transport.is_active():
@@ -1179,12 +1178,12 @@ def main():
                                 break  # Success
                             except (paramiko.ssh_exception.SSHException, EOFError, OSError) as e:
                                 live.console.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
-                                if attempt < retries - 1:
-                                    live.console.log(f"[yellow]Retrying ({attempt + 1}/{retries})...[/]")
+                                if attempt < retries:
+                                    live.console.log(f"[yellow]Attempt {attempt}/{retries} failed. Retrying in 5 seconds...[/]")
                                     # The connection will be re-established at the start of the next loop
                                     time.sleep(5)
                                 else:
-                                    live.console.log(f"[bold red]Failed to calculate size for '{torrent.name}' after multiple retries.[/]")
+                                    live.console.log(f"[bold red]Failed to calculate size for '{torrent.name}' after {retries} attempts.[/]")
                                     live.console.log(f"[yellow]Warning: Skipping torrent.[/]")
                                     torrent_sizes[torrent.hash] = 0  # Mark as zero to skip
 
