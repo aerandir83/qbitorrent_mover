@@ -82,8 +82,8 @@ def connect_qbit(config_section, client_name):
 @retry(tries=2, delay=5)
 def connect_sftp(config_section):
     """
-    Connects to a server via SFTP using details from a config section.
-    Returns a connected SFTP client and transport object, or raises an exception on failure.
+    Connects to a server via SFTP using SSHClient for better timeout control.
+    Returns a connected SFTP client and the SSHClient object, or raises an exception on failure.
     """
     host = config_section['host']
     port = config_section.getint('port')
@@ -91,14 +91,20 @@ def connect_sftp(config_section):
     password = config_section['password']
 
     logging.info(f"Establishing SFTP connection to {host}...")
-    transport = paramiko.Transport((host, port))
-    # Add a timeout to the transport connection and enable keepalives
-    transport.banner_timeout = 20
-    transport.set_keepalive(30)
-    transport.connect(username=username, password=password)
-    sftp = paramiko.SFTPClient.from_transport(transport)
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    # The timeout parameter here is crucial for fast failure detection
+    ssh_client.connect(hostname=host, port=port, username=username, password=password, timeout=10)
+
+    # Enable keepalives on the underlying transport
+    transport = ssh_client.get_transport()
+    if transport:
+        transport.set_keepalive(30)
+
+    sftp = ssh_client.open_sftp()
     logging.info(f"Successfully established SFTP connection to {host}.")
-    return sftp, transport
+    return sftp, ssh_client
 
 import os
 import sys
@@ -296,10 +302,10 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
     file_name = os.path.basename(remote_file)
 
     sftp = None
-    transport = None
+    ssh_client = None
     download_successful = False
     try:
-        sftp, transport = connect_sftp(sftp_config)
+        sftp, ssh_client = connect_sftp(sftp_config)
 
         remote_stat = sftp.stat(remote_file)
         total_size = remote_stat.st_size
@@ -365,8 +371,8 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
     finally:
         if sftp:
             sftp.close()
-        if transport:
-            transport.close()
+        if ssh_client:
+            ssh_client.close()
 
 def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
     """
@@ -701,7 +707,7 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
     """
     name, hash = torrent.name, torrent.hash
     sftp = None
-    transport = None
+    ssh_client = None
     source_paused = False
     parent_task_id = None
     success = False
@@ -727,7 +733,7 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
             transfer_content_rsync(sftp_config, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
             logging.info(f"Rsync transfer completed successfully for '{name}'.")
         else:  # sftp mode
-            sftp, transport = connect_sftp(sftp_config)
+            sftp, ssh_client = connect_sftp(sftp_config)
             all_files = []
             remote_stat = sftp.stat(remote_content_path)
             if remote_stat.st_mode & 0o40000:  # S_ISDIR
@@ -818,8 +824,8 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
     finally:
         if sftp:
             sftp.close()
-        if transport:
-            transport.close()
+        if ssh_client:
+            ssh_client.close()
         if parent_task_id is not None:
             job_progress.stop_task(parent_task_id)
             if success:
@@ -1146,12 +1152,7 @@ def main():
                         size_calc_progress.advance(size_calc_task)
             else:  # Default to sftp
                 sftp = None
-                transport = None
-                try:
-                    sftp, transport = connect_sftp(sftp_config)
-                except Exception as e:
-                    live.console.log(f"[bold red]Failed to establish a preliminary SFTP connection: {e}. Aborting.[/]")
-                    return 1
+                ssh_client = None
 
                 try:
                     for torrent in eligible_torrents:
@@ -1162,13 +1163,14 @@ def main():
                         retries = 2
                         for attempt in range(1, retries + 1):
                             try:
-                                # Check if connection is alive, or reconnect if it's the first attempt on a failed torrent
-                                if not transport or not transport.is_active():
-                                    live.console.log("[yellow]SFTP connection is not active. Reconnecting...[/]")
+                                # If the client is dead or not connected, create a new one.
+                                if ssh_client is None or ssh_client.get_transport() is None or not ssh_client.get_transport().is_active():
+                                    live.console.log("[yellow]SFTP connection is not active. Establishing new connection...[/]")
+                                    # Clean up any old connection first
                                     if sftp: sftp.close()
-                                    if transport: transport.close()
-                                    sftp, transport = connect_sftp(sftp_config)
-                                    live.console.log("[green]SFTP reconnected successfully.[/green]")
+                                    if ssh_client: ssh_client.close()
+                                    sftp, ssh_client = connect_sftp(sftp_config)
+                                    live.console.log("[green]SFTP connection established.[/green]")
 
                                 size = get_remote_size(sftp, remote_content_path)
                                 if size == 0:
@@ -1176,11 +1178,15 @@ def main():
                                 torrent_sizes[torrent.hash] = size
                                 grand_total_size += size
                                 break  # Success
-                            except (paramiko.ssh_exception.SSHException, EOFError, OSError) as e:
+                            except (paramiko.ssh_exception.SSHException, EOFError, OSError, AttributeError) as e:
                                 live.console.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
+                                # Clean up the dead connection completely
+                                if sftp: sftp.close()
+                                if ssh_client: ssh_client.close()
+                                sftp, ssh_client = None, None
+
                                 if attempt < retries:
                                     live.console.log(f"[yellow]Attempt {attempt}/{retries} failed. Retrying in 5 seconds...[/]")
-                                    # The connection will be re-established at the start of the next loop
                                     time.sleep(5)
                                 else:
                                     live.console.log(f"[bold red]Failed to calculate size for '{torrent.name}' after {retries} attempts.[/]")
@@ -1190,7 +1196,7 @@ def main():
                         size_calc_progress.advance(size_calc_task)
                 finally:
                     if sftp: sftp.close()
-                    if transport: transport.close()
+                    if ssh_client: ssh_client.close()
 
             overall_progress.update(overall_task, total=grand_total_size, description="[bold green]Overall")
 
