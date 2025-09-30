@@ -216,9 +216,10 @@ def get_remote_size(sftp, remote_path):
         return 0
     return total_size
 
+@retry(tries=3, delay=5, backoff=2)
 def get_remote_size_rsync(sftp_config, remote_path):
     """
-    Gets the total size of a remote file or directory using rsync --stats.
+    Gets the total size of a remote file or directory using rsync --stats, with retries.
     This is much faster than recursive SFTP STAT calls for directories with many files.
     """
     host = sftp_config['host']
@@ -231,11 +232,10 @@ def get_remote_size_rsync(sftp_config, remote_path):
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
-        "-a", "--dry-run", "--stats",
-        "-e", f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+        "-a", "--dry-run", "--stats", "--timeout=60",
+        "-e", f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15",
         remote_spec,
         # A dummy local path is required. The path must exist.
-        # We use the current directory '.' as it's guaranteed to exist.
         "."
     ]
 
@@ -250,9 +250,8 @@ def get_remote_size_rsync(sftp_config, remote_path):
 
         # rsync exit code 24 ("Partial transfer due to vanished source files") is okay for a size check.
         if result.returncode != 0 and result.returncode != 24:
-            logging.error(f"Rsync (size check) failed for '{os.path.basename(remote_path)}' with exit code {result.returncode}.")
-            logging.error(f"Rsync stderr: {result.stderr}")
-            return 0
+            # Raise an exception to trigger the retry decorator
+            raise Exception(f"Rsync (size check) failed with exit code {result.returncode}. Stderr: {result.stderr}")
 
         # The 'Total file size' is what we need.
         match = re.search(r"Total file size: ([\d,]+) bytes", result.stdout)
@@ -262,14 +261,15 @@ def get_remote_size_rsync(sftp_config, remote_path):
         else:
             logging.warning(f"Could not parse rsync --stats output for torrent '{os.path.basename(remote_path)}'.")
             logging.debug(f"Rsync stdout for size check:\n{result.stdout}")
-            return 0
+            # Raise exception if parsing fails, as it could be a sign of a failed transfer
+            raise Exception("Failed to parse rsync stats output.")
 
     except FileNotFoundError:
         logging.error("FATAL: 'rsync' or 'sshpass' command not found during size check.")
         raise
     except Exception as e:
-        logging.error(f"An exception occurred during rsync size check for {remote_path}: {e}")
-        return 0
+        # Re-raise to be handled by the retry decorator or the calling function
+        raise e
 
 def _get_all_files_recursive(sftp, remote_path, local_path, file_list):
     """
@@ -716,7 +716,7 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
 
         if total_size == 0:
             logging.warning(f"Skipping torrent with no content or zero size: {name}")
-            success = True
+            success = True # Mark as success for the UI
             return True
 
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
@@ -1132,30 +1132,62 @@ def main():
                 # Use the faster rsync method for size calculation
                 for torrent in eligible_torrents:
                     size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
-                    remote_content_path = torrent.content_path # Use the full path directly
-                    size = get_remote_size_rsync(sftp_config, remote_content_path)
-                    if size == 0:
-                        live.console.log(f"[yellow]Warning: Skipping zero-size torrent or failed size check for: {torrent.name}[/]")
-
-                    torrent_sizes[torrent.hash] = size
-                    grand_total_size += size
-                    size_calc_progress.advance(size_calc_task)
+                    remote_content_path = torrent.content_path
+                    try:
+                        size = get_remote_size_rsync(sftp_config, remote_content_path)
+                        if size == 0:
+                            live.console.log(f"[yellow]Warning: Skipping zero-size torrent: {torrent.name}[/]")
+                        torrent_sizes[torrent.hash] = size
+                        grand_total_size += size
+                    except Exception as e:
+                        live.console.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
+                        live.console.log(f"[yellow]Warning: Skipping torrent due to size calculation failure.[/]")
+                        torrent_sizes[torrent.hash] = 0 # Mark as zero to skip later
+                    finally:
+                        size_calc_progress.advance(size_calc_task)
             else:  # Default to sftp
-                sftp, transport = connect_sftp(sftp_config)
-                if not sftp:
-                    live.console.log("[bold red]Failed to establish a preliminary SFTP connection. Aborting.[/]")
+                sftp = None
+                transport = None
+                try:
+                    sftp, transport = connect_sftp(sftp_config)
+                except Exception as e:
+                    live.console.log(f"[bold red]Failed to establish a preliminary SFTP connection: {e}. Aborting.[/]")
                     return 1
 
                 try:
                     for torrent in eligible_torrents:
                         size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
-                        remote_content_path = torrent.content_path # Use the full path directly
-                        size = get_remote_size(sftp, remote_content_path)
-                        if size == 0:
-                            live.console.log(f"[yellow]Warning: Skipping zero-size torrent: {torrent.name}[/]")
+                        remote_content_path = torrent.content_path
 
-                        torrent_sizes[torrent.hash] = size
-                        grand_total_size += size
+                        size = 0
+                        retries = 3
+                        for attempt in range(retries):
+                            try:
+                                # Check if connection is alive, or reconnect if it's the first attempt on a failed torrent
+                                if not transport or not transport.is_active():
+                                    live.console.log("[yellow]SFTP connection is not active. Reconnecting...[/]")
+                                    if sftp: sftp.close()
+                                    if transport: transport.close()
+                                    sftp, transport = connect_sftp(sftp_config)
+                                    live.console.log("[green]SFTP reconnected successfully.[/green]")
+
+                                size = get_remote_size(sftp, remote_content_path)
+                                if size == 0:
+                                    live.console.log(f"[yellow]Warning: Skipping zero-size torrent: {torrent.name}[/]")
+                                torrent_sizes[torrent.hash] = size
+                                grand_total_size += size
+                                break  # Success
+                            except (paramiko.ssh_exception.SSHException, EOFError, OSError) as e:
+                                live.console.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
+                                if attempt < retries - 1:
+                                    live.console.log(f"[yellow]Retrying ({attempt + 1}/{retries})...[/]")
+                                    # The connection will be re-established at the start of the next loop
+                                    time.sleep(5)
+                                else:
+                                    live.console.log(f"[bold red]Failed to calculate size for '{torrent.name}' after multiple retries.[/]")
+                                    live.console.log(f"[yellow]Warning: Skipping torrent.[/]")
+                                    torrent_sizes[torrent.hash] = 0  # Mark as zero to skip
+
                         size_calc_progress.advance(size_calc_task)
                 finally:
                     if sftp: sftp.close()
