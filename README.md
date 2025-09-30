@@ -133,17 +133,19 @@ To run the script automatically, you can set up a cron job.
 
 ## Command-Line Arguments
 
-| Argument | Description |
-|---|---|
-| `--config [PATH]` | Specifies the path to the `config.ini` file. Defaults to `config.ini`. |
-| `--dry-run` | Simulates the process without making any changes. |
-| `--test-run` | Performs a full run but **skips deleting torrents** from the source client. |
-| `--parallel-jobs [N]` | Sets the number of torrents to process concurrently. Defaults to `4`. |
-| `--list-rules` | Lists all saved tracker-to-category rules and exits. |
-| `--add-rule [DOMAIN] [CATEGORY]` | Adds or updates a categorization rule and exits. |
-| `--delete-rule [DOMAIN]` | Deletes a specific categorization rule and exits. |
-| `--interactive-categorize` | Starts an interactive session to create rules for uncategorized torrents. |
-| `--version` | Displays the current version of the script and exits. |
+| Argument | Alias | Description |
+|---|---|---|
+| `--config [PATH]` | | Specifies the path to the `config.ini` file. Defaults to `config.ini`. |
+| `--dry-run` | | Simulates the process without making any changes. |
+| `--test-run` | | Performs a full run but **skips deleting torrents** from the source client. |
+| `--parallel-jobs [N]` | | Sets the number of torrents to process concurrently. Defaults to `4`. |
+| `--categorize` | `-c` | Starts an interactive session to categorize torrents. Scans the `category_to_move` from your config by default. |
+| `--category [CATEGORY]` | | Overrides the default category for a `--categorize` session. |
+| `--no-rules` | `-nr` | During a `--categorize` session, ignore existing rules and review all torrents in the target category. |
+| `--list-rules` | `-l` | Lists all saved tracker-to-category rules and exits. |
+| `--add-rule [DOMAIN] [CATEGORY]` | `-a` | Adds or updates a categorization rule and exits. |
+| `--delete-rule [DOMAIN]` | `-d` | Deletes a specific categorization rule and exits. |
+| `--version` | | Displays the current version of the script and exits. |
 
 ## Advanced Usage
 
@@ -152,14 +154,23 @@ To run the script automatically, you can set up a cron job.
 This script can automatically assign a category to torrents on your destination client based on their trackers, helping you organize your library.
 
 *   **How it Works**: The script can be "taught" which category to apply to a tracker domain. These rules are stored in `tracker_rules.json`.
-*   **Interactive Learning**: The easiest way to create rules is to run the script in interactive mode. It will scan torrents on your destination client and, for any torrent whose tracker is unknown, prompt you to assign a category.
+*   **Interactive Learning**: The easiest way to create rules is by running the script in interactive categorization mode. By default, it scans for torrents in the category defined as `category_to_move` in your `config.ini`. For any torrent that doesn't match an existing rule, it will prompt you to assign a category and optionally save that choice as a new rule.
     ```bash
-    python torrent_mover.py --interactive-categorize
+    # Start interactive mode, scanning the default category from your config
+    python torrent_mover.py -c
     ```
-*   **Manual Rule Management**: You can also manage rules directly from the command line:
-    *   **List All Rules**: `python torrent_mover.py --list-rules`
-    *   **Add/Update a Rule**: `python torrent_mover.py --add-rule "some-tracker.org" "My-TV-Shows"`
-    *   **Delete a Rule**: `python torrent_mover.py --delete-rule "some-tracker.org"`
+    You can also specify a different category to scan, or force the script to ignore existing rules for the session:
+    ```bash
+    # Scan a specific category named "My-Downloads"
+    python torrent_mover.py -c --category "My-Downloads"
+
+    # Scan the default category but ignore all existing rules
+    python torrent_mover.py -c -nr
+    ```
+*   **Manual Rule Management**: You can also manage rules directly from the command line using these shortcuts:
+    *   **List All Rules**: `python torrent_mover.py -l`
+    *   **Add/Update a Rule**: `python torrent_mover.py -a "some-tracker.org" "My-TV-Shows"`
+    *   **Delete a Rule**: `python torrent_mover.py -d "some-tracker.org"`
 
 ### Enabling Bash Auto-Completion (Optional)
 

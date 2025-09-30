@@ -111,8 +111,9 @@ import sys
 import time
 import argparse
 import argcomplete
-from rich.console import Group
+from rich.console import Console, Group
 from rich.panel import Panel
+from rich.table import Table
 from rich.progress import (
     Progress,
     TextColumn,
@@ -834,31 +835,57 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
 
 # --- Main Execution ---
 
-def run_interactive_categorization(client, rules, script_dir, category_to_scan):
+def run_interactive_categorization(client, rules, script_dir, category_to_scan, no_rules=False):
+    """Interactively categorize torrents based on tracker domains."""
     logging.info("Starting interactive categorization...")
+    if no_rules:
+        logging.warning("Ignoring existing rules for this session (--no-rules).")
+
     try:
-        torrents_to_check = client.torrents_info(category=category_to_scan, sort='name')
+        if not category_to_scan:
+            logging.info("No category specified. Scanning for 'uncategorized' torrents.")
+            torrents_to_check = client.torrents_info(filter='uncategorized', sort='name')
+        else:
+            logging.info(f"Scanning for torrents in category: '{category_to_scan}'")
+            torrents_to_check = client.torrents_info(category=category_to_scan, sort='name')
+
+        if not torrents_to_check:
+            logging.info(f"No torrents found in '{category_to_scan or 'uncategorized'}' that need categorization.")
+            return
+
         available_categories = sorted(list(client.torrent_categories.categories.keys()))
         if not available_categories:
             logging.error("No categories found on the destination client. Cannot perform categorization.")
             return
+
         updated_rules = rules.copy()
         rules_changed = False
+
+        manual_review_count = 0
         for torrent in torrents_to_check:
-            auto_category = get_category_from_rules(torrent, updated_rules, client)
+            auto_category = None
+            if not no_rules:
+                auto_category = get_category_from_rules(torrent, updated_rules, client)
+
             if auto_category:
                 if auto_category == "ignore":
-                    print(f" -> Ignoring '{torrent.name}' based on rule.")
-                else:
-                    print(f" -> Rule found for '{torrent.name}'. Setting category to '{auto_category}'.")
+                    logging.info(f"Ignoring '{torrent.name}' based on existing 'ignore' rule.")
+                elif torrent.category != auto_category:
+                    logging.info(f"Rule found for '{torrent.name}'. Setting category to '{auto_category}'.")
                     try:
                         client.torrents_set_category(torrent_hashes=torrent.hash, category=auto_category)
                     except Exception as e:
                         logging.error(f"Failed to set category for '{torrent.name}': {e}", exc_info=True)
-                        print(f"    ERROR: Could not set category for '{torrent.name}'. See log for details.")
+                # If rule applied or torrent already in correct category, skip manual interaction
                 continue
+
+            # --- Start of interactive part for this torrent ---
+            if manual_review_count == 0:
+                logging.info("Some torrents require manual review.")
+            manual_review_count += 1
+
             print("-" * 60)
-            print(f"Torrent needs categorization: {torrent.name}")
+            print(f"Torrent needs categorization: [bold]{torrent.name}[/bold]")
             print(f"   Current Category: {torrent.category or 'None'}")
             trackers = client.torrents_trackers(torrent_hash=torrent.hash)
             torrent_domains = sorted(list(set(d for d in [get_tracker_domain(t.get('url')) for t in trackers] if d)))
@@ -1022,10 +1049,12 @@ def main():
     mode_group.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
     mode_group.add_argument('--test-run', action='store_true', help='Run the full process but do not delete the source torrent.')
     parser.add_argument('--parallel-jobs', type=int, default=4, metavar='N', help='Number of torrents to process in parallel.')
-    parser.add_argument('--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
-    parser.add_argument('--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
-    parser.add_argument('--delete-rule', metavar='TRACKER_DOMAIN', help='Delete a rule and exit.')
-    parser.add_argument('--interactive-categorize', action='store_true', help='Interactively categorize torrents on destination without a rule.')
+    parser.add_argument('-l', '--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
+    parser.add_argument('-a', '--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
+    parser.add_argument('-d', '--delete-rule', metavar='TRACKER_DOMAIN', help='Delete a rule and exit.')
+    parser.add_argument('-c', '--categorize', dest='interactive_categorize', action='store_true', help='Interactively categorize torrents on destination.')
+    parser.add_argument('--category', help='(For -c mode) Specify a category to scan, overriding the config.')
+    parser.add_argument('-nr', '--no-rules', action='store_true', help='(For -c mode) Ignore existing rules and show all torrents in the category.')
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
@@ -1033,32 +1062,62 @@ def main():
     setup_logging(script_dir, args.dry_run, args.test_run)
 
     # --- Early exit argument handling ---
-    # These args don't require the full script logic, so we handle them before the lock.
     if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize:
+        config = load_config(args.config)
         tracker_rules = load_tracker_rules(script_dir)
-        # You would add the logic for these commands here.
-        # For now, just returning as the original script did.
-        # Note: The original script had this logic inside the main try-block,
-        # which meant it couldn't run if the main script was "locked".
-        # Moving it here makes these utility commands more accessible.
         logging.info("Executing utility command...")
-        # Placeholder for actual rule/interactive logic
+
         if args.list_rules:
-            print("Listing rules...")
+            if not tracker_rules:
+                logging.info("No rules found.")
+                return 0
+
+            console = Console()
+            table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
+            table.add_column("Tracker Domain", style="dim", width=40)
+            table.add_column("Assigned Category")
+            sorted_rules = sorted(tracker_rules.items())
+            for domain, category in sorted_rules:
+                table.add_row(domain, f"[yellow]{category}[/yellow]" if category == "ignore" else f"[cyan]{category}[/cyan]")
+            console.print(table)
+            return 0
+
         if args.add_rule:
-            print("Adding rule...")
+            domain, category = args.add_rule
+            tracker_rules[domain] = category
+            if save_tracker_rules(tracker_rules, script_dir):
+                logging.info(f"Successfully added rule: '{domain}' -> '{category}'.")
+            return 0
+
         if args.delete_rule:
-            print("Deleting rule...")
-        if args.interactive_categorize:
-            print("Starting interactive categorization...")
-            unraid_qbit_conf = load_config(args.config)['UNRAID_QBIT']
-            unraid_qbit = connect_qbit(unraid_qbit_conf, "Unraid")
-            if unraid_qbit:
-                # Assuming a default category to scan if not specified, e.g., 'uncategorized'
-                cat_to_scan = load_config(args.config)['SETTINGS'].get('interactive_scan_category', '')
-                run_interactive_categorization(unraid_qbit, tracker_rules, script_dir, cat_to_scan)
+            domain_to_delete = args.delete_rule
+            if domain_to_delete in tracker_rules:
+                del tracker_rules[domain_to_delete]
+                if save_tracker_rules(tracker_rules, script_dir):
+                    logging.info(f"Successfully deleted rule for '{domain_to_delete}'.")
             else:
-                logging.error("Could not connect to destination qBittorrent for interactive session.")
+                logging.warning(f"No rule found for domain '{domain_to_delete}'. Nothing to delete.")
+            return 0
+
+        if args.interactive_categorize:
+            try:
+                unraid_qbit = connect_qbit(config['UNRAID_QBIT'], "Unraid")
+                # Determine the category to scan
+                if args.category:
+                    cat_to_scan = args.category
+                    logging.info(f"Using category from command line: '{cat_to_scan}'")
+                else:
+                    cat_to_scan = config['SETTINGS'].get('category_to_move')
+                    if cat_to_scan:
+                        logging.info(f"Using 'category_to_move' from config: '{cat_to_scan}'")
+                    else:
+                        logging.warning("No category specified via --category or in config. Defaulting to 'uncategorized'.")
+                        cat_to_scan = '' # Empty string scans for uncategorized
+
+                run_interactive_categorization(unraid_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
+            except Exception as e:
+                logging.error(f"Failed to run interactive categorization: {e}", exc_info=True)
+            return 0
         return 0
 
     try:
