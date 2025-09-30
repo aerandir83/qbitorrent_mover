@@ -21,6 +21,7 @@ import re
 import threading
 from collections import defaultdict
 import errno
+from utils import retry
 
 
 def check_sshpass_installed():
@@ -53,53 +54,51 @@ def load_config(config_path="config.ini"):
 
 # --- Connection Functions ---
 
+@retry(tries=3, delay=10, backoff=2)
 def connect_qbit(config_section, client_name):
     """
     Connects to a qBittorrent client using details from a config section.
-    Returns a connected client object or None on failure.
+    Returns a connected client object or raises an exception on failure.
     """
-    try:
-        host = config_section['host']
-        port = config_section.getint('port')
-        username = config_section['username']
-        password = config_section['password']
-        verify_cert = config_section.getboolean('verify_cert', fallback=True)
+    host = config_section['host']
+    port = config_section.getint('port')
+    username = config_section['username']
+    password = config_section['password']
+    verify_cert = config_section.getboolean('verify_cert', fallback=True)
 
-        logging.info(f"Connecting to {client_name} qBittorrent at {host}...")
-        client = qbittorrentapi.Client(
-            host=host,
-            port=port,
-            username=username,
-            password=password,
-            VERIFY_WEBUI_CERTIFICATE=verify_cert
-        )
-        client.auth_log_in()
-        logging.info(f"Successfully connected to {client_name}. Version: {client.app.version}")
-        return client
-    except Exception as e:
-        logging.error(f"Failed to connect to {client_name} qBittorrent: {e}")
-        return None
+    logging.info(f"Connecting to {client_name} qBittorrent at {host}...")
+    client = qbittorrentapi.Client(
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        VERIFY_WEBUI_CERTIFICATE=verify_cert,
+        REQUESTS_ARGS={'timeout': 10} # Add a timeout to the underlying requests
+    )
+    client.auth_log_in()
+    logging.info(f"Successfully connected to {client_name}. Version: {client.app.version}")
+    return client
 
+@retry(tries=3, delay=10, backoff=2)
 def connect_sftp(config_section):
     """
     Connects to a server via SFTP using details from a config section.
-    Returns a connected SFTP client and transport object, or (None, None) on failure.
+    Returns a connected SFTP client and transport object, or raises an exception on failure.
     """
-    try:
-        host = config_section['host']
-        port = config_section.getint('port')
-        username = config_section['username']
-        password = config_section['password']
+    host = config_section['host']
+    port = config_section.getint('port')
+    username = config_section['username']
+    password = config_section['password']
 
-        logging.info(f"Establishing SFTP connection to {host}...")
-        transport = paramiko.Transport((host, port))
-        transport.connect(username=username, password=password)
-        sftp = paramiko.SFTPClient.from_transport(transport)
-        logging.info(f"Successfully established SFTP connection to {host}.")
-        return sftp, transport
-    except Exception as e:
-        logging.error(f"Failed to establish SFTP connection: {e}")
-        return None, None
+    logging.info(f"Establishing SFTP connection to {host}...")
+    transport = paramiko.Transport((host, port))
+    # Add a timeout to the transport connection and enable keepalives
+    transport.banner_timeout = 20
+    transport.set_keepalive(30)
+    transport.connect(username=username, password=password)
+    sftp = paramiko.SFTPClient.from_transport(transport)
+    logging.info(f"Successfully established SFTP connection to {host}.")
+    return sftp, transport
 
 import os
 import sys
@@ -286,9 +285,10 @@ def _get_all_files_recursive(sftp, remote_path, local_path, file_list):
         else:
             file_list.append((remote_item_path, local_item_path))
 
+@retry(tries=3, delay=10, backoff=2)
 def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_id, dry_run=False):
     """
-    Downloads a single file with a progress bar. Establishes its own SFTP session
+    Downloads a single file with a progress bar, with retries. Establishes its own SFTP session
     to ensure thread safety when called from a ThreadPoolExecutor.
     Uses a pre-existing task_id for the file progress bar.
     """
@@ -297,10 +297,9 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
 
     sftp = None
     transport = None
+    download_successful = False
     try:
         sftp, transport = connect_sftp(sftp_config)
-        if not sftp:
-            raise Exception(f"Failed to establish SFTP connection for thread downloading {file_name}")
 
         remote_stat = sftp.stat(remote_file)
         total_size = remote_stat.st_size
@@ -312,6 +311,11 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
             return
 
         if local_path.exists():
+            # On retries, we might need to overwrite a partial file.
+            # Reset the progress for this file task to ensure accuracy.
+            if file_task_id is not None:
+                job_progress.update(file_task_id, completed=0)
+
             local_size = local_path.stat().st_size
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
@@ -342,6 +346,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
             callback = DownloadProgress(job_progress, effective_task_id, parent_task_id, overall_progress, overall_task_id)
             sftp.get(remote_file, str(local_path), callback=callback)
             logging.info(f"Download of '{file_name}' completed.")
+            download_successful = True
         except Exception as e:
             logging.error(f"Download failed for {file_name}: {e}")
             if file_task_id is not None:
@@ -354,7 +359,8 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
                 file_counts[parent_task_id][0] += 1
             if file_task_id is not None:
                 job_progress.stop_task(file_task_id)
-                job_progress.update(file_task_id, description=f"└─ [green]✓[/green] [cyan]{file_name}[/]")
+                if download_successful:
+                    job_progress.update(file_task_id, description=f"└─ [green]✓[/green] [cyan]{file_name}[/]")
 
     finally:
         if sftp:
@@ -364,39 +370,31 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
 
 def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
     """
-    Transfers a remote file or directory to a local path using rsync.
+    Transfers a remote file or directory to a local path using rsync, with retries.
     """
     host = sftp_config['host']
     port = sftp_config.getint('port')
     username = sftp_config['username']
     password = sftp_config['password']
 
-    # Ensure the parent directory of the destination exists
-    # rsync will copy the source directory into this parent directory
     local_parent_dir = os.path.dirname(local_path)
     Path(local_parent_dir).mkdir(parents=True, exist_ok=True)
-
-    # The remote path needs to be handled carefully.
-    # rsync treats paths with a trailing slash differently.
-    # The source torrent's content_path is what we get.
-    # If it's a directory, we want to copy the directory itself.
     remote_spec = f"{username}@{host}:{remote_path}"
 
-    # Use -o UserKnownHostsFile=/dev/null to avoid prompts for unknown hosts
+    # Add --timeout to rsync and ServerAliveInterval to ssh to prevent stalls
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
-        "-aW",  # Archive mode + Whole file (no delta-xfer), faster on fast networks
-        "--info=progress2",  # Machine-readable progress
-        # Use a faster cipher and disable known_hosts checking for non-interactive use
-        "-e", f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+        "-aW",
+        "--info=progress2",
+        "--timeout=60",  # Exit if no data transferred for 60 seconds
+        # Add ServerAliveInterval to keep the SSH connection alive through firewalls
+        "-e", f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15",
         remote_spec,
-        local_parent_dir  # Destination directory
+        local_parent_dir
     ]
 
     if dry_run:
-        # In a dry run, rsync doesn't transfer, so we can't show progress.
-        # We'll just log what would have happened and advance the progress bar fully.
         logging.info(f"[DRY RUN] Would execute rsync for: {os.path.basename(remote_path)}")
         logging.info(f"[DRY RUN] Command: {' '.join(rsync_cmd)}")
         task = job_progress.tasks[parent_task_id]
@@ -405,80 +403,106 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
         return
 
     logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}'")
-    process = None
-    try:
-        start_time = time.time()
-        process = subprocess.Popen(
-            rsync_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8',
-            errors='replace', # Avoid crashing on weird characters
-            bufsize=1  # Line-buffered
-        )
 
-        last_total_transferred = 0
-        progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
+    max_retries = 3
+    retry_delay = 10  # Initial delay in seconds
 
-        if process.stdout:
-            for line in iter(process.stdout.readline, ''):
-                line = line.strip()
-                match = progress_regex.match(line)
-                if match:
-                    try:
-                        total_transferred_str = match.group(1).replace(',', '')
-                        total_transferred = int(total_transferred_str)
-                        advance = total_transferred - last_total_transferred
-                        if advance > 0:
-                            job_progress.update(parent_task_id, advance=advance)
-                            overall_progress.update(overall_task_id, advance=advance)
-                            last_total_transferred = total_transferred
-                    except (ValueError, IndexError):
-                        logging.warning(f"Could not parse rsync progress line: {line}")
+    for attempt in range(max_retries):
+        if attempt > 0:
+            logging.info(f"Rsync attempt {attempt + 1}/{max_retries} for '{os.path.basename(remote_path)}'...")
+            time.sleep(retry_delay)
+            retry_delay *= 2  # Exponential backoff
+
+        process = None
+        try:
+            start_time = time.time()
+            process = subprocess.Popen(
+                rsync_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1
+            )
+
+            last_total_transferred = 0
+            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
+
+            if process.stdout:
+                for line in iter(process.stdout.readline, ''):
+                    line = line.strip()
+                    match = progress_regex.match(line)
+                    if match:
+                        try:
+                            total_transferred_str = match.group(1).replace(',', '')
+                            total_transferred = int(total_transferred_str)
+                            advance = total_transferred - last_total_transferred
+                            if advance > 0:
+                                job_progress.update(parent_task_id, advance=advance)
+                                overall_progress.update(overall_task_id, advance=advance)
+                                last_total_transferred = total_transferred
+                        except (ValueError, IndexError):
+                            logging.warning(f"Could not parse rsync progress line: {line}")
+                    else:
+                        logging.debug(f"rsync stdout: {line}")
+
+            process.wait()
+            end_time = time.time()
+            stderr_output = process.stderr.read() if process.stderr else ""
+
+            # Success conditions
+            if process.returncode == 0 or process.returncode == 24:
+                if process.returncode == 24:
+                    logging.warning(f"Rsync finished with code 24 (some source files vanished) for '{os.path.basename(remote_path)}'.")
+
+                duration = end_time - start_time
+                task = job_progress.tasks[parent_task_id]
+                total_size_bytes = task.total
+                if duration > 0:
+                    speed_mbps = (total_size_bytes * 8) / (duration * 1024 * 1024)
+                    logging.info(f"PERF: '{os.path.basename(remote_path)}' ({total_size_bytes / 1024**2:.2f} MiB) took {duration:.2f} seconds.")
+                    logging.info(f"PERF: Average speed: {speed_mbps:.2f} Mbps.")
                 else:
-                    logging.debug(f"rsync stdout: {line}")
+                    logging.info(f"PERF: '{os.path.basename(remote_path)}' completed in < 1 second.")
 
-        process.wait()
-        end_time = time.time()
-        stderr_output = process.stderr.read() if process.stderr else ""
+                # Ensure the progress bar is marked as complete
+                if task.completed < task.total:
+                    remaining = task.total - task.completed
+                    if remaining > 0:
+                        job_progress.update(parent_task_id, advance=remaining)
+                        overall_progress.update(overall_task_id, advance=remaining)
 
-        if process.returncode != 0 and process.returncode != 24:
-            # rsync exit code 24 means "Partial transfer due to vanished source files"
-            # This is not a fatal error for this script's purpose.
-            logging.error(f"Rsync failed for '{os.path.basename(remote_path)}' with exit code {process.returncode}.")
-            logging.error(f"Rsync stderr: {stderr_output}")
-            raise Exception(f"Rsync transfer failed for {os.path.basename(remote_path)}")
-        elif process.returncode == 24:
-            logging.warning(f"Rsync finished with code 24 (some source files vanished) for '{os.path.basename(remote_path)}'.")
+                logging.info(f"Rsync transfer completed successfully for '{os.path.basename(remote_path)}'.")
+                return  # Exit retry loop and function on success
 
-        # Log performance details
-        duration = end_time - start_time
-        task = job_progress.tasks[parent_task_id]
-        total_size_bytes = task.total
-        if duration > 0:
-            speed_mbps = (total_size_bytes * 8) / (duration * 1024 * 1024)
-            logging.info(f"PERF: '{os.path.basename(remote_path)}' ({total_size_bytes / 1024**2:.2f} MiB) took {duration:.2f} seconds.")
-            logging.info(f"PERF: Average speed: {speed_mbps:.2f} Mbps.")
-        else:
-            logging.info(f"PERF: '{os.path.basename(remote_path)}' completed in < 1 second.")
+            # Retryable error
+            elif process.returncode == 30:  # Timeout in data send/receive
+                logging.warning(f"Rsync timed out for '{os.path.basename(remote_path)}'. Retrying...")
+                continue  # To next attempt in the loop
 
-        # Ensure the progress bar is marked as complete at the end
-        if task.completed < task.total:
-            remaining = task.total - task.completed
-            if remaining > 0:
-                job_progress.update(parent_task_id, advance=remaining)
-                overall_progress.update(overall_task_id, advance=remaining)
+            # Non-retryable error
+            else:
+                logging.error(f"Rsync failed for '{os.path.basename(remote_path)}' with non-retryable exit code {process.returncode}.")
+                logging.error(f"Rsync stderr: {stderr_output}")
+                raise Exception(f"Rsync transfer failed for {os.path.basename(remote_path)}")
 
-        logging.info(f"Rsync transfer completed for '{os.path.basename(remote_path)}'.")
+        except FileNotFoundError:
+            logging.error("FATAL: 'rsync' or 'sshpass' command not found.")
+            raise
+        except Exception as e:
+            logging.error(f"An exception occurred during rsync for '{os.path.basename(remote_path)}': {e}")
+            if process:
+                process.kill()
+            if attempt < max_retries - 1:
+                logging.warning("Retrying...")
+                continue
+            else:
+                # Re-raise after last attempt
+                raise e
 
-    except FileNotFoundError:
-        logging.error("FATAL: 'rsync' or 'sshpass' command not found.")
-        raise
-    except Exception as e:
-        if process:
-            process.kill() # Ensure subprocess is terminated
-        raise e
+    # If loop completes without success
+    raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {max_retries} attempts.")
 
 
 def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run=False):
@@ -681,19 +705,18 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
     transport = None
     source_paused = False
     parent_task_id = None
+    success = False
     try:
         dest_base_path = config['UNRAID_PATHS']['destination_path']
         remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
 
-        # The remote_content_path is the full, absolute path from the qBittorrent API
         remote_content_path = torrent.content_path
         content_name = os.path.basename(remote_content_path)
-
-        # The local destination path is the destination base + the torrent's content name (file or folder)
         local_dest_path = os.path.join(dest_base_path, content_name)
 
         if total_size == 0:
             logging.warning(f"Skipping torrent with no content or zero size: {name}")
+            success = True
             return True
 
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
@@ -702,16 +725,10 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
             parent_task_id = job_progress.add_task(name, total=total_size, start=True)
 
         if transfer_mode == 'rsync':
-            # For rsync, we don't need a preliminary SFTP connection or file list.
-            # The progress bar will just be for the whole torrent.
             transfer_content_rsync(sftp_config, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
             logging.info(f"Rsync transfer completed successfully for '{name}'.")
         else:  # sftp mode
             sftp, transport = connect_sftp(sftp_config)
-            if not sftp:
-                raise Exception("Failed to establish SFTP connection for this thread.")
-
-            # This logic is for per-file progress bars in SFTP mode
             all_files = []
             remote_stat = sftp.stat(remote_content_path)
             if remote_stat.st_mode & 0o40000:  # S_ISDIR
@@ -734,8 +751,7 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
             logging.info(f"Starting SFTP transfer for '{name}'")
             transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run)
             logging.info(f"SFTP transfer completed successfully for '{name}'.")
-        # The save path for the destination client is the remote equivalent of our destination base path.
-        # qBittorrent will automatically create a sub-folder for the torrent content if it's a directory.
+
         unraid_save_path = remote_dest_base_path.replace("\\", "/")
 
         if not dry_run:
@@ -752,25 +768,30 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
             time.sleep(5)
         else:
             logging.info(f"[DRY RUN] Would export and add torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
+
         if not dry_run:
             logging.info(f"Triggering force recheck on Unraid for: {name}")
             unraid_qbit.torrents_recheck(torrent_hashes=hash)
         else:
             logging.info(f"[DRY RUN] Would trigger force recheck on Unraid for: {name}")
+
         if wait_for_recheck_completion(unraid_qbit, hash, dry_run=dry_run):
             if not dry_run:
                 logging.info(f"Starting torrent on Unraid: {name}")
                 unraid_qbit.torrents_resume(torrent_hashes=hash)
             else:
                 logging.info(f"[DRY RUN] Would start torrent on Unraid: {name}")
+
             logging.info(f"Attempting to categorize torrent on Unraid: {name}")
             set_category_based_on_tracker(unraid_qbit, hash, tracker_rules, dry_run=dry_run)
+
             if not dry_run and not test_run:
                 logging.info(f"Pausing torrent on Mandarin before deletion: {name}")
                 mandarin_qbit.torrents_pause(torrent_hashes=hash)
                 source_paused = True
             else:
                 logging.info(f"[DRY RUN/TEST RUN] Would pause torrent on Mandarin: {name}")
+
             if test_run:
                 logging.info(f"[TEST RUN] Skipping deletion of torrent from Mandarin: {name}")
             elif not dry_run:
@@ -778,14 +799,17 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
                 mandarin_qbit.torrents_delete(torrent_hashes=hash, delete_files=True)
             else:
                 logging.info(f"[DRY RUN] Would delete torrent and data from Mandarin: {name}")
+
             logging.info(f"--- Successfully processed torrent: {name} ---")
+            success = True
             return True
         else:
             logging.error(f"Failed to verify recheck for {name}. Leaving on Mandarin for next run.")
             return False
     except Exception as e:
         logging.error(f"An error occurred while processing torrent {name}: {e}", exc_info=True)
-        job_progress.update(parent_task_id, description=f"[bold red]Failed: {name}[/]")
+        if parent_task_id is not None:
+            job_progress.update(parent_task_id, description=f"[bold red]Failed: {name}[/]")
         if not dry_run and source_paused:
             try:
                 mandarin_qbit.torrents_resume(torrent_hashes=hash)
@@ -799,9 +823,9 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
             transport.close()
         if parent_task_id is not None:
             job_progress.stop_task(parent_task_id)
-            # Prepend a checkmark to the original description
-            original_description = job_progress.tasks[parent_task_id].description
-            job_progress.update(parent_task_id, description=f"[green]✓[/green] {original_description}")
+            if success:
+                original_description = job_progress.tasks[parent_task_id].description
+                job_progress.update(parent_task_id, description=f"[green]✓[/green] {original_description}")
 
 # --- Main Execution ---
 
@@ -1041,9 +1065,11 @@ def main():
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         if transfer_mode == 'rsync':
             check_sshpass_installed()
-        mandarin_qbit = connect_qbit(config['MANDARIN_QBIT'], "Mandarin")
-        unraid_qbit = connect_qbit(config['UNRAID_QBIT'], "Unraid")
-        if not all([mandarin_qbit, unraid_qbit]):
+        try:
+            mandarin_qbit = connect_qbit(config['MANDARIN_QBIT'], "Mandarin")
+            unraid_qbit = connect_qbit(config['UNRAID_QBIT'], "Unraid")
+        except Exception as e:
+            logging.error(f"Failed to connect to qBittorrent client after multiple retries: {e}", exc_info=True)
             logging.error("One or more qBittorrent connections failed. Aborting.")
             return 1
         logging.info("qBittorrent connections established successfully.")
