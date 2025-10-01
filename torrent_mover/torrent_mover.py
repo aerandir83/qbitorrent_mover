@@ -429,16 +429,24 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
         local_parent_dir
     ]
 
+    # Create a safe version of the command for logging, with the password obfuscated
+    safe_rsync_cmd = list(rsync_cmd)
+    safe_rsync_cmd[2] = "'********'"
+
     if dry_run:
         logging.info(f"[DRY RUN] Would execute rsync for: {os.path.basename(remote_path)}")
-        logging.debug(f"[DRY RUN] Command: {' '.join(rsync_cmd)}")
+        logging.debug(f"[DRY RUN] Command: {' '.join(safe_rsync_cmd)}")
         task = job_progress.tasks[parent_task_id]
         job_progress.update(parent_task_id, advance=task.total)
         overall_progress.update(overall_task_id, advance=task.total)
         return
 
-    logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}'")
-    logging.debug(f"Executing rsync command: {' '.join(rsync_cmd)}")
+    # Check if the destination path exists to provide a clearer log message for resumes.
+    if Path(local_path).exists():
+        logging.info(f"Partial file/directory found for '{os.path.basename(remote_path)}'. Resuming with rsync.")
+    else:
+        logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}'")
+    logging.debug(f"Executing rsync command: {' '.join(safe_rsync_cmd)}")
 
     max_retries = 2
     retry_delay = 5  # Fixed delay in seconds
