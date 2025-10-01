@@ -410,7 +410,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
-        "-aW", "--partial", "--append-verify",
+        "-a", "--partial",
         "--info=progress2",
         "--timeout=60",  # Exit if no data transferred for 60 seconds
         # Add ServerAliveInterval to keep the SSH connection alive through firewalls
