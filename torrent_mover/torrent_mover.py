@@ -738,10 +738,41 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, live_console, plan_text, plan_lock, overall_progress_lock, dry_run=False, test_run=False):
+def analyze_torrent(torrent, sftp_config, transfer_mode, live_console):
     """
-    Executes the full transfer and management process for a single torrent.
-    Calculates its own size, updates the UI, and establishes its own SFTP connection to be thread-safe.
+    Analyzes a single torrent to determine its size.
+    Returns a tuple of (torrent, size). Size is None if calculation fails.
+    """
+    name = torrent.name
+    remote_content_path = torrent.content_path
+    logging.info(f"Analyzing torrent: {name}")
+    total_size = None
+
+    try:
+        if transfer_mode == 'rsync':
+            total_size = get_remote_size_rsync(sftp_config, remote_content_path)
+        else:  # sftp mode
+            sftp, ssh_client = None, None
+            try:
+                sftp, ssh_client = connect_sftp(sftp_config)
+                total_size = get_remote_size(sftp, remote_content_path)
+            finally:
+                if sftp: sftp.close()
+                if ssh_client: ssh_client.close()
+    except Exception as e:
+        live_console.log(f"[bold red]Error calculating size for '{name}': {e}[/]")
+        live_console.log(f"[yellow]Warning: Skipping torrent due to size calculation failure.[/]")
+        return torrent, None
+
+    if total_size == 0:
+        live_console.log(f"[yellow]Warning: Skipping zero-size torrent: {name}[/]")
+
+    return torrent, total_size
+
+
+def transfer_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
+    """
+    Executes the transfer and management process for a single, pre-analyzed torrent.
     """
     name, hash = torrent.name, torrent.hash
     sftp = None
@@ -749,52 +780,15 @@ def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tr
     source_paused = False
     parent_task_id = None
     success = False
-    total_size = 0
-    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-    remote_content_path = torrent.content_path
-
     try:
-        # --- Stage 1: Calculate Size and Update UI ---
-        logging.info(f"Analyzing torrent: {name}")
-        if transfer_mode == 'rsync':
-            try:
-                total_size = get_remote_size_rsync(sftp_config, remote_content_path)
-            except Exception as e:
-                live_console.log(f"[bold red]Error calculating rsync size for '{name}': {e}[/]")
-                live_console.log(f"[yellow]Warning: Skipping torrent due to size calculation failure.[/]")
-                return False # Indicate failure
-        else: # sftp mode
-            try:
-                sftp, ssh_client = connect_sftp(sftp_config)
-                total_size = get_remote_size(sftp, remote_content_path)
-            except Exception as e:
-                live_console.log(f"[bold red]Error calculating SFTP size for '{name}': {e}[/]")
-                live_console.log(f"[yellow]Warning: Skipping torrent due to size calculation failure.[/]")
-                return False # Indicate failure
-            finally:
-                if sftp: sftp.close()
-                if ssh_client: ssh_client.close()
-                sftp, ssh_client = None, None # Reset for later use
-
-        if total_size == 0:
-            live_console.log(f"[yellow]Warning: Skipping zero-size torrent: {name}[/]")
-            return True # Indicate success, as there's nothing to do
-
-        # --- Update shared UI elements under lock ---
-        with plan_lock:
-            size_gb = total_size / 1024**3
-            plan_text.append(f" • {name} (")
-            plan_text.append(f"{size_gb:.2f} GB", style="bold")
-            plan_text.append(")\n")
-
-        with overall_progress_lock:
-            overall_progress.update(overall_task_id, total=overall_progress.tasks[overall_task_id].total + total_size)
-
-        # --- Stage 2: Perform Transfer ---
         dest_base_path = config['UNRAID_PATHS']['destination_path']
         remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
+
+        remote_content_path = torrent.content_path
         content_name = os.path.basename(remote_content_path)
         local_dest_path = os.path.join(dest_base_path, content_name)
+
+        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
         with task_add_lock:
             parent_task_id = job_progress.add_task(name, total=total_size, start=True)
@@ -1227,9 +1221,15 @@ def main():
             return 0
         total_count = len(eligible_torrents)
         processed_count = 0
+
+        # --- UI Setup ---
         torrent_progress = Progress(TextColumn("[bold blue]Torrents"), BarColumn(), MofNCompleteColumn())
-        torrent_task = torrent_progress.add_task("Processing torrents", total=total_count)
-        overall_progress = Progress(TextColumn("[bold green]Overall"), BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), TotalFileSizeColumn(), TransferSpeedColumn(), TimeRemainingColumn())
+        analysis_progress = Progress(TextColumn("[bold cyan]Analyzing..."), BarColumn(), MofNCompleteColumn())
+
+        torrent_task = torrent_progress.add_task("Completed", total=total_count)
+        analysis_task = analysis_progress.add_task("Analyzed", total=total_count)
+
+        overall_progress = Progress(TextColumn("[bold green]Overall"), BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), TotalFileSizeColumn(), FixedWidthTransferSpeedColumn(), FixedWidthTimeRemainingColumn())
         overall_task = overall_progress.add_task("Total progress", total=0)
 
         file_counts = defaultdict(lambda: [0, 0])
@@ -1249,84 +1249,86 @@ def main():
             FileCountColumn(file_counts)
         )
 
-        plan_text = Text(f"Found {len(eligible_torrents)} torrents to analyze and move...\n", style="bold")
+        plan_text = Text(f"Found {total_count} torrents to process...\n", style="bold")
         plan_text.append("─" * 70 + "\n", style="dim")
         plan_panel = Panel(plan_text, title="[bold magenta]Transfer Plan[/bold magenta]", border_style="magenta", expand=False)
 
         layout = Group(
             plan_panel,
-            Panel(torrent_progress, title="Torrent Queue", border_style="blue"),
+            Panel(Group(torrent_progress, analysis_progress), title="Overall Queue", border_style="blue"),
             Panel(overall_progress, title="Total Progress", border_style="green"),
             Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2))
         )
 
         with Live(layout, refresh_per_second=4, transient=True) as live:
             sftp_config = config['MANDARIN_SFTP']
-            live.console.log(f"Analyzing and preparing {len(eligible_torrents)} torrent(s) for transfer...")
-            executor = ThreadPoolExecutor(max_workers=args.parallel_jobs)
+            transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+
+            analysis_workers = max(10, args.parallel_jobs * 2)
+
             try:
-                future_to_torrent = {
-                    executor.submit(
-                        process_torrent,
-                        torrent,
-                        mandarin_qbit,
-                        unraid_qbit,
-                        sftp_config,
-                        config,
-                        tracker_rules,
-                        job_progress,
-                        overall_progress,
-                        overall_task,
-                        file_counts,
-                        count_lock,
-                        task_add_lock,
-                        live.console,
-                        plan_text,
-                        plan_lock,
-                        overall_progress_lock,
-                        args.dry_run,
-                        args.test_run
-                    ): torrent for torrent in eligible_torrents
-                }
+                with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as analysis_executor, \
+                     ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as transfer_executor:
 
-                for future in as_completed(future_to_torrent):
-                    torrent = future_to_torrent[future]
-                    try:
-                        if future.result():
-                            processed_count += 1
-                        else:
-                            # A result of False means it was skipped due to an error (e.g., size calc)
-                            # but we still advance the torrent progress bar.
-                            pass
-                    except Exception as e:
-                        live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]", exc_info=True)
-                    finally:
-                        torrent_progress.update(torrent_task, advance=1)
-                        if job_progress.tasks[-1].description != " ": # Avoid adding multiple separators
-                            job_progress.add_task(" ", total=1, completed=1) # Add a blank line as a separator
+                    analysis_future_to_torrent = {
+                        analysis_executor.submit(analyze_torrent, torrent, sftp_config, transfer_mode, live.console): torrent
+                        for torrent in eligible_torrents
+                    }
+                    transfer_future_to_torrent = {}
 
+                    # Pipeline: As analysis completes, feed into the transfer pool
+                    for future in as_completed(analysis_future_to_torrent):
+                        original_torrent = analysis_future_to_torrent[future]
+                        try:
+                            analyzed_torrent, total_size = future.result()
+                            analysis_progress.update(analysis_task, advance=1)
+
+                            if total_size is not None and total_size > 0:
+                                with plan_lock:
+                                    size_gb = total_size / 1024**3
+                                    plan_text.append(f" • {analyzed_torrent.name} (")
+                                    plan_text.append(f"{size_gb:.2f} GB", style="bold")
+                                    plan_text.append(")\n")
+                                with overall_progress_lock:
+                                    current_total = overall_progress.tasks[overall_task].total
+                                    overall_progress.update(overall_task, total=current_total + total_size)
+
+                                transfer_future = transfer_executor.submit(
+                                    transfer_torrent, analyzed_torrent, total_size,
+                                    mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules,
+                                    job_progress, overall_progress, overall_task,
+                                    file_counts, count_lock, task_add_lock,
+                                    args.dry_run, args.test_run
+                                )
+                                transfer_future_to_torrent[transfer_future] = analyzed_torrent
+                            else:
+                                torrent_progress.update(torrent_task, advance=1)
+
+                        except Exception as e:
+                            live.console.log(f"[bold red]Error processing analysis for '{original_torrent.name}': {e}[/]")
+                            analysis_progress.update(analysis_task, advance=1)
+                            torrent_progress.update(torrent_task, advance=1)
+
+                    live.console.log("[green]All torrents analyzed. Waiting for transfers to complete...[/]")
+
+                    # Wait for all transfers to complete
+                    for future in as_completed(transfer_future_to_torrent):
+                        torrent = transfer_future_to_torrent[future]
+                        try:
+                            if future.result():
+                                processed_count += 1
+                        except Exception as e:
+                            live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]", exc_info=True)
+                        finally:
+                            torrent_progress.update(torrent_task, advance=1)
+                            if len(job_progress.tasks) > 0 and job_progress.tasks[-1].description != " ":
+                                job_progress.add_task(" ", total=1, completed=1)
             except KeyboardInterrupt:
+                # The executors will be shut down by the 'with' statement context exit
                 live.stop()
-                live.console.print("\n[bold yellow]Process interrupted by user.[/bold yellow]")
-                choice = Prompt.ask(
-                    "Do you want to (s)top active transfers or (w)ait for them to complete?",
-                    choices=["s", "w"],
-                    default="s"
-                )
-
-                if choice == 'w':
-                    live.console.log("[bold green]Waiting for active transfers to complete...[/bold green]")
-                    live.console.log("[bold yellow]This may take some time. Press Ctrl+C again to force stop.[/bold yellow]")
-                    try:
-                        executor.shutdown(wait=True)
-                        live.console.log("[bold green]All active transfers completed.[/bold green]")
-                    except KeyboardInterrupt:
-                        live.console.log("[bold red]\nForce stopping transfers...[/bold red]")
-                        executor.shutdown(wait=False, cancel_futures=True)
-                else:
-                    live.console.log("[bold red]Stopping transfers...[/bold red]")
-                    executor.shutdown(wait=False, cancel_futures=True)
-                raise
+                live.console.print("\n[bold yellow]Process interrupted by user. Transfers will be cancelled.[/bold yellow]")
+                # No need to manually shutdown, the `with` block handles it.
+                raise # Re-raise to be caught by the outer try/except
         logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
     except KeyboardInterrupt:
         pass
