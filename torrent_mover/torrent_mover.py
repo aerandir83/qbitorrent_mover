@@ -180,33 +180,6 @@ class FixedWidthTransferSpeedColumn(TransferSpeedColumn):
 
 # --- SFTP Transfer Logic with Progress Bar ---
 
-class DownloadProgress:
-    """
-    A thread-safe progress bar callback for Paramiko's SFTP get method.
-    Updates all relevant Rich Progress tasks based on bytes transferred.
-    """
-    def __init__(self, job_progress, file_task_id, parent_task_id, overall_progress, overall_task_id):
-        self._job_progress = job_progress
-        self._file_task_id = file_task_id
-        self._parent_task_id = parent_task_id
-        self._overall_progress = overall_progress
-        self._overall_task_id = overall_task_id
-        self._last_bytes = 0
-
-    def __call__(self, bytes_transferred, total_bytes):
-        """
-        The callback method invoked by Paramiko.
-        Calculates the increment and updates all relevant progress bars.
-        """
-        increment = bytes_transferred - self._last_bytes
-        self._job_progress.update(self._file_task_id, advance=increment)
-        # For single-file torrents, parent and file task are the same.
-        # Avoid advancing the same task twice.
-        if self._file_task_id != self._parent_task_id:
-            self._job_progress.update(self._parent_task_id, advance=increment)
-        self._overall_progress.update(self._overall_task_id, advance=increment)
-        self._last_bytes = bytes_transferred
-
 def get_remote_size(sftp, remote_path):
     """Recursively gets the total size of a remote file or directory."""
     total_size = 0
@@ -298,6 +271,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
     Downloads a single file with a progress bar, with retries. Establishes its own SFTP session
     to ensure thread safety when called from a ThreadPoolExecutor.
     Uses a pre-existing task_id for the file progress bar.
+    This version supports resuming partial downloads.
     """
     local_path = Path(local_file)
     file_name = os.path.basename(remote_file)
@@ -310,6 +284,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
 
         remote_stat = sftp.stat(remote_file)
         total_size = remote_stat.st_size
+        logging.debug(f"SFTP Check: Remote file '{remote_file}' size: {total_size}")
 
         if total_size == 0:
             logging.warning(f"Skipping zero-byte file: {file_name}")
@@ -317,43 +292,96 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
                 file_counts[parent_task_id][0] += 1
             return
 
+        local_size = 0
         if local_path.exists():
-            # On retries, we might need to overwrite a partial file.
-            # Reset the progress for this file task to ensure accuracy.
-            if file_task_id is not None:
-                job_progress.update(file_task_id, completed=0)
-
             local_size = local_path.stat().st_size
+            logging.debug(f"SFTP Check: Local file '{local_file}' exists with size: {local_size}")
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
+                logging.debug(f"SFTP SKIP: Local: {local_size}, Remote: {total_size}. Skipping file '{file_name}'.")
                 job_progress.update(parent_task_id, advance=total_size)
                 overall_progress.update(overall_task_id, advance=total_size)
+                if file_task_id is not None:
+                    job_progress.update(file_task_id, completed=total_size)
                 with count_lock:
                     file_counts[parent_task_id][0] += 1
                 return
-            else:
-                logging.warning(f"Overwriting (size mismatch r:{total_size}/l:{local_size}): {file_name}")
+            elif local_size > total_size:
+                logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
+                logging.debug(f"SFTP OVERWRITE: Local: {local_size}, Remote: {total_size}. Overwriting file '{file_name}'.")
+                local_size = 0
+            else:  # local_size < total_size
+                logging.info(f"Resuming download for {file_name} from {local_size / (1024*1024):.2f} MB.")
+                logging.debug(f"SFTP RESUME: Local: {local_size}, Remote: {total_size}. Resuming file '{file_name}'.")
+        else:
+            logging.debug(f"SFTP NEW: Local file '{local_file}' does not exist. Starting new download.")
+
+        effective_task_id = file_task_id if file_task_id is not None else parent_task_id
+
+        # If resuming, set the starting point for the file's progress bar.
+        job_progress.update(effective_task_id, completed=local_size)
+
+        if local_size > 0:
+            # For multi-file torrents, we also need to advance the parent task bar
+            # to reflect the resumed portion of this specific file. For single-file
+            # torrents, the parent task is the effective task, which is already set.
+            if effective_task_id != parent_task_id:
+                job_progress.update(parent_task_id, advance=local_size)
+            # Always advance the overall progress bar by the size of the resumed portion.
+            overall_progress.update(overall_task_id, advance=local_size)
 
         if dry_run:
             logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
-            job_progress.update(parent_task_id, advance=total_size)
-            overall_progress.update(overall_task_id, advance=total_size)
+            # In dry run, we simulate a full download by advancing the remaining amount
+            remaining_size = total_size - local_size
+            job_progress.update(parent_task_id, advance=remaining_size)
+            overall_progress.update(overall_task_id, advance=remaining_size)
             with count_lock:
                 file_counts[parent_task_id][0] += 1
             return
 
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
-        effective_task_id = file_task_id if file_task_id is not None else parent_task_id
         if file_task_id is not None:
             job_progress.update(file_task_id, visible=True)
             job_progress.start_task(file_task_id)
 
         try:
-            callback = DownloadProgress(job_progress, effective_task_id, parent_task_id, overall_progress, overall_task_id)
-            sftp.get(remote_file, str(local_path), callback=callback)
-            logging.info(f"Download of '{file_name}' completed.")
-            download_successful = True
+            # Manual download loop to support resuming
+            mode = 'r+b' if local_size > 0 else 'wb'
+            with sftp.open(remote_file, 'rb') as remote_f:
+                remote_f.seek(local_size)
+                remote_f.prefetch()  # Helps with performance
+                with open(local_path, mode) as local_f:
+                    if local_size > 0:
+                        local_f.seek(local_size)
+                    while True:
+                        chunk = remote_f.read(32768)
+                        if not chunk:
+                            break
+                        local_f.write(chunk)
+
+                        increment = len(chunk)
+                        # Advance the file-specific progress bar (or parent if single-file)
+                        job_progress.update(effective_task_id, advance=increment)
+
+                        # For multi-file torrents, we also advance the parent task.
+                        # For single-file torrents, effective_task_id IS parent_task_id, so we avoid double-counting.
+                        if effective_task_id != parent_task_id:
+                            job_progress.update(parent_task_id, advance=increment)
+
+                        # Always advance the overall progress
+                        overall_progress.update(overall_task_id, advance=increment)
+
+            # Final check
+            final_local_size = local_path.stat().st_size
+            if final_local_size == total_size:
+                logging.info(f"Download of '{file_name}' completed.")
+                download_successful = True
+            else:
+                # This could happen if the remote file changed size during transfer
+                raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_local_size}")
+
         except Exception as e:
             logging.error(f"Download failed for {file_name}: {e}")
             if file_task_id is not None:
@@ -392,7 +420,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
-        "-aW",
+        "-a", "--partial", "--inplace",
         "--info=progress2",
         "--timeout=60",  # Exit if no data transferred for 60 seconds
         # Add ServerAliveInterval to keep the SSH connection alive through firewalls
@@ -401,15 +429,24 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
         local_parent_dir
     ]
 
+    # Create a safe version of the command for logging, with the password obfuscated
+    safe_rsync_cmd = list(rsync_cmd)
+    safe_rsync_cmd[2] = "'********'"
+
     if dry_run:
         logging.info(f"[DRY RUN] Would execute rsync for: {os.path.basename(remote_path)}")
-        logging.info(f"[DRY RUN] Command: {' '.join(rsync_cmd)}")
+        logging.debug(f"[DRY RUN] Command: {' '.join(safe_rsync_cmd)}")
         task = job_progress.tasks[parent_task_id]
         job_progress.update(parent_task_id, advance=task.total)
         overall_progress.update(overall_task_id, advance=task.total)
         return
 
-    logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}'")
+    # Check if the destination path exists to provide a clearer log message for resumes.
+    if Path(local_path).exists():
+        logging.info(f"Partial file/directory found for '{os.path.basename(remote_path)}'. Resuming with rsync.")
+    else:
+        logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}'")
+    logging.debug(f"Executing rsync command: {' '.join(safe_rsync_cmd)}")
 
     max_retries = 2
     retry_delay = 5  # Fixed delay in seconds
@@ -961,7 +998,7 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan, 
     except Exception as e:
         logging.error(f"An error occurred during interactive categorization: {e}", exc_info=True)
 
-def setup_logging(script_dir, dry_run, test_run):
+def setup_logging(script_dir, dry_run, test_run, debug):
     """Configures logging to both console and a file."""
     log_dir = script_dir / 'logs'
     log_dir.mkdir(exist_ok=True)
@@ -972,7 +1009,8 @@ def setup_logging(script_dir, dry_run, test_run):
 
     # Get the root logger
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    log_level = logging.DEBUG if debug else logging.INFO
+    logger.setLevel(log_level)
 
     # Remove any existing handlers to avoid duplicates
     if logger.hasHandlers():
@@ -1048,6 +1086,7 @@ def main():
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
     mode_group.add_argument('--test-run', action='store_true', help='Run the full process but do not delete the source torrent.')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging to file.')
     parser.add_argument('--parallel-jobs', type=int, default=4, metavar='N', help='Number of torrents to process in parallel.')
     parser.add_argument('-l', '--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
     parser.add_argument('-a', '--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
@@ -1059,7 +1098,7 @@ def main():
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
-    setup_logging(script_dir, args.dry_run, args.test_run)
+    setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
 
     # --- Early exit argument handling ---
     if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize:
