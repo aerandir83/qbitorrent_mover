@@ -312,12 +312,15 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
         effective_task_id = file_task_id if file_task_id is not None else parent_task_id
 
         # If resuming, set the starting point for the file's progress bar.
-        # For single-file torrents, this is the parent task bar.
         job_progress.update(effective_task_id, completed=local_size)
 
-        # If we are resuming, we must also advance the overall progress bar.
-        # The parent torrent's progress bar will be advanced inside the loop.
         if local_size > 0:
+            # For multi-file torrents, we also need to advance the parent task bar
+            # to reflect the resumed portion of this specific file. For single-file
+            # torrents, the parent task is the effective task, which is already set.
+            if effective_task_id != parent_task_id:
+                job_progress.update(parent_task_id, advance=local_size)
+            # Always advance the overall progress bar by the size of the resumed portion.
             overall_progress.update(overall_task_id, advance=local_size)
 
         if dry_run:
@@ -410,7 +413,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
-        "-a", "--partial",
+        "-a", "--partial", "--inplace",
         "--info=progress2",
         "--timeout=60",  # Exit if no data transferred for 60 seconds
         # Add ServerAliveInterval to keep the SSH connection alive through firewalls
