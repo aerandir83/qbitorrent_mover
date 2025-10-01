@@ -738,10 +738,10 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
+def process_torrent(torrent, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, live_console, plan_text, plan_lock, overall_progress_lock, dry_run=False, test_run=False):
     """
     Executes the full transfer and management process for a single torrent.
-    Establishes its own SFTP connection to be thread-safe.
+    Calculates its own size, updates the UI, and establishes its own SFTP connection to be thread-safe.
     """
     name, hash = torrent.name, torrent.hash
     sftp = None
@@ -749,20 +749,52 @@ def process_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config
     source_paused = False
     parent_task_id = None
     success = False
-    try:
-        dest_base_path = config['UNRAID_PATHS']['destination_path']
-        remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
+    total_size = 0
+    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+    remote_content_path = torrent.content_path
 
-        remote_content_path = torrent.content_path
-        content_name = os.path.basename(remote_content_path)
-        local_dest_path = os.path.join(dest_base_path, content_name)
+    try:
+        # --- Stage 1: Calculate Size and Update UI ---
+        logging.info(f"Analyzing torrent: {name}")
+        if transfer_mode == 'rsync':
+            try:
+                total_size = get_remote_size_rsync(sftp_config, remote_content_path)
+            except Exception as e:
+                live_console.log(f"[bold red]Error calculating rsync size for '{name}': {e}[/]")
+                live_console.log(f"[yellow]Warning: Skipping torrent due to size calculation failure.[/]")
+                return False # Indicate failure
+        else: # sftp mode
+            try:
+                sftp, ssh_client = connect_sftp(sftp_config)
+                total_size = get_remote_size(sftp, remote_content_path)
+            except Exception as e:
+                live_console.log(f"[bold red]Error calculating SFTP size for '{name}': {e}[/]")
+                live_console.log(f"[yellow]Warning: Skipping torrent due to size calculation failure.[/]")
+                return False # Indicate failure
+            finally:
+                if sftp: sftp.close()
+                if ssh_client: ssh_client.close()
+                sftp, ssh_client = None, None # Reset for later use
 
         if total_size == 0:
-            logging.warning(f"Skipping torrent with no content or zero size: {name}")
-            success = True # Mark as success for the UI
-            return True
+            live_console.log(f"[yellow]Warning: Skipping zero-size torrent: {name}[/]")
+            return True # Indicate success, as there's nothing to do
 
-        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+        # --- Update shared UI elements under lock ---
+        with plan_lock:
+            size_gb = total_size / 1024**3
+            plan_text.append(f" • {name} (")
+            plan_text.append(f"{size_gb:.2f} GB", style="bold")
+            plan_text.append(")\n")
+
+        with overall_progress_lock:
+            overall_progress.update(overall_task_id, total=overall_progress.tasks[overall_task_id].total + total_size)
+
+        # --- Stage 2: Perform Transfer ---
+        dest_base_path = config['UNRAID_PATHS']['destination_path']
+        remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
+        content_name = os.path.basename(remote_content_path)
+        local_dest_path = os.path.join(dest_base_path, content_name)
 
         with task_add_lock:
             parent_task_id = job_progress.add_task(name, total=total_size, start=True)
@@ -1203,6 +1235,8 @@ def main():
         file_counts = defaultdict(lambda: [0, 0])
         count_lock = threading.Lock()
         task_add_lock = threading.Lock()
+        plan_lock = threading.Lock()
+        overall_progress_lock = threading.Lock()
 
         job_progress = Progress(
             TextColumn("  {task.description}", justify="left"),
@@ -1214,12 +1248,13 @@ def main():
             ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts)
         )
-        size_calc_progress = Progress(TextColumn("[bold cyan]Calculating sizes..."), BarColumn(), MofNCompleteColumn())
-        size_calc_task = size_calc_progress.add_task("...", total=len(eligible_torrents))
-        size_calc_panel = Panel(size_calc_progress, title="[bold]Initialization[/bold]", border_style="cyan", expand=False)
+
+        plan_text = Text(f"Found {len(eligible_torrents)} torrents to analyze and move...\n", style="bold")
+        plan_text.append("─" * 70 + "\n", style="dim")
+        plan_panel = Panel(plan_text, title="[bold magenta]Transfer Plan[/bold magenta]", border_style="magenta", expand=False)
 
         layout = Group(
-            size_calc_panel,
+            plan_panel,
             Panel(torrent_progress, title="Torrent Queue", border_style="blue"),
             Panel(overall_progress, title="Total Progress", border_style="green"),
             Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2))
@@ -1227,108 +1262,42 @@ def main():
 
         with Live(layout, refresh_per_second=4, transient=True) as live:
             sftp_config = config['MANDARIN_SFTP']
-            grand_total_size = 0
-            torrent_sizes = {}
-
-            # --- Calculate total size of all torrents ---
-            if transfer_mode == 'rsync':
-                # Use the faster rsync method for size calculation
-                for torrent in eligible_torrents:
-                    size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
-                    remote_content_path = torrent.content_path
-                    try:
-                        size = get_remote_size_rsync(sftp_config, remote_content_path)
-                        if size == 0:
-                            live.console.log(f"[yellow]Warning: Skipping zero-size torrent: {torrent.name}[/]")
-                        torrent_sizes[torrent.hash] = size
-                        grand_total_size += size
-                    except Exception as e:
-                        live.console.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
-                        live.console.log(f"[yellow]Warning: Skipping torrent due to size calculation failure.[/]")
-                        torrent_sizes[torrent.hash] = 0 # Mark as zero to skip later
-                    finally:
-                        size_calc_progress.advance(size_calc_task)
-            else:  # Default to sftp
-                sftp = None
-                ssh_client = None
-
-                try:
-                    for torrent in eligible_torrents:
-                        size_calc_progress.update(size_calc_task, description=f"{torrent.name[:50]}")
-                        remote_content_path = torrent.content_path
-
-                        size = 0
-                        retries = 2
-                        for attempt in range(1, retries + 1):
-                            try:
-                                # If the client is dead or not connected, create a new one.
-                                if ssh_client is None or ssh_client.get_transport() is None or not ssh_client.get_transport().is_active():
-                                    live.console.log("[yellow]SFTP connection is not active. Establishing new connection...[/]")
-                                    # Clean up any old connection first
-                                    if sftp: sftp.close()
-                                    if ssh_client: ssh_client.close()
-                                    sftp, ssh_client = connect_sftp(sftp_config)
-                                    live.console.log("[green]SFTP connection established.[/green]")
-
-                                size = get_remote_size(sftp, remote_content_path)
-                                if size == 0:
-                                    live.console.log(f"[yellow]Warning: Skipping zero-size torrent: {torrent.name}[/]")
-                                torrent_sizes[torrent.hash] = size
-                                grand_total_size += size
-                                break  # Success
-                            except (paramiko.ssh_exception.SSHException, EOFError, OSError, AttributeError) as e:
-                                live.console.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
-                                # Clean up the dead connection completely
-                                if sftp: sftp.close()
-                                if ssh_client: ssh_client.close()
-                                sftp, ssh_client = None, None
-
-                                if attempt < retries:
-                                    live.console.log(f"[yellow]Attempt {attempt}/{retries} failed. Retrying in 5 seconds...[/]")
-                                    time.sleep(5)
-                                else:
-                                    live.console.log(f"[bold red]Failed to calculate size for '{torrent.name}' after {retries} attempts.[/]")
-                                    live.console.log(f"[yellow]Warning: Skipping torrent.[/]")
-                                    torrent_sizes[torrent.hash] = 0  # Mark as zero to skip
-
-                        size_calc_progress.advance(size_calc_task)
-                finally:
-                    if sftp: sftp.close()
-                    if ssh_client: ssh_client.close()
-
-            overall_progress.update(overall_task, total=grand_total_size, description="[bold green]Overall")
-
-            # --- Swap out the calculation panel for the plan panel ---
-            layout.renderables.pop(0) # Remove the calculation panel
-
-            plan_text = Text()
-            plan_text.append(f"Found {len(eligible_torrents)} torrents to move. Total size: {grand_total_size/1024**3:.2f} GB\n", style="bold")
-            plan_text.append("─" * 70 + "\n", style="dim")
-            for torrent in eligible_torrents:
-                size_gb = torrent_sizes.get(torrent.hash, 0) / 1024**3
-                plan_text.append(f" • {torrent.name} (")
-                plan_text.append(f"{size_gb:.2f} GB", style="bold")
-                plan_text.append(")\n")
-
-            plan_panel = Panel(plan_text, title="[bold magenta]Transfer Plan[/bold magenta]", border_style="magenta", expand=False)
-            layout.renderables.insert(0, plan_panel)
-            # ---------------------------------------------------------
-
-            live.console.log("Plan generated. Starting transfers...")
+            live.console.log(f"Analyzing and preparing {len(eligible_torrents)} torrent(s) for transfer...")
             executor = ThreadPoolExecutor(max_workers=args.parallel_jobs)
             try:
-                # Filter out any torrents that were skipped during size calculation
-                torrents_to_process = [t for t in eligible_torrents if torrent_sizes.get(t.hash, 0) > 0]
-
                 future_to_torrent = {
-                    executor.submit(process_torrent, torrent, torrent_sizes[torrent.hash], mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task, file_counts, count_lock, task_add_lock, args.dry_run, args.test_run): torrent
-                    for torrent in torrents_to_process
+                    executor.submit(
+                        process_torrent,
+                        torrent,
+                        mandarin_qbit,
+                        unraid_qbit,
+                        sftp_config,
+                        config,
+                        tracker_rules,
+                        job_progress,
+                        overall_progress,
+                        overall_task,
+                        file_counts,
+                        count_lock,
+                        task_add_lock,
+                        live.console,
+                        plan_text,
+                        plan_lock,
+                        overall_progress_lock,
+                        args.dry_run,
+                        args.test_run
+                    ): torrent for torrent in eligible_torrents
                 }
+
                 for future in as_completed(future_to_torrent):
                     torrent = future_to_torrent[future]
                     try:
                         if future.result():
                             processed_count += 1
+                        else:
+                            # A result of False means it was skipped due to an error (e.g., size calc)
+                            # but we still advance the torrent progress bar.
+                            pass
                     except Exception as e:
                         live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]", exc_info=True)
                     finally:
