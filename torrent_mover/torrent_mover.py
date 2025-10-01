@@ -284,6 +284,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
 
         remote_stat = sftp.stat(remote_file)
         total_size = remote_stat.st_size
+        logging.debug(f"SFTP Check: Remote file '{remote_file}' size: {total_size}")
 
         if total_size == 0:
             logging.warning(f"Skipping zero-byte file: {file_name}")
@@ -294,8 +295,10 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
         local_size = 0
         if local_path.exists():
             local_size = local_path.stat().st_size
+            logging.debug(f"SFTP Check: Local file '{local_file}' exists with size: {local_size}")
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
+                logging.debug(f"SFTP SKIP: Local: {local_size}, Remote: {total_size}. Skipping file '{file_name}'.")
                 job_progress.update(parent_task_id, advance=total_size)
                 overall_progress.update(overall_task_id, advance=total_size)
                 if file_task_id is not None:
@@ -305,9 +308,13 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
                 return
             elif local_size > total_size:
                 logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
+                logging.debug(f"SFTP OVERWRITE: Local: {local_size}, Remote: {total_size}. Overwriting file '{file_name}'.")
                 local_size = 0
             else:  # local_size < total_size
                 logging.info(f"Resuming download for {file_name} from {local_size / (1024*1024):.2f} MB.")
+                logging.debug(f"SFTP RESUME: Local: {local_size}, Remote: {total_size}. Resuming file '{file_name}'.")
+        else:
+            logging.debug(f"SFTP NEW: Local file '{local_file}' does not exist. Starting new download.")
 
         effective_task_id = file_task_id if file_task_id is not None else parent_task_id
 
@@ -424,13 +431,14 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
 
     if dry_run:
         logging.info(f"[DRY RUN] Would execute rsync for: {os.path.basename(remote_path)}")
-        logging.info(f"[DRY RUN] Command: {' '.join(rsync_cmd)}")
+        logging.debug(f"[DRY RUN] Command: {' '.join(rsync_cmd)}")
         task = job_progress.tasks[parent_task_id]
         job_progress.update(parent_task_id, advance=task.total)
         overall_progress.update(overall_task_id, advance=task.total)
         return
 
     logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}'")
+    logging.debug(f"Executing rsync command: {' '.join(rsync_cmd)}")
 
     max_retries = 2
     retry_delay = 5  # Fixed delay in seconds
@@ -982,7 +990,7 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan, 
     except Exception as e:
         logging.error(f"An error occurred during interactive categorization: {e}", exc_info=True)
 
-def setup_logging(script_dir, dry_run, test_run):
+def setup_logging(script_dir, dry_run, test_run, debug):
     """Configures logging to both console and a file."""
     log_dir = script_dir / 'logs'
     log_dir.mkdir(exist_ok=True)
@@ -993,7 +1001,8 @@ def setup_logging(script_dir, dry_run, test_run):
 
     # Get the root logger
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    log_level = logging.DEBUG if debug else logging.INFO
+    logger.setLevel(log_level)
 
     # Remove any existing handlers to avoid duplicates
     if logger.hasHandlers():
@@ -1069,6 +1078,7 @@ def main():
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
     mode_group.add_argument('--test-run', action='store_true', help='Run the full process but do not delete the source torrent.')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging to file.')
     parser.add_argument('--parallel-jobs', type=int, default=4, metavar='N', help='Number of torrents to process in parallel.')
     parser.add_argument('-l', '--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
     parser.add_argument('-a', '--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
@@ -1080,7 +1090,7 @@ def main():
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
-    setup_logging(script_dir, args.dry_run, args.test_run)
+    setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
 
     # --- Early exit argument handling ---
     if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize:
