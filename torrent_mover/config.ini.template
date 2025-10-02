@@ -1,43 +1,58 @@
-[MANDARIN_QBIT]
-host=https://your_mandarin_qbittorrent_url.com
-port=443
-username=your_username
-password=your_password
-# Set to false if you use a self-signed certificate and understand the risks
-verify_cert=True
+#
+# Torrent Mover Configuration Template
+#
+# INSTRUCTIONS:
+# 1. Rename this file to "config.ini".
+# 2. Fill in the details for your source and destination servers below.
+# 3. Ensure all paths are absolute paths.
+#
 
-[UNRAID_QBIT]
-host=https://your_unraid_qbittorrent_url.com
-port=443
-username=your_username
-password=your_password
-# Set to false if you use a self-signed certificate and understand the risks
-verify_cert=True
+[SOURCE_QBITTORRENT]
+# Connection details for the SOURCE qBittorrent client (e.g., your seedbox).
+host = https://source-qbittorrent.example.com
+port = 443
+username = your_username
+password = your_password
+# Set to false if you use a self-signed certificate and understand the risks.
+verify_cert = True
 
-[MANDARIN_SFTP]
-host=your_mandarin_sftp_ip_or_hostname
-port=22
-username=your_sftp_username
-password=your_sftp_password
+[DESTINATION_QBITTORRENT]
+# Connection details for the DESTINATION qBittorrent client (e.g., your home server).
+host = https://destination-qbittorrent.example.com
+port = 443
+username = your_username
+password = your_password
+# Set to false if you use a self-signed certificate and understand the risks.
+verify_cert = True
 
-[UNRAID_PATHS]
-# The absolute path on the Unraid server where the torrent data should be physically moved.
-# This is the path the script will write to.
-destination_path=/mnt/user/download/moved
-# (Optional) The absolute path that the Unraid qBittorrent client uses to see the data.
-# Use this if qBittorrent is running in a Docker container with path mappings.
-# If blank, it will default to the 'destination_path' above.
-# Example: /data/moved
-remote_destination_path=
+[SOURCE_SERVER]
+# Connection details for the SOURCE server where the files are stored.
+# This is typically the same machine as the source qBittorrent client.
+host = source-server.example.com
+port = 22
+username = your_sftp_username
+password = your_sftp_password
+
+[DESTINATION_PATHS]
+# The absolute path on the DESTINATION server where the torrent data will be moved to.
+# This is the local path where the script will write the files.
+destination_path = /path/to/your/downloads
+# (Optional) The path that the DESTINATION qBittorrent client uses to see the data.
+# Use this if qBittorrent is running in a Docker container with different path mappings.
+# If left blank, it will default to the 'destination_path' value above.
+# Example: If your downloads are at /mnt/data/downloads on the host, but the container
+# sees this as /downloads, you would set remote_destination_path=/downloads
+remote_destination_path =
 
 [SETTINGS]
-# The category in qBittorrent that marks torrents for moving
-category_to_move=moving
+# The category in the SOURCE qBittorrent client that marks torrents for moving.
+category_to_move = move-me
 # (Optional) The desired total size in GB for the category after moving.
 # If set, the script will only move the oldest torrents until the category's
 # total size is at or below this threshold.
 # Leave blank to move all completed torrents in the category.
-size_threshold_gb=
+size_threshold_gb =
 # The transfer mode to use. Options: sftp, rsync.
-# rsync mode requires 'sshpass' to be installed on the system running the script.
-transfer_mode=sftp
+# rsync mode is generally faster but requires 'sshpass' to be installed on the
+# system running this script.
+transfer_mode = rsync

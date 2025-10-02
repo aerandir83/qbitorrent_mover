@@ -770,7 +770,7 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, live_console):
     return torrent, total_size
 
 
-def transfer_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
+def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
@@ -781,8 +781,8 @@ def transfer_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_confi
     parent_task_id = None
     success = False
     try:
-        dest_base_path = config['UNRAID_PATHS']['destination_path']
-        remote_dest_base_path = config['UNRAID_PATHS'].get('remote_destination_path') or dest_base_path
+        dest_base_path = config['DESTINATION_PATHS']['destination_path']
+        remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
 
         remote_content_path = torrent.content_path
         content_name = os.path.basename(remote_content_path)
@@ -821,59 +821,59 @@ def transfer_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_confi
             transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run)
             logging.info(f"SFTP transfer completed successfully for '{name}'.")
 
-        unraid_save_path = remote_dest_base_path.replace("\\", "/")
+        destination_save_path = remote_dest_base_path.replace("\\", "/")
 
         if not dry_run:
             logging.info(f"Exporting .torrent file for {name}")
-            torrent_file_content = mandarin_qbit.torrents_export(torrent_hash=hash)
-            logging.info(f"Adding torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
-            unraid_qbit.torrents_add(
+            torrent_file_content = source_qbit.torrents_export(torrent_hash=hash)
+            logging.info(f"Adding torrent to Destination (paused) with save path '{destination_save_path}': {name}")
+            destination_qbit.torrents_add(
                 torrent_files=torrent_file_content,
-                save_path=unraid_save_path,
+                save_path=destination_save_path,
                 is_paused=True,
                 category=torrent.category,
                 use_auto_torrent_management=True
             )
             time.sleep(5)
         else:
-            logging.info(f"[DRY RUN] Would export and add torrent to Unraid (paused) with save path '{unraid_save_path}': {name}")
+            logging.info(f"[DRY RUN] Would export and add torrent to Destination (paused) with save path '{destination_save_path}': {name}")
 
         if not dry_run:
-            logging.info(f"Triggering force recheck on Unraid for: {name}")
-            unraid_qbit.torrents_recheck(torrent_hashes=hash)
+            logging.info(f"Triggering force recheck on Destination for: {name}")
+            destination_qbit.torrents_recheck(torrent_hashes=hash)
         else:
-            logging.info(f"[DRY RUN] Would trigger force recheck on Unraid for: {name}")
+            logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
 
-        if wait_for_recheck_completion(unraid_qbit, hash, dry_run=dry_run):
+        if wait_for_recheck_completion(destination_qbit, hash, dry_run=dry_run):
             if not dry_run:
-                logging.info(f"Starting torrent on Unraid: {name}")
-                unraid_qbit.torrents_resume(torrent_hashes=hash)
+                logging.info(f"Starting torrent on Destination: {name}")
+                destination_qbit.torrents_resume(torrent_hashes=hash)
             else:
-                logging.info(f"[DRY RUN] Would start torrent on Unraid: {name}")
+                logging.info(f"[DRY RUN] Would start torrent on Destination: {name}")
 
-            logging.info(f"Attempting to categorize torrent on Unraid: {name}")
-            set_category_based_on_tracker(unraid_qbit, hash, tracker_rules, dry_run=dry_run)
+            logging.info(f"Attempting to categorize torrent on Destination: {name}")
+            set_category_based_on_tracker(destination_qbit, hash, tracker_rules, dry_run=dry_run)
 
             if not dry_run and not test_run:
-                logging.info(f"Pausing torrent on Mandarin before deletion: {name}")
-                mandarin_qbit.torrents_pause(torrent_hashes=hash)
+                logging.info(f"Pausing torrent on Source before deletion: {name}")
+                source_qbit.torrents_pause(torrent_hashes=hash)
                 source_paused = True
             else:
-                logging.info(f"[DRY RUN/TEST RUN] Would pause torrent on Mandarin: {name}")
+                logging.info(f"[DRY RUN/TEST RUN] Would pause torrent on Source: {name}")
 
             if test_run:
-                logging.info(f"[TEST RUN] Skipping deletion of torrent from Mandarin: {name}")
+                logging.info(f"[TEST RUN] Skipping deletion of torrent from Source: {name}")
             elif not dry_run:
-                logging.info(f"Deleting torrent and data from Mandarin: {name}")
-                mandarin_qbit.torrents_delete(torrent_hashes=hash, delete_files=True)
+                logging.info(f"Deleting torrent and data from Source: {name}")
+                source_qbit.torrents_delete(torrent_hashes=hash, delete_files=True)
             else:
-                logging.info(f"[DRY RUN] Would delete torrent and data from Mandarin: {name}")
+                logging.info(f"[DRY RUN] Would delete torrent and data from Source: {name}")
 
             logging.info(f"--- Successfully processed torrent: {name} ---")
             success = True
             return True
         else:
-            logging.error(f"Failed to verify recheck for {name}. Leaving on Mandarin for next run.")
+            logging.error(f"Failed to verify recheck for {name}. Leaving on Source for next run.")
             return False
     except Exception as e:
         logging.error(f"An error occurred while processing torrent {name}: {e}", exc_info=True)
@@ -881,9 +881,9 @@ def transfer_torrent(torrent, total_size, mandarin_qbit, unraid_qbit, sftp_confi
             job_progress.update(parent_task_id, description=f"[bold red]Failed: {name}[/]")
         if not dry_run and source_paused:
             try:
-                mandarin_qbit.torrents_resume(torrent_hashes=hash)
+                source_qbit.torrents_resume(torrent_hashes=hash)
             except Exception as resume_e:
-                logging.error(f"Failed to resume torrent {name} on Mandarin after error: {resume_e}")
+                logging.error(f"Failed to resume torrent {name} on Source after error: {resume_e}")
         return False
     finally:
         if sftp:
@@ -1166,7 +1166,7 @@ def main():
 
         if args.interactive_categorize:
             try:
-                unraid_qbit = connect_qbit(config['UNRAID_QBIT'], "Unraid")
+                destination_qbit = connect_qbit(config['DESTINATION_QBITTORRENT'], "Destination")
                 # Determine the category to scan
                 if args.category:
                     cat_to_scan = args.category
@@ -1179,7 +1179,7 @@ def main():
                         logging.warning("No category specified via --category or in config. Defaulting to 'uncategorized'.")
                         cat_to_scan = '' # Empty string scans for uncategorized
 
-                run_interactive_categorization(unraid_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
+                run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
             except Exception as e:
                 logging.error(f"Failed to run interactive categorization: {e}", exc_info=True)
             return 0
@@ -1195,8 +1195,8 @@ def main():
         if transfer_mode == 'rsync':
             check_sshpass_installed()
         try:
-            mandarin_qbit = connect_qbit(config['MANDARIN_QBIT'], "Mandarin")
-            unraid_qbit = connect_qbit(config['UNRAID_QBIT'], "Unraid")
+            source_qbit = connect_qbit(config['SOURCE_QBITTORRENT'], "Source")
+            destination_qbit = connect_qbit(config['DESTINATION_QBITTORRENT'], "Destination")
         except Exception as e:
             logging.error(f"Failed to connect to qBittorrent client after multiple retries: {e}", exc_info=True)
             logging.error("One or more qBittorrent connections failed. Aborting.")
@@ -1215,7 +1215,7 @@ def main():
                 logging.error(f"Invalid value for 'size_threshold_gb': '{size_threshold_gb_str}'. It must be a number. Disabling threshold.")
                 size_threshold_gb = None
 
-        eligible_torrents = get_eligible_torrents(mandarin_qbit, category_to_move, size_threshold_gb)
+        eligible_torrents = get_eligible_torrents(source_qbit, category_to_move, size_threshold_gb)
         if not eligible_torrents:
             logging.info("No torrents to move at this time.")
             return 0
@@ -1261,7 +1261,7 @@ def main():
         )
 
         with Live(layout, refresh_per_second=4, transient=True) as live:
-            sftp_config = config['MANDARIN_SFTP']
+            sftp_config = config['SOURCE_SERVER']
             transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
             analysis_workers = max(10, args.parallel_jobs * 2)
@@ -1295,7 +1295,7 @@ def main():
 
                                 transfer_future = transfer_executor.submit(
                                     transfer_torrent, analyzed_torrent, total_size,
-                                    mandarin_qbit, unraid_qbit, sftp_config, config, tracker_rules,
+                                    source_qbit, destination_qbit, sftp_config, config, tracker_rules,
                                     job_progress, overall_progress, overall_task,
                                     file_counts, count_lock, task_add_lock,
                                     args.dry_run, args.test_run
