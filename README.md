@@ -10,7 +10,7 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **0.1.1**. To check your version, run: `python torrent_mover.py --version`.
+The current version is **1.2.0**. To check your version, run: `python torrent_mover.py --version`.
 
 ## Features
 
@@ -36,61 +36,54 @@ The current version is **0.1.1**. To check your version, run: `python torrent_mo
 
 ## Installation & Setup
 
-It's highly recommended to run this script in a Python virtual environment to avoid conflicts with system packages.
+It's highly recommended to run this script in a Python virtual environment to keep its dependencies separate from system packages.
 
-### 1. Get the Code
+### 1. Get the Code and Prepare the Environment
 
-First, clone this repository to a directory on your destination server (e.g., your Unraid server).
+First, clone the repository and navigate into the main script directory.
 
 ```bash
 # Example: Clone into the /opt directory
 cd /opt
 git clone https://github.com/your-username/torrent-mover.git
-cd torrent-mover
+
+# The script is located in the 'torrent_mover' subdirectory, so go there
+cd torrent-mover/torrent_mover
 ```
 
-### 2. Set up Python Environment
-
-Navigate into the project's `torrent_mover` subdirectory and create a virtual environment.
+Now, create and activate a Python virtual environment.
 
 ```bash
-# Navigate to the script directory
-cd torrent_mover
-
-# Create a virtual environment
+# Create the virtual environment inside the script directory
 python3 -m venv .venv
 
-# Activate the virtual environment
+# Activate it (you'll need to do this every time you open a new shell)
 source .venv/bin/activate
 ```
-*Note: You will need to activate the virtual environment (`source .venv/bin/activate`) every time you open a new terminal session to run the script.*
 
-### 3. Install Dependencies
+### 2. Install Dependencies
 
-Install the required Python libraries.
+With your virtual environment active, install the required Python libraries from `requirements.txt`.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Create and Edit Your Configuration
+### 3. Create and Edit Your Configuration
 
-Copy the template to create your own configuration file.
+Copy the `config.ini.template` to create your own `config.ini` file.
 
 ```bash
 cp config.ini.template config.ini
 ```
 
-Now, open `config.ini` with a text editor (like `nano`) and fill in your server details.
+Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your server details. Pay close attention to the comments in the template file.
 
-*   **[MANDARIN_QBIT]** - Your **source** qBittorrent client (e.g., your seedbox).
-*   **[UNRAID_QBIT]** - Your **destination** qBittorrent client (e.g., your home server).
-*   **[MANDARIN_SFTP]** - The SFTP/SSH details for your **source** server.
-    *   `source_path`: The **absolute path** where the source qBittorrent saves completed files for the moving category. This must match the path set in qBittorrent.
-*   **[UNRAID_PATHS]**
-    *   `destination_path`: The **absolute local path** on the server where the script is running. This is where the torrent files will be moved to.
-*   **[SETTINGS]**
-    *   `category_to_move`: The category in qBittorrent that tells the script which torrents to move.
+*   **`[MANDARIN_QBIT]`**: Your **source** qBittorrent client (e.g., your seedbox).
+*   **`[UNRAID_QBIT]`**: Your **destination** qBittorrent client (e.g., your home server).
+*   **`[MANDARIN_SFTP]`**: The SFTP/SSH details for your **source** server.
+*   **`[UNRAID_PATHS]`**: The local path on the destination server where torrent data will be saved.
+*   **`[SETTINGS]`**: Key operational settings, like the `category_to_move` that the script looks for.
 
 ## Basic Usage
 
@@ -118,18 +111,26 @@ python torrent_mover.py
 
 ## Scheduling with Cron
 
-To run the script automatically, you can set up a cron job.
+To run the script automatically, you can set up a cron job. This allows the script to run on a schedule (e.g., every hour) without manual intervention.
 
 1.  Open your crontab for editing: `crontab -e`
-2.  Add a line to schedule the script. This example runs it every hour and logs the output.
+2.  Add a line to schedule the script. **You must use absolute paths** for the Python interpreter (inside your `.venv`) and the script itself.
 
-**Make sure to use absolute paths** for both the Python interpreter in your virtual environment and the script itself.
+Here is a robust example that runs the script every 30 minutes and saves its output to a log file.
 
 ```crontab
-# Run the torrent mover script every hour and log output
-0 * * * * /path/to/your/torrent_mover/.venv/bin/python /path/to/your/torrent_mover/torrent_mover.py >> /path/to/your/torrent_mover/mover.log 2>&1
+# Run the torrent mover every 30 minutes
+# The full path to the python from your virtual environment is required.
+# The full path to the script is required.
+# Logging output to a file is highly recommended for debugging.
+*/30 * * * * /opt/torrent-mover/torrent_mover/.venv/bin/python /opt/torrent-mover/torrent_mover/torrent_mover.py >> /opt/torrent-mover/torrent_mover/cron.log 2>&1
 ```
-*   The `>> ... 2>&1` part is highly recommended, as it saves a log of the script's activity, which is essential for debugging.
+
+**Breakdown of the command:**
+*   `*/30 * * * *`: The schedule, meaning "at minute 30 past every hour."
+*   `/opt/torrent-mover/.../python`: Absolute path to the Python executable in your virtual environment.
+*   `/opt/torrent-mover/.../torrent_mover.py`: Absolute path to the script.
+*   `>> cron.log 2>&1`: Appends all output (both standard and error) to `cron.log`, which is useful for checking if the script ran correctly.
 
 ## Command-Line Arguments
 
