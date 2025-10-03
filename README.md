@@ -77,13 +77,15 @@ Copy the `config.ini.template` to create your own `config.ini` file.
 cp config.ini.template config.ini
 ```
 
-Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your server details. Pay close attention to the comments in the template file.
+Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your server details. The template is organized into the following sections:
 
-*   **`[MANDARIN_QBIT]`**: Your **source** qBittorrent client (e.g., your seedbox).
-*   **`[UNRAID_QBIT]`**: Your **destination** qBittorrent client (e.g., your home server).
-*   **`[MANDARIN_SFTP]`**: The SFTP/SSH details for your **source** server.
-*   **`[UNRAID_PATHS]`**: The local path on the destination server where torrent data will be saved.
-*   **`[SETTINGS]`**: Key operational settings, like the `category_to_move` that the script looks for.
+*   **`[SOURCE_CLIENT]`**: Your **source** qBittorrent client (e.g., your seedbox).
+*   **`[DESTINATION_CLIENT]`**: Your **destination** qBittorrent client (e.g., your home server).
+*   **`[SOURCE_SERVER]`**: The SFTP/SSH details for your **source** server, where the torrent files are stored.
+*   **`[DESTINATION_PATHS]`**: The path on the destination server where torrent data will be moved.
+*   **`[SETTINGS]`**: Key operational settings. This is where you define:
+    *   `source_client_section` and `destination_client_section`: The names of the sections that define your clients. By default, they are `SOURCE_CLIENT` and `DESTINATION_CLIENT`. If you rename these sections, you **must** update the names here to match.
+    *   `category_to_move`: The category in your source client that triggers a move.
 
 ## Basic Usage
 

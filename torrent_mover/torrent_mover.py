@@ -1196,7 +1196,8 @@ def main():
 
         if args.interactive_categorize:
             try:
-                destination_qbit = connect_qbit(config['DESTINATION_QBITTORRENT'], "Destination")
+                dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
+                destination_qbit = connect_qbit(config[dest_client_section], "Destination")
                 # Determine the category to scan
                 if args.category:
                     cat_to_scan = args.category
@@ -1224,9 +1225,17 @@ def main():
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         if transfer_mode == 'rsync':
             check_sshpass_installed()
+
         try:
-            source_qbit = connect_qbit(config['SOURCE_QBITTORRENT'], "Source")
-            destination_qbit = connect_qbit(config['DESTINATION_QBITTORRENT'], "Destination")
+            source_section_name = config['SETTINGS']['source_client_section']
+            dest_section_name = config['SETTINGS']['destination_client_section']
+
+            source_qbit = connect_qbit(config[source_section_name], "Source")
+            destination_qbit = connect_qbit(config[dest_section_name], "Destination")
+        except KeyError as e:
+            logging.error(f"Configuration Error: The client section '{e}' is defined in your [SETTINGS] but not found in the config file.")
+            logging.error("Please ensure 'source_client_section' and 'destination_client_section' in [SETTINGS] match the actual section names (e.g., [SOURCE_CLIENT]).")
+            return 1
         except Exception as e:
             logging.error(f"Failed to connect to qBittorrent client after multiple retries: {e}", exc_info=True)
             logging.error("One or more qBittorrent connections failed. Aborting.")

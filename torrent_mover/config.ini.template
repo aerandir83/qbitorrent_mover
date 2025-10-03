@@ -4,10 +4,12 @@
 # INSTRUCTIONS:
 # 1. Rename this file to "config.ini".
 # 2. Fill in the details for your source and destination servers below.
-# 3. Ensure all paths are absolute paths.
+# 3. You can rename the [SOURCE_CLIENT] and [DESTINATION_CLIENT] sections,
+#    but make sure to update the names in the [SETTINGS] section to match.
+# 4. Ensure all paths are absolute paths.
 #
 
-[SOURCE_QBITTORRENT]
+[SOURCE_CLIENT]
 # Connection details for the SOURCE qBittorrent client (e.g., your seedbox).
 host = https://source-qbittorrent.example.com
 port = 443
@@ -16,7 +18,7 @@ password = your_password
 # Set to false if you use a self-signed certificate and understand the risks.
 verify_cert = True
 
-[DESTINATION_QBITTORRENT]
+[DESTINATION_CLIENT]
 # Connection details for the DESTINATION qBittorrent client (e.g., your home server).
 host = https://destination-qbittorrent.example.com
 port = 443
@@ -45,6 +47,11 @@ destination_path = /path/to/your/downloads
 remote_destination_path =
 
 [SETTINGS]
+# The names of the sections above that define your qBittorrent clients.
+# These must match the section names you use for your clients.
+source_client_section = SOURCE_CLIENT
+destination_client_section = DESTINATION_CLIENT
+
 # The category in the SOURCE qBittorrent client that marks torrents for moving.
 category_to_move = move-me
 # (Optional) The desired total size in GB for the category after moving.
