@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.3.1"
+__version__ = "1.2.1"
 
 import configparser
 import sys
@@ -60,7 +60,7 @@ def check_sshpass_installed():
 
 def _get_ssh_command(port):
     """Builds the SSH command for rsync, enabling connection multiplexing if available."""
-    base_ssh_cmd = f"ssh -p {port} -c chacha20-poly1305@openssh.com -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
+    base_ssh_cmd = f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
     if SSH_CONTROL_PATH:
         multiplex_opts = f"-o ControlMaster=auto -o ControlPath={SSH_CONTROL_PATH} -o ControlPersist=60s"
         return f"{base_ssh_cmd} {multiplex_opts}"
@@ -208,17 +208,17 @@ class FixedWidthTransferSpeedColumn(TransferSpeedColumn):
         padded_text = f"{original_text:>12}"
         return Text(padded_text, style=original_text_obj.style)
 
-# --- File Transfer Logic ---
+# --- SFTP Transfer Logic with Progress Bar ---
 
-def get_remote_size_sftp(sftp, remote_path):
-    """Recursively gets the total size of a remote file or directory via SFTP."""
+def get_remote_size(sftp, remote_path):
+    """Recursively gets the total size of a remote file or directory."""
     total_size = 0
     try:
         stat = sftp.stat(remote_path)
         if stat.st_mode & 0o40000:  # S_ISDIR
             for item in sftp.listdir(remote_path):
                 item_path = f"{remote_path.rstrip('/')}/{item}"
-                total_size += get_remote_size_sftp(sftp, item_path)
+                total_size += get_remote_size(sftp, item_path)
         else:
             total_size = stat.st_size
     except FileNotFoundError:
@@ -227,66 +227,61 @@ def get_remote_size_sftp(sftp, remote_path):
     return total_size
 
 @retry(tries=2, delay=5)
-def _get_remote_files_rsync(sftp_config, remote_path):
+def get_remote_size_rsync(sftp_config, remote_path):
     """
-    Gets the list of files and their sizes from a remote directory using `find`.
-    Returns a list of (size, path) tuples and the total size.
+    Gets the total size of a remote file or directory using rsync --stats, with retries.
+    This is much faster than recursive SFTP STAT calls for directories with many files.
     """
     host = sftp_config['host']
     port = sftp_config.getint('port')
     username = sftp_config['username']
     password = sftp_config['password']
 
-    # This command securely lists all files in the remote path, printing their size and relative path.
-    # It changes to the directory first to ensure the paths are relative.
-    # Using single quotes around the shell command executed by ssh is crucial for handling special characters.
-    remote_command = f"cd '{remote_path}' && find . -type f -printf '%s %p\\n'"
+    remote_spec = f"{username}@{host}:{remote_path}"
 
-    ssh_cmd = [
+    rsync_cmd = [
         "sshpass", "-p", password,
-        *_get_ssh_command(port).split(),
-        f"{username}@{host}",
-        remote_command
+        "rsync",
+        "-a", "--dry-run", "--stats", "--timeout=60",
+        "-e", _get_ssh_command(port),
+        remote_spec,
+        # A dummy local path is required. The path must exist.
+        "."
     ]
 
     try:
         result = subprocess.run(
-            ssh_cmd,
+            rsync_cmd,
             capture_output=True,
             text=True,
             encoding='utf-8',
-            errors='replace',
-            check=True # Raise CalledProcessError on non-zero exit codes
+            errors='replace'
         )
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Failed to list remote files for '{os.path.basename(remote_path)}' via SSH.")
-        logging.error(f"Stderr: {e.stderr}")
-        raise Exception(f"Failed to list remote files via SSH. Exit code: {e.returncode}.") from e
-    except Exception as e:
-        logging.error(f"An unexpected error occurred while listing remote files: {e}")
+
+        # rsync exit code 24 ("Partial transfer due to vanished source files") is okay for a size check.
+        if result.returncode != 0 and result.returncode != 24:
+            # Raise an exception to trigger the retry decorator
+            raise Exception(f"Rsync (size check) failed with exit code {result.returncode}. Stderr: {result.stderr}")
+
+        # The 'Total file size' is what we need.
+        match = re.search(r"Total file size: ([\d,]+) bytes", result.stdout)
+        if match:
+            size_str = match.group(1).replace(',', '')
+            return int(size_str)
+        else:
+            logging.warning(f"Could not parse rsync --stats output for torrent '{os.path.basename(remote_path)}'.")
+            logging.debug(f"Rsync stdout for size check:\n{result.stdout}")
+            # Raise exception if parsing fails, as it could be a sign of a failed transfer
+            raise Exception("Failed to parse rsync stats output.")
+
+    except FileNotFoundError:
+        logging.error("FATAL: 'rsync' or 'sshpass' command not found during size check.")
         raise
+    except Exception as e:
+        # Re-raise to be handled by the retry decorator or the calling function
+        raise e
 
-    file_list = []
-    total_size = 0
-    # Process the output from the find command
-    for line in result.stdout.strip().split('\n'):
-        if not line:
-            continue
-        try:
-            size_str, file_path_str = line.split(' ', 1)
-            size = int(size_str)
-            # Remove the leading './' from find's output
-            relative_path = file_path_str[2:] if file_path_str.startswith('./') else file_path_str
-            file_list.append((size, relative_path))
-            total_size += size
-        except ValueError:
-            logging.warning(f"Could not parse line from remote find output: '{line}'")
-            continue
-
-    return file_list, total_size
-
-
-def _get_all_files_recursive_sftp(sftp, remote_path, local_path, file_list):
+def _get_all_files_recursive(sftp, remote_path, local_path, file_list):
     """
     Recursively walks a remote directory to build a flat list of all files to download.
     """
@@ -296,7 +291,7 @@ def _get_all_files_recursive_sftp(sftp, remote_path, local_path, file_list):
 
         stat_info = sftp.stat(remote_item_path)
         if stat_info.st_mode & 0o40000:  # S_ISDIR
-            _get_all_files_recursive_sftp(sftp, remote_item_path, local_item_path, file_list)
+            _get_all_files_recursive(sftp, remote_item_path, local_item_path, file_list)
         else:
             file_list.append((remote_item_path, local_item_path))
 
@@ -305,6 +300,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
     """
     Downloads a single file with a progress bar, with retries. Establishes its own SFTP session
     to ensure thread safety when called from a ThreadPoolExecutor.
+    Uses a pre-existing task_id for the file progress bar.
     This version supports resuming partial downloads.
     """
     local_path = Path(local_file)
@@ -332,6 +328,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
             logging.debug(f"SFTP Check: Local file '{local_file}' exists with size: {local_size}")
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
+                logging.debug(f"SFTP SKIP: Local: {local_size}, Remote: {total_size}. Skipping file '{file_name}'.")
                 job_progress.update(parent_task_id, advance=total_size)
                 overall_progress.update(overall_task_id, advance=total_size)
                 if file_task_id is not None:
@@ -341,22 +338,31 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
                 return
             elif local_size > total_size:
                 logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
+                logging.debug(f"SFTP OVERWRITE: Local: {local_size}, Remote: {total_size}. Overwriting file '{file_name}'.")
                 local_size = 0
-            else:
+            else:  # local_size < total_size
                 logging.info(f"Resuming download for {file_name} from {local_size / (1024*1024):.2f} MB.")
+                logging.debug(f"SFTP RESUME: Local: {local_size}, Remote: {total_size}. Resuming file '{file_name}'.")
         else:
             logging.debug(f"SFTP NEW: Local file '{local_file}' does not exist. Starting new download.")
 
         effective_task_id = file_task_id if file_task_id is not None else parent_task_id
+
+        # If resuming, set the starting point for the file's progress bar.
         job_progress.update(effective_task_id, completed=local_size)
 
         if local_size > 0:
+            # For multi-file torrents, we also need to advance the parent task bar
+            # to reflect the resumed portion of this specific file. For single-file
+            # torrents, the parent task is the effective task, which is already set.
             if effective_task_id != parent_task_id:
                 job_progress.update(parent_task_id, advance=local_size)
+            # Always advance the overall progress bar by the size of the resumed portion.
             overall_progress.update(overall_task_id, advance=local_size)
 
         if dry_run:
             logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
+            # In dry run, we simulate a full download by advancing the remaining amount
             remaining_size = total_size - local_size
             job_progress.update(parent_task_id, advance=remaining_size)
             overall_progress.update(overall_task_id, advance=remaining_size)
@@ -371,10 +377,11 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
             job_progress.start_task(file_task_id)
 
         try:
+            # Manual download loop to support resuming
             mode = 'r+b' if local_size > 0 else 'wb'
             with sftp.open(remote_file, 'rb') as remote_f:
                 remote_f.seek(local_size)
-                remote_f.prefetch()
+                remote_f.prefetch()  # Helps with performance
                 with open(local_path, mode) as local_f:
                     if local_size > 0:
                         local_f.seek(local_size)
@@ -383,18 +390,28 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
                         if not chunk:
                             break
                         local_f.write(chunk)
+
                         increment = len(chunk)
+                        # Advance the file-specific progress bar (or parent if single-file)
                         job_progress.update(effective_task_id, advance=increment)
+
+                        # For multi-file torrents, we also advance the parent task.
+                        # For single-file torrents, effective_task_id IS parent_task_id, so we avoid double-counting.
                         if effective_task_id != parent_task_id:
                             job_progress.update(parent_task_id, advance=increment)
+
+                        # Always advance the overall progress
                         overall_progress.update(overall_task_id, advance=increment)
 
+            # Final check
             final_local_size = local_path.stat().st_size
             if final_local_size == total_size:
                 logging.info(f"Download of '{file_name}' completed.")
                 download_successful = True
             else:
+                # This could happen if the remote file changed size during transfer
                 raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_local_size}")
+
         except Exception as e:
             logging.error(f"Download failed for {file_name}: {e}")
             if file_task_id is not None:
@@ -409,131 +426,167 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
                 job_progress.stop_task(file_task_id)
                 if download_successful:
                     job_progress.update(file_task_id, description=f"└─ [green]✓[/green] [cyan]{file_name}[/]")
-    finally:
-        if sftp: sftp.close()
-        if ssh_client: ssh_client.close()
 
-def _transfer_rsync_chunk_worker(sftp_config, file_chunk, chunk_size, remote_base_path, local_dest, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
+    finally:
+        if sftp:
+            sftp.close()
+        if ssh_client:
+            ssh_client.close()
+
+def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
     """
-    Worker function to transfer a chunk of files using a single rsync process.
+    Transfers a remote file or directory to a local path using rsync, with retries.
     """
     host = sftp_config['host']
     port = sftp_config.getint('port')
     username = sftp_config['username']
     password = sftp_config['password']
 
-    # Ensure the remote path for rsync has a trailing slash for correct file placement.
-    remote_spec = f"{username}@{host}:{remote_base_path.rstrip('/')}/"
+    local_parent_dir = os.path.dirname(local_path)
+    Path(local_parent_dir).mkdir(parents=True, exist_ok=True)
+    remote_spec = f"{username}@{host}:{remote_path}"
 
-    # rsync command to transfer a list of files read from stdin.
+    # Add --timeout to rsync and ServerAliveInterval to ssh to prevent stalls
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
-        "-a", "-W", "--partial", "--inplace",
-        "--files-from=-",  # Read file list from stdin
-        "--timeout=60",
+        "-a", "--partial", "--inplace",
+        "--info=progress2",
+        "--timeout=60",  # Exit if no data transferred for 60 seconds
+        # Use the centralized SSH command function for multiplexing
         "-e", _get_ssh_command(port),
         remote_spec,
-        local_dest
+        local_parent_dir
     ]
 
-    files_to_transfer_str = "\n".join([item[1] for item in file_chunk])
+    # Create a safe version of the command for logging, with the password obfuscated
+    safe_rsync_cmd = list(rsync_cmd)
+    safe_rsync_cmd[2] = "'********'"
 
     if dry_run:
-        job_progress.update(parent_task_id, advance=chunk_size)
-        overall_progress.update(overall_task_id, advance=chunk_size)
+        logging.info(f"[DRY RUN] Would execute rsync for: {os.path.basename(remote_path)}")
+        logging.debug(f"[DRY RUN] Command: {' '.join(safe_rsync_cmd)}")
+        task = job_progress.tasks[parent_task_id]
+        job_progress.update(parent_task_id, advance=task.total)
+        overall_progress.update(overall_task_id, advance=task.total)
         return
 
-    try:
-        # Using Popen to handle stdin and capture output
-        process = subprocess.Popen(
-            rsync_cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL, # Redirect stdout to null to prevent blocking
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8'
-        )
-        _, stderr = process.communicate(input=files_to_transfer_str)
+    # Check if the destination path exists to provide a clearer log message for resumes.
+    if Path(local_path).exists():
+        logging.info(f"Partial file/directory found for '{os.path.basename(remote_path)}'. Resuming with rsync.")
+    else:
+        logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}'")
+    logging.debug(f"Executing rsync command: {' '.join(safe_rsync_cmd)}")
 
-        if process.returncode != 0:
-            raise Exception(f"Rsync worker failed with exit code {process.returncode}. Stderr: {stderr}")
+    max_retries = 2
+    retry_delay = 5  # Fixed delay in seconds
 
-        # On success, advance the progress bars by the total size of the chunk.
-        job_progress.update(parent_task_id, advance=chunk_size)
-        overall_progress.update(overall_task_id, advance=chunk_size)
-        logging.debug(f"Rsync worker successfully transferred a chunk of {len(file_chunk)} files.")
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1:
+            logging.info(f"Rsync attempt {attempt}/{max_retries} for '{os.path.basename(remote_path)}'...")
+            time.sleep(retry_delay)
 
-    except Exception as e:
-        logging.error(f"An exception occurred in the rsync worker: {e}")
-        raise # Re-raise to be handled by the main transfer loop
-
-def transfer_content_rsync(sftp_config, remote_path, local_path, file_list, job_progress, parent_task_id, overall_progress, overall_task_id, rsync_workers, dry_run=False):
-    """
-    Transfers a remote directory to a local path using multiple parallel rsync workers.
-    """
-    if not file_list:
-        logging.info(f"No files to transfer for torrent '{os.path.basename(remote_path)}'.")
-        return
-
-    # Ensure the local destination directory exists.
-    Path(local_path).mkdir(parents=True, exist_ok=True)
-
-    def chunk_list(seq, num):
-        # Helper to divide a list of items into a specified number of chunks.
-        avg = len(seq) / float(num)
-        out = []
-        last = 0.0
-        while last < len(seq):
-            out.append(seq[int(last):int(last + avg)])
-            last += avg
-        return out
-
-    # Divide the file list among the available rsync workers.
-    file_chunks = chunk_list(file_list, rsync_workers)
-
-    logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}' using {rsync_workers} parallel worker(s).")
-
-    with ThreadPoolExecutor(max_workers=rsync_workers, thread_name_prefix='RsyncWorker') as executor:
-        futures = []
-        for chunk in file_chunks:
-            if not chunk: continue # Skip empty chunks
-
-            # Calculate the total size of files in this chunk for progress reporting.
-            chunk_size = sum(item[0] for item in chunk)
-
-            future = executor.submit(
-                _transfer_rsync_chunk_worker,
-                sftp_config,
-                chunk,
-                chunk_size,
-                remote_path,  # This is the base path for rsync
-                local_path,
-                job_progress,
-                parent_task_id,
-                overall_progress,
-                overall_task_id,
-                dry_run
+        process = None
+        try:
+            start_time = time.time()
+            process = subprocess.Popen(
+                rsync_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1
             )
-            futures.append(future)
 
-        # Wait for all futures to complete and raise an exception if any worker failed.
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                logging.error(f"A parallel rsync worker failed for torrent '{os.path.basename(remote_path)}'. Aborting transfer for this torrent.")
-                # The exception is re-raised to be caught by the main torrent processing loop.
-                raise
+            last_total_transferred = 0
+            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
 
-def transfer_content_sftp(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run=False):
+            if process.stdout:
+                for line in iter(process.stdout.readline, ''):
+                    line = line.strip()
+                    match = progress_regex.match(line)
+                    if match:
+                        try:
+                            total_transferred_str = match.group(1).replace(',', '')
+                            total_transferred = int(total_transferred_str)
+                            advance = total_transferred - last_total_transferred
+                            if advance > 0:
+                                job_progress.update(parent_task_id, advance=advance)
+                                overall_progress.update(overall_task_id, advance=advance)
+                                last_total_transferred = total_transferred
+                        except (ValueError, IndexError):
+                            logging.warning(f"Could not parse rsync progress line: {line}")
+                    else:
+                        logging.debug(f"rsync stdout: {line}")
+
+            process.wait()
+            end_time = time.time()
+            stderr_output = process.stderr.read() if process.stderr else ""
+
+            # Success conditions
+            if process.returncode == 0 or process.returncode == 24:
+                if process.returncode == 24:
+                    logging.warning(f"Rsync finished with code 24 (some source files vanished) for '{os.path.basename(remote_path)}'.")
+
+                duration = end_time - start_time
+                task = job_progress.tasks[parent_task_id]
+                total_size_bytes = task.total
+                if duration > 0:
+                    speed_mbps = (total_size_bytes * 8) / (duration * 1024 * 1024)
+                    logging.info(f"PERF: '{os.path.basename(remote_path)}' ({total_size_bytes / 1024**2:.2f} MiB) took {duration:.2f} seconds.")
+                    logging.info(f"PERF: Average speed: {speed_mbps:.2f} Mbps.")
+                else:
+                    logging.info(f"PERF: '{os.path.basename(remote_path)}' completed in < 1 second.")
+
+                # Ensure the progress bar is marked as complete
+                if task.completed < task.total:
+                    remaining = task.total - task.completed
+                    if remaining > 0:
+                        job_progress.update(parent_task_id, advance=remaining)
+                        overall_progress.update(overall_task_id, advance=remaining)
+
+                logging.info(f"Rsync transfer completed successfully for '{os.path.basename(remote_path)}'.")
+                return  # Exit retry loop and function on success
+
+            # Retryable error
+            elif process.returncode == 30:  # Timeout in data send/receive
+                logging.warning(f"Rsync timed out for '{os.path.basename(remote_path)}'. Retrying...")
+                continue  # To next attempt in the loop
+
+            # Non-retryable error
+            else:
+                logging.error(f"Rsync failed for '{os.path.basename(remote_path)}' with non-retryable exit code {process.returncode}.")
+                logging.error(f"Rsync stderr: {stderr_output}")
+                raise Exception(f"Rsync transfer failed for {os.path.basename(remote_path)}")
+
+        except FileNotFoundError:
+            logging.error("FATAL: 'rsync' or 'sshpass' command not found.")
+            raise
+        except Exception as e:
+            logging.error(f"An exception occurred during rsync for '{os.path.basename(remote_path)}': {e}")
+            if process:
+                process.kill()
+            if attempt < max_retries - 1:
+                logging.warning("Retrying...")
+                continue
+            else:
+                # Re-raise after last attempt
+                raise e
+
+    # If loop completes without success
+    raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {max_retries} attempts.")
+
+
+def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run=False):
     """
-    Transfers a remote file or directory to a local path using SFTP, downloading files concurrently.
+    Transfers a remote file or directory to a local path, preserving structure.
+    Handles directories by downloading their files concurrently.
     """
     remote_stat = sftp.stat(remote_path)
     if remote_stat.st_mode & 0o40000:  # S_ISDIR
         all_files = []
-        _get_all_files_recursive_sftp(sftp, remote_path, local_path, all_files)
+        _get_all_files_recursive(sftp, remote_path, local_path, all_files)
 
         with count_lock:
             file_counts[parent_task_id] = [0, len(all_files)]
@@ -546,9 +599,11 @@ def transfer_content_sftp(sftp_config, sftp, remote_path, local_path, job_progre
             ]
             for future in as_completed(futures):
                 future.result()
+
     else: # It's a single file
         with count_lock:
             file_counts[parent_task_id] = [0, 1]
+        # For single-file torrents, there is no sub-task, so we pass None for file_task_id
         _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, None, dry_run)
 
 # --- Torrent Processing Logic ---
@@ -556,6 +611,10 @@ def transfer_content_sftp(sftp_config, sftp, remote_path, local_path, job_progre
 def get_eligible_torrents(client, category, size_threshold_gb=None):
     """
     Retrieves a list of torrents to be moved based on the specified category and an optional size threshold.
+
+    - If size_threshold_gb is None, it returns all completed torrents in the category.
+    - If size_threshold_gb is set, it calculates the current total size of the category and
+      selects the oldest completed torrents for moving until the category size is below the threshold.
     """
     try:
         if size_threshold_gb is None:
@@ -579,8 +638,16 @@ def get_eligible_torrents(client, category, size_threshold_gb=None):
         size_to_move = current_total_size - threshold_bytes
         logging.info(f"Need to move at least {size_to_move / (1024**3):.2f} GB of torrents.")
 
+        # Filter for completed torrents and sort them by age (oldest first)
         completed_torrents = [t for t in all_torrents_in_category if t.state == 'completed' or (t.progress == 1 and t.state not in ['checkingUP', 'checkingDL'])]
-        eligible_torrents = sorted([t for t in completed_torrents if hasattr(t, 'added_on')], key=lambda t: t.added_on)
+
+        # Ensure we are using a reliable 'added_on' attribute.
+        # Some clients might have torrents without this attribute, though it's rare.
+        # We sort by 'added_on' timestamp, oldest first.
+        eligible_torrents = sorted(
+            [t for t in completed_torrents if hasattr(t, 'added_on')],
+            key=lambda t: t.added_on
+        )
 
         torrents_to_move = []
         size_of_selected_torrents = 0
@@ -703,39 +770,37 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
 
 def analyze_torrent(torrent, sftp_config, transfer_mode, live_console):
     """
-    Analyzes a single torrent to determine its size and file list.
-    Returns a tuple of (torrent, size, file_list). Size is None if calculation fails.
-    file_list is specific to rsync mode.
+    Analyzes a single torrent to determine its size.
+    Returns a tuple of (torrent, size). Size is None if calculation fails.
     """
     name = torrent.name
     remote_content_path = torrent.content_path
     logging.info(f"Analyzing torrent: {name}")
     total_size = None
-    file_list = None
 
     try:
         if transfer_mode == 'rsync':
-            file_list, total_size = _get_remote_files_rsync(sftp_config, remote_content_path)
+            total_size = get_remote_size_rsync(sftp_config, remote_content_path)
         else:  # sftp mode
             sftp, ssh_client = None, None
             try:
                 sftp, ssh_client = connect_sftp(sftp_config)
-                total_size = get_remote_size_sftp(sftp, remote_content_path)
+                total_size = get_remote_size(sftp, remote_content_path)
             finally:
                 if sftp: sftp.close()
                 if ssh_client: ssh_client.close()
     except Exception as e:
         live_console.log(f"[bold red]Error calculating size for '{name}': {e}[/]")
         live_console.log(f"[yellow]Warning: Skipping torrent due to size calculation failure.[/]")
-        return torrent, None, None
+        return torrent, None
 
     if total_size == 0:
         live_console.log(f"[yellow]Warning: Skipping zero-size torrent: {name}[/]")
 
-    return torrent, total_size, file_list
+    return torrent, total_size
 
 
-def transfer_torrent(torrent, total_size, file_list, source_qbit, destination_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, rsync_workers, dry_run=False, test_run=False):
+def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
@@ -759,15 +824,15 @@ def transfer_torrent(torrent, total_size, file_list, source_qbit, destination_qb
             parent_task_id = job_progress.add_task(name, total=total_size, start=True)
 
         if transfer_mode == 'rsync':
-            transfer_content_rsync(sftp_config, remote_content_path, local_dest_path, file_list, job_progress, parent_task_id, overall_progress, overall_task_id, rsync_workers, dry_run)
+            transfer_content_rsync(sftp_config, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
             logging.info(f"Rsync transfer completed successfully for '{name}'.")
         else:  # sftp mode
             sftp, ssh_client = connect_sftp(sftp_config)
             all_files = []
             remote_stat = sftp.stat(remote_content_path)
             if remote_stat.st_mode & 0o40000:  # S_ISDIR
-                _get_all_files_recursive_sftp(sftp, remote_content_path, local_dest_path, all_files)
-            else:
+                _get_all_files_recursive(sftp, remote_content_path, local_dest_path, all_files)
+            else:  # It's a single file
                 all_files.append((remote_content_path, local_dest_path))
 
             file_task_map = {}
@@ -783,7 +848,7 @@ def transfer_torrent(torrent, total_size, file_list, source_qbit, destination_qb
                         file_task_map[remote_f] = task_id
 
             logging.info(f"Starting SFTP transfer for '{name}'")
-            transfer_content_sftp(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run)
+            transfer_content(sftp_config, sftp, remote_content_path, local_dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run)
             logging.info(f"SFTP transfer completed successfully for '{name}'.")
 
         destination_save_path = remote_dest_base_path.replace("\\", "/")
@@ -851,8 +916,10 @@ def transfer_torrent(torrent, total_size, file_list, source_qbit, destination_qb
                 logging.error(f"Failed to resume torrent {name} on Source after error: {resume_e}")
         return False
     finally:
-        if sftp: sftp.close()
-        if ssh_client: ssh_client.close()
+        if sftp:
+            sftp.close()
+        if ssh_client:
+            ssh_client.close()
         if parent_task_id is not None:
             job_progress.stop_task(parent_task_id)
             if success:
@@ -902,8 +969,10 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan, 
                         client.torrents_set_category(torrent_hashes=torrent.hash, category=auto_category)
                     except Exception as e:
                         logging.error(f"Failed to set category for '{torrent.name}': {e}", exc_info=True)
+                # If rule applied or torrent already in correct category, skip manual interaction
                 continue
 
+            # --- Start of interactive part for this torrent ---
             if manual_review_count == 0:
                 logging.info("Some torrents require manual review.")
             manual_review_count += 1
@@ -994,25 +1063,31 @@ def setup_logging(script_dir, dry_run, test_run, debug):
     log_file_name = f"torrent_mover_{timestamp}.log"
     log_file_path = log_dir / log_file_name
 
+    # Get the root logger
     logger = logging.getLogger()
     log_level = logging.DEBUG if debug else logging.INFO
     logger.setLevel(log_level)
 
+    # Remove any existing handlers to avoid duplicates
     if logger.hasHandlers():
         logger.handlers.clear()
 
+    # Create file handler
     file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
 
+    # Create console handler with Rich
     rich_handler = RichHandler(show_path=False, rich_tracebacks=True, markup=True)
+    # The formatter for RichHandler should be minimal, as Rich handles the presentation.
     rich_formatter = logging.Formatter('%(message)s')
     rich_handler.setFormatter(rich_formatter)
     logger.addHandler(rich_handler)
 
     logging.getLogger("paramiko").setLevel(logging.WARNING)
 
+    # Initial log messages
     logging.info("--- Torrent Mover script started ---")
     if dry_run:
         logging.warning("!!! DRY RUN MODE ENABLED. NO CHANGES WILL BE MADE. !!!")
@@ -1021,16 +1096,23 @@ def setup_logging(script_dir, dry_run, test_run, debug):
 
 def pid_exists(pid):
     """Check whether a process with the given PID exists."""
-    if pid <= 0:
+    if pid < 0:
+        return False
+    if pid == 0:
+        # According to POSIX, PID 0 refers to the process group of the sender.
+        # It's not a valid PID for a specific process.
         return False
     try:
         os.kill(pid, 0)
     except OSError as err:
         if err.errno == errno.ESRCH:
+            # ESRCH == No such process
             return False
         elif err.errno == errno.EPERM:
+            # EPERM clearly means there's a process to deny access to
             return True
         else:
+            # According to the man page, other error codes should not be possible
             raise
     else:
         return True
@@ -1062,7 +1144,6 @@ def main():
     mode_group.add_argument('--test-run', action='store_true', help='Run the full process but do not delete the source torrent.')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging to file.')
     parser.add_argument('--parallel-jobs', type=int, default=4, metavar='N', help='Number of torrents to process in parallel.')
-    parser.add_argument('--rsync-workers', type=int, default=4, metavar='N', help='Number of parallel rsync workers per torrent.')
     parser.add_argument('-l', '--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
     parser.add_argument('-a', '--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
     parser.add_argument('-d', '--delete-rule', metavar='TRACKER_DOMAIN', help='Delete a rule and exit.')
@@ -1075,6 +1156,7 @@ def main():
 
     setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
 
+    # --- Early exit argument handling ---
     if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize:
         config = load_config(args.config)
         tracker_rules = load_tracker_rules(script_dir)
@@ -1084,6 +1166,7 @@ def main():
             if not tracker_rules:
                 logging.info("No rules found.")
                 return 0
+
             console = Console()
             table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
             table.add_column("Tracker Domain", style="dim", width=40)
@@ -1113,17 +1196,20 @@ def main():
 
         if args.interactive_categorize:
             try:
-                dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_CLIENT')
+                dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
                 destination_qbit = connect_qbit(config[dest_client_section], "Destination")
+                # Determine the category to scan
                 if args.category:
                     cat_to_scan = args.category
                     logging.info(f"Using category from command line: '{cat_to_scan}'")
                 else:
-                    cat_to_scan = config['SETTINGS'].get('category_to_move', '')
+                    cat_to_scan = config['SETTINGS'].get('category_to_move')
                     if cat_to_scan:
                         logging.info(f"Using 'category_to_move' from config: '{cat_to_scan}'")
                     else:
-                        logging.warning("No category specified. Defaulting to 'uncategorized'.")
+                        logging.warning("No category specified via --category or in config. Defaulting to 'uncategorized'.")
+                        cat_to_scan = '' # Empty string scans for uncategorized
+
                 run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
             except Exception as e:
                 logging.error(f"Failed to run interactive categorization: {e}", exc_info=True)
@@ -1131,6 +1217,7 @@ def main():
         return 0
 
     try:
+        # Create the lock file and write the current PID
         with open(lock_file_path, 'w') as f:
             f.write(str(os.getpid()))
 
@@ -1142,18 +1229,20 @@ def main():
         try:
             source_section_name = config['SETTINGS']['source_client_section']
             dest_section_name = config['SETTINGS']['destination_client_section']
+
             source_qbit = connect_qbit(config[source_section_name], "Source")
             destination_qbit = connect_qbit(config[dest_section_name], "Destination")
         except KeyError as e:
-            logging.error(f"Configuration Error: The client section '{e}' is defined in [SETTINGS] but not found in the config file.")
+            logging.error(f"Configuration Error: The client section '{e}' is defined in your [SETTINGS] but not found in the config file.")
             logging.error("Please ensure 'source_client_section' and 'destination_client_section' in [SETTINGS] match the actual section names (e.g., [SOURCE_CLIENT]).")
             return 1
         except Exception as e:
-            logging.error(f"Failed to connect to qBittorrent client: {e}", exc_info=True)
+            logging.error(f"Failed to connect to qBittorrent client after multiple retries: {e}", exc_info=True)
+            logging.error("One or more qBittorrent connections failed. Aborting.")
             return 1
         logging.info("qBittorrent connections established successfully.")
 
-        tracker_rules = load_tracker_rules(script_dir)
+        tracker_rules = load_tracker_rules(script_dir) # Load rules for the main run
 
         category_to_move = config['SETTINGS']['category_to_move']
         size_threshold_gb_str = config['SETTINGS'].get('size_threshold_gb')
@@ -1162,7 +1251,7 @@ def main():
             try:
                 size_threshold_gb = float(size_threshold_gb_str)
             except ValueError:
-                logging.error(f"Invalid 'size_threshold_gb': '{size_threshold_gb_str}'. Must be a number. Disabling threshold.")
+                logging.error(f"Invalid value for 'size_threshold_gb': '{size_threshold_gb_str}'. It must be a number. Disabling threshold.")
                 size_threshold_gb = None
 
         eligible_torrents = get_eligible_torrents(source_qbit, category_to_move, size_threshold_gb)
@@ -1172,17 +1261,22 @@ def main():
         total_count = len(eligible_torrents)
         processed_count = 0
 
+        # --- UI Setup ---
         torrent_progress = Progress(TextColumn("[bold blue]Torrents"), BarColumn(), MofNCompleteColumn())
         analysis_progress = Progress(TextColumn("[bold cyan]Analyzing..."), BarColumn(), MofNCompleteColumn())
+
         torrent_task = torrent_progress.add_task("Completed", total=total_count)
         analysis_task = analysis_progress.add_task("Analyzed", total=total_count)
+
         overall_progress = Progress(TextColumn("[bold green]Overall"), BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), TotalFileSizeColumn(), FixedWidthTransferSpeedColumn(), FixedWidthTimeRemainingColumn())
         overall_task = overall_progress.add_task("Total progress", total=0)
+
         file_counts = defaultdict(lambda: [0, 0])
         count_lock = threading.Lock()
         task_add_lock = threading.Lock()
         plan_lock = threading.Lock()
         overall_progress_lock = threading.Lock()
+
         job_progress = Progress(
             TextColumn("  {task.description}", justify="left"),
             BarColumn(finished_style="green"),
@@ -1193,15 +1287,22 @@ def main():
             ConditionalTimeElapsedColumn(file_counts),
             FileCountColumn(file_counts)
         )
+
         plan_text = Text(f"Found {total_count} torrents to process...\n", style="bold")
         plan_text.append("─" * 70 + "\n", style="dim")
         plan_panel = Panel(plan_text, title="[bold magenta]Transfer Plan[/bold magenta]", border_style="magenta", expand=False)
-        layout = Group(plan_panel, Panel(Group(torrent_progress, analysis_progress), title="Overall Queue", border_style="blue"), Panel(overall_progress, title="Total Progress", border_style="green"), Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2)))
+
+        layout = Group(
+            plan_panel,
+            Panel(Group(torrent_progress, analysis_progress), title="Overall Queue", border_style="blue"),
+            Panel(overall_progress, title="Total Progress", border_style="green"),
+            Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2))
+        )
 
         with Live(layout, refresh_per_second=4, transient=True) as live:
             sftp_config = config['SOURCE_SERVER']
             transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-            rsync_workers = config['SETTINGS'].getint('rsync_workers', args.rsync_workers)
+
             analysis_workers = max(10, args.parallel_jobs * 2)
 
             try:
@@ -1214,10 +1315,11 @@ def main():
                     }
                     transfer_future_to_torrent = {}
 
+                    # Pipeline: As analysis completes, feed into the transfer pool
                     for future in as_completed(analysis_future_to_torrent):
                         original_torrent = analysis_future_to_torrent[future]
                         try:
-                            analyzed_torrent, total_size, file_list = future.result()
+                            analyzed_torrent, total_size = future.result()
                             analysis_progress.update(analysis_task, advance=1)
 
                             if total_size is not None and total_size > 0:
@@ -1231,37 +1333,41 @@ def main():
                                     overall_progress.update(overall_task, total=current_total + total_size)
 
                                 transfer_future = transfer_executor.submit(
-                                    transfer_torrent, analyzed_torrent, total_size, file_list,
+                                    transfer_torrent, analyzed_torrent, total_size,
                                     source_qbit, destination_qbit, sftp_config, config, tracker_rules,
                                     job_progress, overall_progress, overall_task,
                                     file_counts, count_lock, task_add_lock,
-                                    rsync_workers, args.dry_run, args.test_run
+                                    args.dry_run, args.test_run
                                 )
                                 transfer_future_to_torrent[transfer_future] = analyzed_torrent
                             else:
                                 torrent_progress.update(torrent_task, advance=1)
+
                         except Exception as e:
-                            live.console.log(f"[bold red]Error during analysis for '{original_torrent.name}': {e}[/]")
+                            live.console.log(f"[bold red]Error processing analysis for '{original_torrent.name}': {e}[/]")
                             analysis_progress.update(analysis_task, advance=1)
                             torrent_progress.update(torrent_task, advance=1)
 
                     live.console.log("[green]All torrents analyzed. Waiting for transfers to complete...[/]")
 
+                    # Wait for all transfers to complete
                     for future in as_completed(transfer_future_to_torrent):
                         torrent = transfer_future_to_torrent[future]
                         try:
                             if future.result():
                                 processed_count += 1
                         except Exception as e:
-                            live.console.log(f"[bold red]An exception occurred for torrent '{torrent.name}': {e}[/]", exc_info=True)
+                            live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]", exc_info=True)
                         finally:
                             torrent_progress.update(torrent_task, advance=1)
                             if len(job_progress.tasks) > 0 and job_progress.tasks[-1].description != " ":
                                 job_progress.add_task(" ", total=1, completed=1)
             except KeyboardInterrupt:
+                # The executors will be shut down by the 'with' statement context exit
                 live.stop()
                 live.console.print("\n[bold yellow]Process interrupted by user. Transfers will be cancelled.[/bold yellow]")
-                raise
+                # No need to manually shutdown, the `with` block handles it.
+                raise # Re-raise to be caught by the outer try/except
         logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
     except KeyboardInterrupt:
         pass
@@ -1279,6 +1385,8 @@ def main():
                 if pid == os.getpid():
                     lock_file_path.unlink()
                     logging.info("Lock file removed.")
+                else:
+                    logging.warning(f"Lock file PID ({pid}) does not match current PID ({os.getpid()}). Not removing.")
             except (IOError, ValueError) as e:
                 logging.error(f"Could not read or verify lock file before removing: {e}")
         logging.info("--- Torrent Mover script finished ---")

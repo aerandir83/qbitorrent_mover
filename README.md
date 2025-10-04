@@ -10,7 +10,7 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.3.1**. To check your version, run: `python torrent_mover.py --version`.
+The current version is **1.2.1**. To check your version, run: `python torrent_mover.py --version`.
 
 ## Features
 
@@ -84,7 +84,7 @@ Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your
 *   **`[SOURCE_SERVER]`**: The SFTP/SSH details for your **source** server, where the torrent files are stored.
 *   **`[DESTINATION_PATHS]`**: The path on the destination server where torrent data will be moved.
 *   **`[SETTINGS]`**: Key operational settings. This is where you define:
-    *   `source_client_section` and `destination_client_section`: The names of the sections that define your clients. By default, they are `SOURCE_CLIENT` and `DESTINATION_CLIENT`. If you rename these sections, you **must** update the names here to match.
+    *   `source_client_section` and `destination_client_section`: The names of the sections that define your clients. By default, they are `SOURCE_CLIENT` and `DESTination_CLIENT`. If you rename these sections, you **must** update the names here to match.
     *   `category_to_move`: The category in your source client that triggers a move.
 
 ## Basic Usage
@@ -142,7 +142,6 @@ Here is a robust example that runs the script every 30 minutes and saves its out
 | `--dry-run` | | Simulates the process without making any changes. |
 | `--test-run` | | Performs a full run but **skips deleting torrents** from the source client. |
 | `--parallel-jobs [N]` | | Sets the number of torrents to process concurrently. Defaults to `4`. |
-| `--rsync-workers [N]` | | (For rsync mode) Sets the number of parallel rsync workers per torrent. Defaults to `4`. |
 | `--categorize` | `-c` | Starts an interactive session to categorize torrents. Scans the `category_to_move` from your config by default. |
 | `--category [CATEGORY]` | | Overrides the default category for a `--categorize` session. |
 | `--no-rules` | `-nr` | During a `--categorize` session, ignore existing rules and review all torrents in the target category. |
