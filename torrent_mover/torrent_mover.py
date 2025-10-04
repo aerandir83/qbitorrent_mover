@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 import configparser
 import sys
@@ -242,7 +242,7 @@ def get_remote_size_rsync(sftp_config, remote_path):
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
-        "-a", "--dry-run", "--stats", "--timeout=60",
+        "-a", "-W", "--dry-run", "--stats", "--timeout=60",
         "-e", _get_ssh_command(port),
         remote_spec,
         # A dummy local path is required. The path must exist.
@@ -450,7 +450,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
-        "-a", "--partial", "--inplace",
+        "-a", "-W", "--partial", "--inplace",
         "--info=progress2",
         "--timeout=60",  # Exit if no data transferred for 60 seconds
         # Use the centralized SSH command function for multiplexing

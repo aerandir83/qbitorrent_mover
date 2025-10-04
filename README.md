@@ -10,7 +10,7 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.2.1**. To check your version, run: `python torrent_mover.py --version`.
+The current version is **1.2.2**. To check your version, run: `python torrent_mover.py --version`.
 
 ## Features
 
