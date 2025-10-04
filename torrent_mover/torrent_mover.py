@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 import configparser
 import sys
@@ -449,7 +449,7 @@ def _transfer_rsync_chunk_worker(sftp_config, file_chunk, chunk_size, remote_bas
         process = subprocess.Popen(
             rsync_cmd,
             stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, # Redirect stdout to null to prevent blocking
             stderr=subprocess.PIPE,
             text=True,
             encoding='utf-8'
