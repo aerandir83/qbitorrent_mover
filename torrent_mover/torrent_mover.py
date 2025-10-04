@@ -60,7 +60,7 @@ def check_sshpass_installed():
 
 def _get_ssh_command(port):
     """Builds the SSH command for rsync, enabling connection multiplexing if available."""
-    base_ssh_cmd = f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
+    base_ssh_cmd = f"ssh -p {port} -c chacha20-poly1305@openssh.com -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
     if SSH_CONTROL_PATH:
         multiplex_opts = f"-o ControlMaster=auto -o ControlPath={SSH_CONTROL_PATH} -o ControlPersist=60s"
         return f"{base_ssh_cmd} {multiplex_opts}"
