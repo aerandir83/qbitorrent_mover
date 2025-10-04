@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 import configparser
 import sys
@@ -22,6 +22,25 @@ import threading
 from collections import defaultdict
 import errno
 from utils import retry
+import tempfile
+import getpass
+
+
+SSH_CONTROL_PATH = None
+
+def setup_ssh_control_path():
+    """Creates a directory for the SSH control socket."""
+    global SSH_CONTROL_PATH
+    try:
+        # Create a user-specific temporary directory for the control socket
+        user = getpass.getuser()
+        control_dir = Path(tempfile.gettempdir()) / f"torrent_mover_ssh_{user}"
+        control_dir.mkdir(mode=0o700, exist_ok=True)
+        SSH_CONTROL_PATH = str(control_dir / "%r@%h:%p")
+        logging.info(f"Using SSH control path: {SSH_CONTROL_PATH}")
+    except Exception as e:
+        logging.warning(f"Could not create SSH control path directory. Multiplexing will be disabled. Error: {e}")
+        SSH_CONTROL_PATH = None
 
 
 def check_sshpass_installed():
@@ -35,6 +54,17 @@ def check_sshpass_installed():
         logging.error("e.g., 'sudo apt-get install sshpass' or 'sudo yum install sshpass'")
         sys.exit(1)
     logging.info("'sshpass' dependency check passed.")
+    # Setup the directory for SSH connection multiplexing
+    setup_ssh_control_path()
+
+
+def _get_ssh_command(port):
+    """Builds the SSH command for rsync, enabling connection multiplexing if available."""
+    base_ssh_cmd = f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
+    if SSH_CONTROL_PATH:
+        multiplex_opts = f"-o ControlMaster=auto -o ControlPath={SSH_CONTROL_PATH} -o ControlPersist=60s"
+        return f"{base_ssh_cmd} {multiplex_opts}"
+    return base_ssh_cmd
 
 
 def load_config(config_path="config.ini"):
@@ -213,7 +243,7 @@ def get_remote_size_rsync(sftp_config, remote_path):
         "sshpass", "-p", password,
         "rsync",
         "-a", "--dry-run", "--stats", "--timeout=60",
-        "-e", f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15",
+        "-e", _get_ssh_command(port),
         remote_spec,
         # A dummy local path is required. The path must exist.
         "."
@@ -423,8 +453,8 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
         "-a", "--partial", "--inplace",
         "--info=progress2",
         "--timeout=60",  # Exit if no data transferred for 60 seconds
-        # Add ServerAliveInterval to keep the SSH connection alive through firewalls
-        "-e", f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15",
+        # Use the centralized SSH command function for multiplexing
+        "-e", _get_ssh_command(port),
         remote_spec,
         local_parent_dir
     ]
@@ -1166,7 +1196,8 @@ def main():
 
         if args.interactive_categorize:
             try:
-                destination_qbit = connect_qbit(config['DESTINATION_QBITTORRENT'], "Destination")
+                dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
+                destination_qbit = connect_qbit(config[dest_client_section], "Destination")
                 # Determine the category to scan
                 if args.category:
                     cat_to_scan = args.category
@@ -1194,9 +1225,17 @@ def main():
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         if transfer_mode == 'rsync':
             check_sshpass_installed()
+
         try:
-            source_qbit = connect_qbit(config['SOURCE_QBITTORRENT'], "Source")
-            destination_qbit = connect_qbit(config['DESTINATION_QBITTORRENT'], "Destination")
+            source_section_name = config['SETTINGS']['source_client_section']
+            dest_section_name = config['SETTINGS']['destination_client_section']
+
+            source_qbit = connect_qbit(config[source_section_name], "Source")
+            destination_qbit = connect_qbit(config[dest_section_name], "Destination")
+        except KeyError as e:
+            logging.error(f"Configuration Error: The client section '{e}' is defined in your [SETTINGS] but not found in the config file.")
+            logging.error("Please ensure 'source_client_section' and 'destination_client_section' in [SETTINGS] match the actual section names (e.g., [SOURCE_CLIENT]).")
+            return 1
         except Exception as e:
             logging.error(f"Failed to connect to qBittorrent client after multiple retries: {e}", exc_info=True)
             logging.error("One or more qBittorrent connections failed. Aborting.")
