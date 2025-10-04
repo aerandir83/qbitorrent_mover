@@ -10,7 +10,7 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.2.2**. To check your version, run: `python torrent_mover.py --version`.
+The current version is **1.3.0**. To check your version, run: `python torrent_mover.py --version`.
 
 ## Features
 
@@ -142,6 +142,7 @@ Here is a robust example that runs the script every 30 minutes and saves its out
 | `--dry-run` | | Simulates the process without making any changes. |
 | `--test-run` | | Performs a full run but **skips deleting torrents** from the source client. |
 | `--parallel-jobs [N]` | | Sets the number of torrents to process concurrently. Defaults to `4`. |
+| `--rsync-workers [N]` | | (For rsync mode) Sets the number of parallel rsync workers per torrent. Defaults to `4`. |
 | `--categorize` | `-c` | Starts an interactive session to categorize torrents. Scans the `category_to_move` from your config by default. |
 | `--category [CATEGORY]` | | Overrides the default category for a `--categorize` session. |
 | `--no-rules` | `-nr` | During a `--categorize` session, ignore existing rules and review all torrents in the target category. |
