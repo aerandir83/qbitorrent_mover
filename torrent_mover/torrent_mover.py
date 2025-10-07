@@ -1079,7 +1079,14 @@ def setup_logging(script_dir, dry_run, test_run, debug):
     logger.addHandler(file_handler)
 
     # Create console handler with Rich
-    rich_handler = RichHandler(show_path=False, rich_tracebacks=True, markup=True)
+    try:
+        # Get terminal width to prevent garbled output in screen/tmux
+        width, _ = os.get_terminal_size()
+    except OSError:
+        # Fallback for non-interactive terminals
+        width = 120
+    console = Console(width=width)
+    rich_handler = RichHandler(console=console, show_path=False, rich_tracebacks=True, markup=True)
     # The formatter for RichHandler should be minimal, as Rich handles the presentation.
     rich_formatter = logging.Formatter('%(message)s')
     rich_handler.setFormatter(rich_formatter)
@@ -1167,7 +1174,13 @@ def main():
                 logging.info("No rules found.")
                 return 0
 
-            console = Console()
+            try:
+                # Get terminal width to prevent garbled output in screen/tmux
+                width, _ = os.get_terminal_size()
+            except OSError:
+                # Fallback for non-interactive terminals
+                width = 120
+            console = Console(width=width)
             table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
             table.add_column("Tracker Domain", style="dim", width=40)
             table.add_column("Assigned Category")
