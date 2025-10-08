@@ -1079,8 +1079,7 @@ def setup_logging(script_dir, dry_run, test_run, debug):
     logger.addHandler(file_handler)
 
     # Create console handler with Rich
-    console = Console(force_terminal=True, color_system="256")
-    rich_handler = RichHandler(console=console, show_path=False, rich_tracebacks=True, markup=True)
+    rich_handler = RichHandler(show_path=False, rich_tracebacks=True, markup=True)
     # The formatter for RichHandler should be minimal, as Rich handles the presentation.
     rich_formatter = logging.Formatter('%(message)s')
     rich_handler.setFormatter(rich_formatter)
@@ -1120,6 +1119,9 @@ def pid_exists(pid):
 
 def main():
     """Main entry point for the script."""
+    # Check if running in a screen session and fix TERM variable if necessary
+    if 'STY' in os.environ:
+        os.environ['TERM'] = 'screen'
     script_dir = Path(__file__).resolve().parent
     lock_file_path = script_dir / 'torrent_mover.lock'
 
@@ -1168,7 +1170,7 @@ def main():
                 logging.info("No rules found.")
                 return 0
 
-            console = Console(force_terminal=True, color_system="256")
+            console = Console()
             table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
             table.add_column("Tracker Domain", style="dim", width=40)
             table.add_column("Assigned Category")
