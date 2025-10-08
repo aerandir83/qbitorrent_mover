@@ -10,10 +10,12 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.2.1**. To check your version, run: `python torrent_mover.py --version`.
+The current version is **1.3.0**. To check your version, run: `python torrent_mover.py --version`.
 
 ## Features
 
+*   **Automatic Password Encryption**: Passwords in your `config.ini` are automatically encrypted using your operating system's native keychain for enhanced security.
+*   **Configuration Auto-Update**: Automatically adds new options from the template to your `config.ini` when you upgrade the script, without losing your settings or comments.
 *   **Works with Two qBittorrent Clients**: Manages torrents on both a source and a destination client via their WebUIs.
 *   **Secure & Fast File Transfers**: Uses `rsync` (recommended) or `sftp` to securely transfer torrent data.
 *   **Category-Based Moving**: Only moves torrents assigned to a specific category you define (e.g., "move").
@@ -33,6 +35,7 @@ The current version is **1.2.1**. To check your version, run: `python torrent_mo
 *   Python 3.6+
 *   Two qBittorrent clients accessible over the network from where the script is run.
 *   SSH/SFTP access to the source server.
+*   A supported OS keychain/credential manager (see Security section below).
 
 ## Installation & Setup
 
@@ -77,15 +80,17 @@ Copy the `config.ini.template` to create your own `config.ini` file.
 cp config.ini.template config.ini
 ```
 
-Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your server details. The template is organized into the following sections:
+Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your server details. The script will automatically handle encrypting the passwords you enter.
 
-*   **`[SOURCE_CLIENT]`**: Your **source** qBittorrent client (e.g., your seedbox).
-*   **`[DESTINATION_CLIENT]`**: Your **destination** qBittorrent client (e.g., your home server).
-*   **`[SOURCE_SERVER]`**: The SFTP/SSH details for your **source** server, where the torrent files are stored.
-*   **`[DESTINATION_PATHS]`**: The path on the destination server where torrent data will be moved.
-*   **`[SETTINGS]`**: Key operational settings. This is where you define:
-    *   `source_client_section` and `destination_client_section`: The names of the sections that define your clients. By default, they are `SOURCE_CLIENT` and `DESTination_CLIENT`. If you rename these sections, you **must** update the names here to match.
-    *   `category_to_move`: The category in your source client that triggers a move.
+## Security: Automatic Password Encryption
+
+This script uses a strong encryption method to protect the passwords in your `config.ini` file.
+
+*   **How it Works**: The script uses your operating system's native secure storage system (like **macOS Keychain**, **Windows Credential Manager**, or a **Linux Keyring** such as GNOME Keyring or KWallet) to store its encryption key. The first time you run the script, it will generate a unique key and store it securely in your OS keychain. On subsequent runs, it retrieves this key to decrypt your passwords in memory.
+*   **Automatic Encryption**: If you enter a plaintext password in `config.ini`, the script will automatically detect, encrypt, and save it back to the file on its next run. You don't need to do anything extra.
+*   **Portability Warning**: Because the encryption key is stored in the OS keychain of a specific user on a specific machine, **your `config.ini` file is not portable**. You cannot simply copy it to another server or user account and expect it to work. If you move the script, you will need to enter your passwords again in the `config.ini` on the new machine to allow it to be re-encrypted with a new key.
+
+For headless Linux systems, you may need to install and configure a DBus session and a supported keyring backend (like `SecretService`) for this feature to work.
 
 ## Basic Usage
 

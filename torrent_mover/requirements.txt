@@ -1,6 +1,7 @@
 argcomplete
 configupdater
 cryptography
+keyring
 paramiko
 qbittorrent-api
 rich

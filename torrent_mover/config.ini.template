@@ -8,16 +8,6 @@
 #    but make sure to update the names in the [SETTINGS] section to match.
 # 4. Ensure all paths are absolute paths.
 #
-# PASSWORD ENCRYPTION (RECOMMENDED):
-# For security, you can encrypt the passwords in this file.
-#   a. Fill in your plaintext passwords below.
-#   b. Save the file.
-#   c. Run the script with the --encrypt-config flag:
-#      python3 torrent_mover.py --encrypt-config
-#   d. The script will prompt you to create a master password. This password
-#      will be required every time you run the script.
-#   e. Your passwords in this file will be replaced with encrypted strings.
-#
 
 [SOURCE_CLIENT]
 # Connection details for the SOURCE qBittorrent client (e.g., your seedbox).

@@ -22,8 +22,8 @@ def load_and_update_config(config_path="config.ini", template_path="config.ini.t
         sys.exit(1)
 
     # Use ConfigUpdater to preserve comments and structure
-    config = ConfigUpdater()
-    config.read(config_file, encoding='utf-8')
+    updater = ConfigUpdater()
+    updater.read(config_file, encoding='utf-8')
 
     template_config = ConfigUpdater()
     template_config.read(template_file, encoding='utf-8')
@@ -31,28 +31,29 @@ def load_and_update_config(config_path="config.ini", template_path="config.ini.t
     needs_update = False
     # Iterate over the template to find missing options
     for section in template_config.sections():
-        if not config.has_section(section):
+        if not updater.has_section(section):
             needs_update = True
             logging.info(f"Adding missing section [{section}] to config.ini.")
-            config.add_section(section)
-            # Copy the whole section from template
-            config[section].read_dict(template_config[section].items())
-            # Attempt to copy comments for the section if possible
+            # Add the section with its comments and options from the template
+            updater.add_section(section)
+            updater[section].read_dict(template_config[section].items())
+            # This doesn't perfectly preserve all comments, but it's a good effort
             if template_config[section].comments:
-                config[section].comments = template_config[section].comments
-
-        for option, value in template_config[section].items():
-            if not config[section].has_option(option):
-                needs_update = True
-                logging.info(f"Adding missing option '{option}' to section [{section}] in config.ini.")
-                config[section][option] = value
-                # Attempt to copy comments for the option
-                # This part is a bit tricky with configupdater, but we can try
-                # to find the comment associated with the option in the template
-                # and add it to the user's config.
+                 updater[section].comments = template_config[section].comments
+        else: # Section exists, check for missing options
+            for option, value_obj in template_config[section].items():
+                if not updater[section].has_option(option):
+                    needs_update = True
+                    logging.info(f"Adding missing option '{option}' to section [{section}] in config.ini.")
+                    # Add the option with its value and comment
+                    updater[section][option] = value_obj.value
 
     if needs_update:
         logging.info("Configuration file was updated with new options. Saving changes.")
-        config.write_to_file(config_file, encoding='utf-8')
+        try:
+            updater.write_to_file(config_file, encoding='utf-8')
+        except Exception as e:
+            logging.error(f"Failed to write updates to config file: {e}")
+            sys.exit(1)
 
-    return config
+    return updater

@@ -1,88 +1,83 @@
 import base64
-import getpass
 import logging
-import os
+import keyring
 from cryptography.fernet import Fernet, InvalidToken
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.backends import default_backend
 
-# It's recommended to use a salt, and to store it with the encrypted data.
-# 16 bytes is a good size for a salt.
-SALT_SIZE = 16
+# --- Constants for Keyring Service ---
+# These identify the application to the OS keychain.
+KEYRING_SERVICE_NAME = "torrent-mover-script"
+KEYRING_USERNAME = "encryption_key"
+
 # The prefix to identify encrypted values in the config file.
 ENCRYPTION_PREFIX = "ENC:"
 
-def derive_key(password: str, salt: bytes) -> bytes:
+def _get_encryption_key() -> bytes:
     """
-    Derives a cryptographic key from a password and salt using PBKDF2.
+    Retrieves the encryption key from the OS keychain.
+    If the key does not exist, it generates a new one, stores it,
+    and returns it.
     """
-    if not password:
-        raise ValueError("Password cannot be empty.")
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=100000,
-        backend=default_backend()
-    )
-    return base64.urlsafe_b64encode(kdf.derive(password.encode()))
+    try:
+        # Retrieve the key from the keychain.
+        key_str = keyring.get_password(KEYRING_SERVICE_NAME, KEYRING_USERNAME)
 
-def encrypt_password(password_to_encrypt: str, master_password: str) -> str:
+        if key_str:
+            # Key exists, decode it from Base64
+            logging.debug("Found existing encryption key in OS keychain.")
+            return base64.urlsafe_b64decode(key_str)
+        else:
+            # Key does not exist, generate a new one.
+            logging.info("No encryption key found. Generating a new one and storing it in the OS keychain.")
+            new_key = Fernet.generate_key()
+            # Store the new key as a Base64 encoded string.
+            keyring.set_password(KEYRING_SERVICE_NAME, KEYRING_USERNAME, base64.urlsafe_b64encode(new_key).decode('utf-8'))
+            logging.info("A new encryption key has been securely stored.")
+            return new_key
+    except Exception as e:
+        logging.error("FATAL: Could not access the OS keychain.")
+        logging.error("Please ensure you have a supported keychain/credential manager installed and configured.")
+        logging.error(f"Underlying error: {e}")
+        # Keyring can be problematic in some environments (e.g. headless servers without a DBus session).
+        # Provide guidance for users.
+        logging.error("For headless Linux, you may need to install a DBus session and a supported backend like 'SecretService'.")
+        exit(1)
+
+def encrypt_password(password_to_encrypt: str) -> str:
     """
-    Encrypts a password using a master password.
-    Returns a string containing the salt and the encrypted data, prefixed.
+    Encrypts a password using the key from the OS keychain.
+    Returns a string containing the encrypted data, prefixed for identification.
     """
     if not password_to_encrypt:
         return ""
-    salt = os.urandom(SALT_SIZE)
-    key = derive_key(master_password, salt)
-    f = Fernet(key)
-    encrypted_data = f.encrypt(password_to_encrypt.encode())
-    # Prepend the salt to the encrypted data and encode it for safe storage.
-    # Also add a prefix to easily identify encrypted values.
-    return f"{ENCRYPTION_PREFIX}{base64.b64encode(salt + encrypted_data).decode('utf-8')}"
 
-def decrypt_password(encrypted_password_str: str, master_password: str) -> str:
+    key = _get_encryption_key()
+    f = Fernet(key)
+    encrypted_data = f.encrypt(password_to_encrypt.encode('utf-8'))
+    # Return the encrypted data as a prefixed, base64 string
+    return f"{ENCRYPTION_PREFIX}{base64.b64encode(encrypted_data).decode('utf-8')}"
+
+def decrypt_password(encrypted_password_str: str) -> str:
     """
-    Decrypts a password using the master password.
+    Decrypts a password using the key from the OS keychain.
     The input is the prefixed, base64-encoded string from the config file.
     """
-    if not encrypted_password_str.startswith(ENCRYPTION_PREFIX):
-        # If the value is not encrypted, return it as is.
+    if not isinstance(encrypted_password_str, str) or not encrypted_password_str.startswith(ENCRYPTION_PREFIX):
+        # If the value is not an encrypted string, return it as is.
         return encrypted_password_str
 
     try:
         # Remove prefix and decode from base64
         encoded_data = encrypted_password_str[len(ENCRYPTION_PREFIX):]
-        decoded_data = base64.b64decode(encoded_data)
+        encrypted_data = base64.b64decode(encoded_data)
 
-        # Extract the salt and the encrypted data
-        salt = decoded_data[:SALT_SIZE]
-        encrypted_data = decoded_data[SALT_SIZE:]
-
-        key = derive_key(master_password, salt)
+        key = _get_encryption_key()
         f = Fernet(key)
         decrypted_data = f.decrypt(encrypted_data)
         return decrypted_data.decode('utf-8')
     except InvalidToken:
-        logging.error("Decryption failed! The master password may be incorrect or the data is corrupt.")
+        logging.error("Decryption failed! The data may be corrupt or the encryption key has changed.")
+        logging.error("This can happen if you moved the config file from another system.")
         raise
     except Exception as e:
         logging.error(f"An unexpected error occurred during decryption: {e}")
         raise
-
-def get_master_password(prompt="Enter master password: "):
-    """
-    Securely prompts the user for a master password.
-    """
-    try:
-        password = getpass.getpass(prompt)
-        if not password:
-            logging.warning("Master password cannot be empty.")
-            return get_master_password(prompt)
-        return password
-    except (EOFError, KeyboardInterrupt):
-        print() # Add a newline after the prompt
-        logging.fatal("Cancelled by user. Aborting.")
-        exit(1)
