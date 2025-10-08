@@ -1168,7 +1168,7 @@ def main():
                 return 0
 
             console = Console()
-            table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta", safe_box=True)
+            table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
             table.add_column("Tracker Domain", style="dim", width=40)
             table.add_column("Assigned Category")
             sorted_rules = sorted(tracker_rules.items())
@@ -1290,85 +1290,20 @@ def main():
 
         plan_text = Text(f"Found {total_count} torrents to process...\n", style="bold")
         plan_text.append("─" * 70 + "\n", style="dim")
-        plan_panel = Panel(plan_text, title="[bold magenta]Transfer Plan[/bold magenta]", border_style="magenta", expand=False, safe_box=True)
+        plan_panel = Panel(plan_text, title="[bold magenta]Transfer Plan[/bold magenta]", border_style="magenta", expand=False)
 
         layout = Group(
             plan_panel,
-            Panel(Group(torrent_progress, analysis_progress), title="Overall Queue", border_style="blue", safe_box=True),
-            Panel(overall_progress, title="Total Progress", border_style="green", safe_box=True),
-            Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2), safe_box=True)
+            Panel(Group(torrent_progress, analysis_progress), title="Overall Queue", border_style="blue"),
+            Panel(overall_progress, title="Total Progress", border_style="green"),
+            Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2))
         )
 
-        with Live(layout, refresh_per_second=4, transient=True) as live:
-            sftp_config = config['SOURCE_SERVER']
-            transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-
-            analysis_workers = max(10, args.parallel_jobs * 2)
-
-            try:
-                with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as analysis_executor, \
-                     ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as transfer_executor:
-
-                    analysis_future_to_torrent = {
-                        analysis_executor.submit(analyze_torrent, torrent, sftp_config, transfer_mode, live.console): torrent
-                        for torrent in eligible_torrents
-                    }
-                    transfer_future_to_torrent = {}
-
-                    # Pipeline: As analysis completes, feed into the transfer pool
-                    for future in as_completed(analysis_future_to_torrent):
-                        original_torrent = analysis_future_to_torrent[future]
-                        try:
-                            analyzed_torrent, total_size = future.result()
-                            analysis_progress.update(analysis_task, advance=1)
-
-                            if total_size is not None and total_size > 0:
-                                with plan_lock:
-                                    size_gb = total_size / 1024**3
-                                    plan_text.append(f" • {analyzed_torrent.name} (")
-                                    plan_text.append(f"{size_gb:.2f} GB", style="bold")
-                                    plan_text.append(")\n")
-                                with overall_progress_lock:
-                                    current_total = overall_progress.tasks[overall_task].total
-                                    overall_progress.update(overall_task, total=current_total + total_size)
-
-                                transfer_future = transfer_executor.submit(
-                                    transfer_torrent, analyzed_torrent, total_size,
-                                    source_qbit, destination_qbit, sftp_config, config, tracker_rules,
-                                    job_progress, overall_progress, overall_task,
-                                    file_counts, count_lock, task_add_lock,
-                                    args.dry_run, args.test_run
-                                )
-                                transfer_future_to_torrent[transfer_future] = analyzed_torrent
-                            else:
-                                torrent_progress.update(torrent_task, advance=1)
-
-                        except Exception as e:
-                            live.console.log(f"[bold red]Error processing analysis for '{original_torrent.name}': {e}[/]")
-                            analysis_progress.update(analysis_task, advance=1)
-                            torrent_progress.update(torrent_task, advance=1)
-
-                    live.console.log("[green]All torrents analyzed. Waiting for transfers to complete...[/]")
-
-                    # Wait for all transfers to complete
-                    for future in as_completed(transfer_future_to_torrent):
-                        torrent = transfer_future_to_torrent[future]
-                        try:
-                            if future.result():
-                                processed_count += 1
-                        except Exception as e:
-                            live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]", exc_info=True)
-                        finally:
-                            torrent_progress.update(torrent_task, advance=1)
-                            if len(job_progress.tasks) > 0 and job_progress.tasks[-1].description != " ":
-                                job_progress.add_task(" ", total=1, completed=1)
-            except KeyboardInterrupt:
-                # The executors will be shut down by the 'with' statement context exit
-                live.stop()
-                live.console.print("\n[bold yellow]Process interrupted by user. Transfers will be cancelled.[/bold yellow]")
-                # No need to manually shutdown, the `with` block handles it.
-                raise # Re-raise to be caught by the outer try/except
-        logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
+        # --- DIAGNOSTIC: Print static layout to test rendering without Live updates ---
+        console = Console()
+        console.print(layout)
+        logging.info(f"Diagnostic run complete. Printed static layout. No torrents were processed.")
+        # The original Live display block has been temporarily removed for this test.
     except KeyboardInterrupt:
         pass
     except KeyError as e:
