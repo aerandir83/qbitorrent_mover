@@ -1,75 +1,74 @@
 import base64
 import logging
+import sys
 import keyring
+from keyring.backends.fail import NoKeyring
 from cryptography.fernet import Fernet, InvalidToken
 
 # --- Constants for Keyring Service ---
-# These identify the application to the OS keychain.
 KEYRING_SERVICE_NAME = "torrent-mover-script"
 KEYRING_USERNAME = "encryption_key"
-
-# The prefix to identify encrypted values in the config file.
 ENCRYPTION_PREFIX = "ENC:"
+
+def check_keyring_backend():
+    """
+    Checks if a supported keyring backend is available.
+    If not, prints detailed instructions and exits.
+    """
+    if isinstance(keyring.get_keyring(), NoKeyring):
+        logging.error("--- Action Required: No OS Keychain Backend Found ---")
+        logging.error("This script uses the OS keychain to securely store passwords, but no supported backend was found on your system.")
+        logging.error("To fix this on a headless Debian/Ubuntu server, you can install 'gnome-keyring' and 'dbus'.")
+        logging.error("\nRun the following commands:")
+        logging.error("sudo apt-get update")
+        logging.error("sudo apt-get install -y gnome-keyring dbus-x11")
+        logging.error("\nAfter installation, you need to start a DBus session before running the script.")
+        logging.error("You can do this by wrapping the script execution with 'dbus-run-session':")
+        logging.error("dbus-run-session python3 /path/to/your/torrent_mover.py")
+        logging.error("\nFor more details, see: https://pypi.org/project/keyring/")
+        sys.exit(1)
+    logging.info("Supported OS keychain backend found.")
 
 def _get_encryption_key() -> bytes:
     """
     Retrieves the encryption key from the OS keychain.
-    If the key does not exist, it generates a new one, stores it,
-    and returns it.
+    If the key does not exist, it generates a new one, stores it, and returns it.
     """
     try:
-        # Retrieve the key from the keychain.
         key_str = keyring.get_password(KEYRING_SERVICE_NAME, KEYRING_USERNAME)
-
         if key_str:
-            # Key exists, decode it from Base64
             logging.debug("Found existing encryption key in OS keychain.")
             return base64.urlsafe_b64decode(key_str)
         else:
-            # Key does not exist, generate a new one.
             logging.info("No encryption key found. Generating a new one and storing it in the OS keychain.")
             new_key = Fernet.generate_key()
-            # Store the new key as a Base64 encoded string.
             keyring.set_password(KEYRING_SERVICE_NAME, KEYRING_USERNAME, base64.urlsafe_b64encode(new_key).decode('utf-8'))
             logging.info("A new encryption key has been securely stored.")
             return new_key
     except Exception as e:
-        logging.error("FATAL: Could not access the OS keychain.")
-        logging.error("Please ensure you have a supported keychain/credential manager installed and configured.")
-        logging.error(f"Underlying error: {e}")
-        # Keyring can be problematic in some environments (e.g. headless servers without a DBus session).
-        # Provide guidance for users.
-        logging.error("For headless Linux, you may need to install a DBus session and a supported backend like 'SecretService'.")
-        exit(1)
+        logging.error(f"FATAL: An unexpected error occurred while accessing the OS keychain: {e}")
+        sys.exit(1)
 
 def encrypt_password(password_to_encrypt: str) -> str:
     """
     Encrypts a password using the key from the OS keychain.
-    Returns a string containing the encrypted data, prefixed for identification.
     """
     if not password_to_encrypt:
         return ""
-
     key = _get_encryption_key()
     f = Fernet(key)
     encrypted_data = f.encrypt(password_to_encrypt.encode('utf-8'))
-    # Return the encrypted data as a prefixed, base64 string
     return f"{ENCRYPTION_PREFIX}{base64.b64encode(encrypted_data).decode('utf-8')}"
 
 def decrypt_password(encrypted_password_str: str) -> str:
     """
     Decrypts a password using the key from the OS keychain.
-    The input is the prefixed, base64-encoded string from the config file.
     """
     if not isinstance(encrypted_password_str, str) or not encrypted_password_str.startswith(ENCRYPTION_PREFIX):
-        # If the value is not an encrypted string, return it as is.
         return encrypted_password_str
-
     try:
-        # Remove prefix and decode from base64
         encoded_data = encrypted_password_str[len(ENCRYPTION_PREFIX):]
         encrypted_data = base64.b64decode(encoded_data)
-
         key = _get_encryption_key()
         f = Fernet(key)
         decrypted_data = f.decrypt(encrypted_data)

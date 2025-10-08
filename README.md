@@ -14,7 +14,7 @@ The current version is **1.3.0**. To check your version, run: `python torrent_mo
 
 ## Features
 
-*   **Automatic Password Encryption**: Passwords in your `config.ini` are automatically encrypted using your operating system's native keychain for enhanced security.
+*   **Automatic Password Encryption**: Passwords in your `config.ini` are automatically encrypted using your operating system's native keychain for enhanced security. No master password required.
 *   **Configuration Auto-Update**: Automatically adds new options from the template to your `config.ini` when you upgrade the script, without losing your settings or comments.
 *   **Works with Two qBittorrent Clients**: Manages torrents on both a source and a destination client via their WebUIs.
 *   **Secure & Fast File Transfers**: Uses `rsync` (recommended) or `sftp` to securely transfer torrent data.
@@ -35,7 +35,7 @@ The current version is **1.3.0**. To check your version, run: `python torrent_mo
 *   Python 3.6+
 *   Two qBittorrent clients accessible over the network from where the script is run.
 *   SSH/SFTP access to the source server.
-*   A supported OS keychain/credential manager (see Security section below).
+*   **A supported OS keychain/credential manager** (see Security section below).
 
 ## Installation & Setup
 
@@ -90,7 +90,23 @@ This script uses a strong encryption method to protect the passwords in your `co
 *   **Automatic Encryption**: If you enter a plaintext password in `config.ini`, the script will automatically detect, encrypt, and save it back to the file on its next run. You don't need to do anything extra.
 *   **Portability Warning**: Because the encryption key is stored in the OS keychain of a specific user on a specific machine, **your `config.ini` file is not portable**. You cannot simply copy it to another server or user account and expect it to work. If you move the script, you will need to enter your passwords again in the `config.ini` on the new machine to allow it to be re-encrypted with a new key.
 
-For headless Linux systems, you may need to install and configure a DBus session and a supported keyring backend (like `SecretService`) for this feature to work.
+### Setting up a Keychain on a Headless Server
+
+If you are running this script on a headless server (e.g., Debian, Ubuntu), you may not have a keychain service running by default. The script will detect this and provide instructions on how to set it up.
+
+The recommended setup on a headless Debian/Ubuntu server is:
+1.  **Install the necessary packages**:
+    ```bash
+    sudo apt-get update
+    sudo apt-get install -y gnome-keyring dbus-x11
+    ```
+2.  **Run the script with `dbus-run-session`**:
+    When running the script (especially in a cron job), you must wrap the command with `dbus-run-session`. This creates the necessary environment for the script to access the keyring.
+
+    **Example for a cron job:**
+    ```crontab
+    */30 * * * * /usr/bin/dbus-run-session /opt/torrent-mover/torrent_mover/.venv/bin/python /opt/torrent-mover/torrent_mover/torrent_mover.py >> /opt/torrent-mover/torrent_mover/cron.log 2>&1
+    ```
 
 ## Basic Usage
 
@@ -118,26 +134,7 @@ python torrent_mover.py
 
 ## Scheduling with Cron
 
-To run the script automatically, you can set up a cron job. This allows the script to run on a schedule (e.g., every hour) without manual intervention.
-
-1.  Open your crontab for editing: `crontab -e`
-2.  Add a line to schedule the script. **You must use absolute paths** for the Python interpreter (inside your `.venv`) and the script itself.
-
-Here is a robust example that runs the script every 30 minutes and saves its output to a log file.
-
-```crontab
-# Run the torrent mover every 30 minutes
-# The full path to the python from your virtual environment is required.
-# The full path to the script is required.
-# Logging output to a file is highly recommended for debugging.
-*/30 * * * * /opt/torrent-mover/torrent_mover/.venv/bin/python /opt/torrent-mover/torrent_mover/torrent_mover.py >> /opt/torrent-mover/torrent_mover/cron.log 2>&1
-```
-
-**Breakdown of the command:**
-*   `*/30 * * * *`: The schedule, meaning "at minute 30 past every hour."
-*   `/opt/torrent-mover/.../python`: Absolute path to the Python executable in your virtual environment.
-*   `/opt/torrent-mover/.../torrent_mover.py`: Absolute path to the script.
-*   `>> cron.log 2>&1`: Appends all output (both standard and error) to `cron.log`, which is useful for checking if the script ran correctly.
+To run the script automatically, you can set up a cron job. See the "Setting up a Keychain on a Headless Server" section above for a robust example of how to do this correctly with `dbus-run-session`.
 
 ## Command-Line Arguments
 

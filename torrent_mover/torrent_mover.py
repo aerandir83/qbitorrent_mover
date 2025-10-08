@@ -25,7 +25,7 @@ import tempfile
 import getpass
 
 from config_utils import load_and_update_config
-from encryption_utils import encrypt_password, decrypt_password, ENCRYPTION_PREFIX
+from encryption_utils import check_keyring_backend, encrypt_password, decrypt_password, ENCRYPTION_PREFIX
 
 
 SSH_CONTROL_PATH = None
@@ -1165,6 +1165,9 @@ def main():
     args = parser.parse_args()
 
     setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
+
+    # Perform keychain check before anything else that might use it
+    check_keyring_backend()
 
     config = load_and_update_config(args.config, str(default_template_path))
     handle_password_encryption(config, args.config)
