@@ -4,9 +4,8 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 
-import configparser
 import sys
 import logging
 from pathlib import Path
@@ -24,9 +23,14 @@ import errno
 from utils import retry
 import tempfile
 import getpass
+from cryptography.fernet import InvalidToken
+
+from config_utils import load_and_update_config
+from encryption_utils import get_master_password, decrypt_password, encrypt_password, ENCRYPTION_PREFIX
 
 
 SSH_CONTROL_PATH = None
+MASTER_PASSWORD = None # Cache for the master password
 
 def setup_ssh_control_path():
     """Creates a directory for the SSH control socket."""
@@ -66,34 +70,38 @@ def _get_ssh_command(port):
         return f"{base_ssh_cmd} {multiplex_opts}"
     return base_ssh_cmd
 
-
-def load_config(config_path="config.ini"):
-    """
-    Loads the configuration from the specified .ini file.
-    Exits if the file is not found.
-    """
-    config_file = Path(config_path)
-    if not config_file.is_file():
-        logging.error(f"FATAL: Configuration file not found at '{config_path}'.")
-        logging.error("Please copy 'config.ini.template' to 'config.ini' and fill in your details.")
-        sys.exit(1)
-
-    config = configparser.ConfigParser()
-    config.read(config_file)
-    return config
-
 # --- Connection Functions ---
+
+def _get_decrypted_password(password_from_config: str) -> str:
+    """
+    Checks if a password is encrypted and decrypts it if necessary.
+    Prompts for the master password on the first use and caches it.
+    """
+    global MASTER_PASSWORD
+    if password_from_config.startswith(ENCRYPTION_PREFIX):
+        if MASTER_PASSWORD is None:
+            MASTER_PASSWORD = get_master_password()
+        try:
+            return decrypt_password(password_from_config, MASTER_PASSWORD)
+        except InvalidToken:
+            logging.fatal("Decryption failed. Incorrect master password.")
+            sys.exit(1)
+        except Exception as e:
+            logging.fatal(f"An unexpected error occurred during decryption: {e}")
+            sys.exit(1)
+    return password_from_config
 
 @retry(tries=2, delay=5)
 def connect_qbit(config_section, client_name):
     """
     Connects to a qBittorrent client using details from a config section.
+    Handles encrypted passwords.
     Returns a connected client object or raises an exception on failure.
     """
     host = config_section['host']
     port = config_section.getint('port')
     username = config_section['username']
-    password = config_section['password']
+    password = _get_decrypted_password(config_section['password'])
     verify_cert = config_section.getboolean('verify_cert', fallback=True)
 
     logging.info(f"Connecting to {client_name} qBittorrent at {host}...")
@@ -113,12 +121,13 @@ def connect_qbit(config_section, client_name):
 def connect_sftp(config_section):
     """
     Connects to a server via SFTP using SSHClient for better timeout control.
+    Handles encrypted passwords.
     Returns a connected SFTP client and the SSHClient object, or raises an exception on failure.
     """
     host = config_section['host']
     port = config_section.getint('port')
     username = config_section['username']
-    password = config_section['password']
+    password = _get_decrypted_password(config_section['password'])
 
     logging.info(f"Establishing SFTP connection to {host}...")
     ssh_client = paramiko.SSHClient()
@@ -235,7 +244,7 @@ def get_remote_size_rsync(sftp_config, remote_path):
     host = sftp_config['host']
     port = sftp_config.getint('port')
     username = sftp_config['username']
-    password = sftp_config['password']
+    password = _get_decrypted_password(sftp_config['password'])
 
     remote_spec = f"{username}@{host}:{remote_path}"
 
@@ -440,7 +449,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
     host = sftp_config['host']
     port = sftp_config.getint('port')
     username = sftp_config['username']
-    password = sftp_config['password']
+    password = _get_decrypted_password(sftp_config['password'])
 
     local_parent_dir = os.path.dirname(local_path)
     Path(local_parent_dir).mkdir(parents=True, exist_ok=True)
@@ -1117,6 +1126,54 @@ def pid_exists(pid):
     else:
         return True
 
+def run_config_encryption(config_path):
+    """
+    Encrypts all 'password' fields in the configuration file.
+    """
+    from configupdater import ConfigUpdater
+    logging.info(f"Starting interactive encryption for '{config_path}'...")
+    updater = ConfigUpdater()
+    try:
+        # We need to read the raw file content to check for existence first
+        config_file = Path(config_path)
+        if not config_file.is_file():
+            logging.error(f"Configuration file not found at '{config_path}'. Cannot encrypt.")
+            return
+        updater.read(config_path, encoding='utf-8')
+    except Exception as e:
+        logging.error(f"Could not read config file at '{config_path}'. Error: {e}")
+        return
+
+    master_password = get_master_password("Enter a new master password for encryption: ")
+    master_password_confirm = get_master_password("Confirm master password: ")
+
+    if master_password != master_password_confirm:
+        logging.error("Master passwords do not match. Aborting encryption.")
+        return
+
+    encrypted_count = 0
+    for section in updater.sections():
+        if 'password' in updater[section]:
+            password_obj = updater[section]['password']
+            if password_obj.value and not password_obj.value.startswith(ENCRYPTION_PREFIX):
+                logging.info(f"Encrypting password in section [{section}]...")
+                encrypted_password = encrypt_password(password_obj.value, master_password)
+                password_obj.value = encrypted_password
+                encrypted_count += 1
+            elif not password_obj.value:
+                logging.info(f"Skipping empty password in section [{section}].")
+            else:
+                logging.info(f"Password in section [{section}] appears to be already encrypted. Skipping.")
+
+    if encrypted_count > 0:
+        try:
+            updater.write_to_file(config_path, encoding='utf-8')
+            logging.info(f"Successfully encrypted {encrypted_count} password(s) in '{config_path}'.")
+        except Exception as e:
+            logging.error(f"Failed to write encrypted config to '{config_path}': {e}")
+    else:
+        logging.info("No new passwords to encrypt.")
+
 def main():
     """Main entry point for the script."""
     script_dir = Path(__file__).resolve().parent
@@ -1137,12 +1194,14 @@ def main():
             lock_file_path.unlink()
 
     default_config_path = script_dir / 'config.ini'
+    default_template_path = script_dir / 'config.ini.template'
     parser = argparse.ArgumentParser(description="A script to move qBittorrent torrents and data between servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--config', default=str(default_config_path), help='Path to the configuration file.')
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
     mode_group.add_argument('--test-run', action='store_true', help='Run the full process but do not delete the source torrent.')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging to file.')
+    parser.add_argument('--encrypt-config', action='store_true', help='Interactively encrypt passwords in the config file.')
     parser.add_argument('--parallel-jobs', type=int, default=4, metavar='N', help='Number of torrents to process in parallel.')
     parser.add_argument('-l', '--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
     parser.add_argument('-a', '--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
@@ -1156,9 +1215,13 @@ def main():
 
     setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
 
+    if args.encrypt_config:
+        run_config_encryption(args.config)
+        return 0
+
     # --- Early exit argument handling ---
     if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize:
-        config = load_config(args.config)
+        config = load_and_update_config(args.config, str(default_template_path))
         tracker_rules = load_tracker_rules(script_dir)
         logging.info("Executing utility command...")
 
@@ -1196,14 +1259,14 @@ def main():
 
         if args.interactive_categorize:
             try:
-                dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
-                destination_qbit = connect_qbit(config[dest_client_section], "Destination")
+                dest_client_section_name = config['SETTINGS']['destination_client_section'].value
+                destination_qbit = connect_qbit(config[dest_client_section_name], "Destination")
                 # Determine the category to scan
                 if args.category:
                     cat_to_scan = args.category
                     logging.info(f"Using category from command line: '{cat_to_scan}'")
                 else:
-                    cat_to_scan = config['SETTINGS'].get('category_to_move')
+                    cat_to_scan = config['SETTINGS']['category_to_move'].value
                     if cat_to_scan:
                         logging.info(f"Using 'category_to_move' from config: '{cat_to_scan}'")
                     else:
@@ -1221,14 +1284,14 @@ def main():
         with open(lock_file_path, 'w') as f:
             f.write(str(os.getpid()))
 
-        config = load_config(args.config)
-        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+        config = load_and_update_config(args.config, str(default_template_path))
+        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').value.lower()
         if transfer_mode == 'rsync':
             check_sshpass_installed()
 
         try:
-            source_section_name = config['SETTINGS']['source_client_section']
-            dest_section_name = config['SETTINGS']['destination_client_section']
+            source_section_name = config['SETTINGS']['source_client_section'].value
+            dest_section_name = config['SETTINGS']['destination_client_section'].value
 
             source_qbit = connect_qbit(config[source_section_name], "Source")
             destination_qbit = connect_qbit(config[dest_section_name], "Destination")
@@ -1244,8 +1307,8 @@ def main():
 
         tracker_rules = load_tracker_rules(script_dir) # Load rules for the main run
 
-        category_to_move = config['SETTINGS']['category_to_move']
-        size_threshold_gb_str = config['SETTINGS'].get('size_threshold_gb')
+        category_to_move = config['SETTINGS']['category_to_move'].value
+        size_threshold_gb_str = config['SETTINGS'].get('size_threshold_gb').value
         size_threshold_gb = None
         if size_threshold_gb_str and size_threshold_gb_str.strip():
             try:
@@ -1301,7 +1364,7 @@ def main():
 
         with Live(layout, refresh_per_second=4, transient=True) as live:
             sftp_config = config['SOURCE_SERVER']
-            transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+            transfer_mode = config['SETTINGS']['transfer_mode'].value.lower()
 
             analysis_workers = max(10, args.parallel_jobs * 2)
 
