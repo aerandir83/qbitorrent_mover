@@ -2,7 +2,7 @@ import base64
 import logging
 import sys
 import keyring
-from keyring.backends.fail import NoKeyring
+from keyring.backends.fail import Keyring as NoKeyring
 from cryptography.fernet import Fernet, InvalidToken
 
 # --- Constants for Keyring Service ---

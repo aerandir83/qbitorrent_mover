@@ -821,7 +821,9 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, sftp_co
     success = False
     try:
         dest_base_path = config['DESTINATION_PATHS']['destination_path'].value
-        remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path').value or dest_base_path
+        remote_dest_path_option = config['DESTINATION_PATHS'].get('remote_destination_path')
+        remote_dest_base_path = remote_dest_path_option.value if remote_dest_path_option and remote_dest_path_option.value else dest_base_path
+
 
         remote_content_path = torrent.content_path
         content_name = os.path.basename(remote_content_path)
