@@ -1119,9 +1119,6 @@ def pid_exists(pid):
 
 def main():
     """Main entry point for the script."""
-    # Check if running in a screen session and fix TERM variable if necessary
-    if 'STY' in os.environ:
-        os.environ['TERM'] = 'screen'
     script_dir = Path(__file__).resolve().parent
     lock_file_path = script_dir / 'torrent_mover.lock'
 
@@ -1171,7 +1168,7 @@ def main():
                 return 0
 
             console = Console()
-            table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
+            table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta", safe_box=True)
             table.add_column("Tracker Domain", style="dim", width=40)
             table.add_column("Assigned Category")
             sorted_rules = sorted(tracker_rules.items())
@@ -1293,13 +1290,13 @@ def main():
 
         plan_text = Text(f"Found {total_count} torrents to process...\n", style="bold")
         plan_text.append("─" * 70 + "\n", style="dim")
-        plan_panel = Panel(plan_text, title="[bold magenta]Transfer Plan[/bold magenta]", border_style="magenta", expand=False)
+        plan_panel = Panel(plan_text, title="[bold magenta]Transfer Plan[/bold magenta]", border_style="magenta", expand=False, safe_box=True)
 
         layout = Group(
             plan_panel,
-            Panel(Group(torrent_progress, analysis_progress), title="Overall Queue", border_style="blue"),
-            Panel(overall_progress, title="Total Progress", border_style="green"),
-            Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2))
+            Panel(Group(torrent_progress, analysis_progress), title="Overall Queue", border_style="blue", safe_box=True),
+            Panel(overall_progress, title="Total Progress", border_style="green", safe_box=True),
+            Panel(job_progress, title="Active Transfers", border_style="yellow", padding=(1, 2), safe_box=True)
         )
 
         with Live(layout, refresh_per_second=4, transient=True) as live:
