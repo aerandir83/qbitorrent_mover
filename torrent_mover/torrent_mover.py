@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # Torrent Mover
 #
-# A script to automatically move completed torrents from a source qBittorrent client
-# to a destination client and transfer the files via SFTP.
+# A script to automatically move completed torrents between torrent clients
+# and transfer the files via SFTP.
 
 __version__ = "1.2.1"
 
@@ -10,7 +10,7 @@ import configparser
 import sys
 import logging
 from pathlib import Path
-import qbittorrentapi
+from torrent_mover.clients import get_client
 import paramiko
 import json
 from urllib.parse import urlparse
@@ -83,31 +83,6 @@ def load_config(config_path="config.ini"):
     return config
 
 # --- Connection Functions ---
-
-@retry(tries=2, delay=5)
-def connect_qbit(config_section, client_name):
-    """
-    Connects to a qBittorrent client using details from a config section.
-    Returns a connected client object or raises an exception on failure.
-    """
-    host = config_section['host']
-    port = config_section.getint('port')
-    username = config_section['username']
-    password = config_section['password']
-    verify_cert = config_section.getboolean('verify_cert', fallback=True)
-
-    logging.info(f"Connecting to {client_name} qBittorrent at {host}...")
-    client = qbittorrentapi.Client(
-        host=host,
-        port=port,
-        username=username,
-        password=password,
-        VERIFY_WEBUI_CERTIFICATE=verify_cert,
-        REQUESTS_ARGS={'timeout': 10} # Add a timeout to the underlying requests
-    )
-    client.auth_log_in()
-    logging.info(f"Successfully connected to {client_name}. Version: {client.app.version}")
-    return client
 
 @retry(tries=2, delay=5)
 def connect_sftp(config_section):
@@ -618,13 +593,13 @@ def get_eligible_torrents(client, category, size_threshold_gb=None):
     """
     try:
         if size_threshold_gb is None:
-            torrents = client.torrents_info(category=category, status_filter='completed')
+            torrents = client.get_torrents(category=category, status_filter='completed')
             logging.info(f"Found {len(torrents)} completed torrent(s) in category '{category}' to move.")
             return torrents
 
         # --- Threshold logic ---
         logging.info(f"Size threshold of {size_threshold_gb} GB is active for category '{category}'.")
-        all_torrents_in_category = client.torrents_info(category=category)
+        all_torrents_in_category = client.get_torrents(category=category)
 
         current_total_size = sum(t.size for t in all_torrents_in_category)
         threshold_bytes = size_threshold_gb * (1024**3)
@@ -638,8 +613,8 @@ def get_eligible_torrents(client, category, size_threshold_gb=None):
         size_to_move = current_total_size - threshold_bytes
         logging.info(f"Need to move at least {size_to_move / (1024**3):.2f} GB of torrents.")
 
-        # Filter for completed torrents and sort them by age (oldest first)
-        completed_torrents = [t for t in all_torrents_in_category if t.state == 'completed' or (t.progress == 1 and t.state not in ['checkingUP', 'checkingDL'])]
+        # Filter for completed torrents (progress is 1.0) and sort them by age (oldest first).
+        completed_torrents = [t for t in all_torrents_in_category if t.progress == 1]
 
         # Ensure we are using a reliable 'added_on' attribute.
         # Some clients might have torrents without this attribute, though it's rare.
@@ -676,7 +651,7 @@ def wait_for_recheck_completion(client, torrent_hash, timeout_seconds=900, dry_r
     logging.info(f"Waiting for recheck to complete for torrent {torrent_hash[:10]}...")
     while time.time() - start_time < timeout_seconds:
         try:
-            torrent_info = client.torrents_info(torrent_hashes=torrent_hash)
+            torrent_info = client.get_torrents(torrent_hashes=torrent_hash)
             if not torrent_info:
                 logging.warning(f"Torrent {torrent_hash[:10]} disappeared while waiting for recheck.")
                 return False
@@ -731,7 +706,7 @@ def get_tracker_domain(tracker_url):
 
 def get_category_from_rules(torrent, rules, client):
     try:
-        trackers = client.torrents_trackers(torrent_hash=torrent.hash)
+        trackers = client.get_trackers(torrent_hash=torrent.hash)
         for tracker in trackers:
             domain = get_tracker_domain(tracker.get('url'))
             if domain and domain in rules:
@@ -742,7 +717,7 @@ def get_category_from_rules(torrent, rules, client):
 
 def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=False):
     try:
-        torrent_info = client.torrents_info(torrent_hashes=torrent_hash)
+        torrent_info = client.get_torrents(torrent_hashes=torrent_hash)
         if not torrent_info:
             logging.warning(f"Could not find torrent {torrent_hash[:10]} on destination to categorize.")
             return
@@ -757,15 +732,13 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
                 return
             logging.info(f"Rule found. Setting category to '{category}' for '{torrent.name}'.")
             if not dry_run:
-                client.torrents_set_category(torrent_hashes=torrent.hash, category=category)
+                client.set_category(torrent_hashes=torrent.hash, category=category)
             else:
                 logging.info(f"[DRY RUN] Would set category of '{torrent.name}' to '{category}'.")
         else:
             logging.info(f"No matching tracker rule found for torrent '{torrent.name}'.")
-    except qbittorrentapi.exceptions.NotFound404Error:
-        logging.warning(f"Torrent {torrent_hash[:10]} not found on destination when trying to categorize.")
     except Exception as e:
-        logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
+        logging.warning(f"Torrent {torrent_hash[:10]} may not be on destination; categorization check failed: {e}")
 
 
 def analyze_torrent(torrent, sftp_config, transfer_mode, live_console):
@@ -800,7 +773,7 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, live_console):
     return torrent, total_size
 
 
-def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
+def transfer_torrent(torrent, total_size, source_client, destination_client, sftp_config, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
@@ -854,39 +827,43 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, sftp_co
         destination_save_path = remote_dest_base_path.replace("\\", "/")
 
         if not dry_run:
-            logging.info(f"Exporting .torrent file for {name}")
-            torrent_file_content = source_qbit.torrents_export(torrent_hash=hash)
+            try:
+                logging.info(f"Exporting .torrent for {name}")
+                torrent_data = source_client.export_torrent(hash)
+            except NotImplementedError:
+                logging.warning(f"Source client does not support exporting .torrent file for '{name}'. Falling back to magnet URI.")
+                torrent_data = source_client.get_magnet_uri(hash)
+
             logging.info(f"Adding torrent to Destination (paused) with save path '{destination_save_path}': {name}")
-            destination_qbit.torrents_add(
-                torrent_files=torrent_file_content,
+            destination_client.add_torrent(
+                torrent_data,
                 save_path=destination_save_path,
                 is_paused=True,
-                category=torrent.category,
-                use_auto_torrent_management=True
+                category=torrent.category
             )
             time.sleep(5)
         else:
-            logging.info(f"[DRY RUN] Would export and add torrent to Destination (paused) with save path '{destination_save_path}': {name}")
+            logging.info(f"[DRY RUN] Would export/get magnet and add torrent to Destination (paused) with save path '{destination_save_path}': {name}")
 
         if not dry_run:
             logging.info(f"Triggering force recheck on Destination for: {name}")
-            destination_qbit.torrents_recheck(torrent_hashes=hash)
+            destination_client.recheck_torrent(torrent_hashes=hash)
         else:
             logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
 
-        if wait_for_recheck_completion(destination_qbit, hash, dry_run=dry_run):
+        if wait_for_recheck_completion(destination_client, hash, dry_run=dry_run):
             if not dry_run:
                 logging.info(f"Starting torrent on Destination: {name}")
-                destination_qbit.torrents_resume(torrent_hashes=hash)
+                destination_client.resume_torrent(torrent_hashes=hash)
             else:
                 logging.info(f"[DRY RUN] Would start torrent on Destination: {name}")
 
             logging.info(f"Attempting to categorize torrent on Destination: {name}")
-            set_category_based_on_tracker(destination_qbit, hash, tracker_rules, dry_run=dry_run)
+            set_category_based_on_tracker(destination_client, hash, tracker_rules, dry_run=dry_run)
 
             if not dry_run and not test_run:
                 logging.info(f"Pausing torrent on Source before deletion: {name}")
-                source_qbit.torrents_pause(torrent_hashes=hash)
+                source_client.pause_torrent(torrent_hashes=hash)
                 source_paused = True
             else:
                 logging.info(f"[DRY RUN/TEST RUN] Would pause torrent on Source: {name}")
@@ -895,7 +872,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, sftp_co
                 logging.info(f"[TEST RUN] Skipping deletion of torrent from Source: {name}")
             elif not dry_run:
                 logging.info(f"Deleting torrent and data from Source: {name}")
-                source_qbit.torrents_delete(torrent_hashes=hash, delete_files=True)
+                source_client.delete_torrent(torrent_hashes=hash, delete_files=True)
             else:
                 logging.info(f"[DRY RUN] Would delete torrent and data from Source: {name}")
 
@@ -911,7 +888,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, sftp_co
             job_progress.update(parent_task_id, description=f"[bold red]Failed: {name}[/]")
         if not dry_run and source_paused:
             try:
-                source_qbit.torrents_resume(torrent_hashes=hash)
+                source_client.resume_torrent(torrent_hashes=hash)
             except Exception as resume_e:
                 logging.error(f"Failed to resume torrent {name} on Source after error: {resume_e}")
         return False
@@ -937,16 +914,16 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan, 
     try:
         if not category_to_scan:
             logging.info("No category specified. Scanning for 'uncategorized' torrents.")
-            torrents_to_check = client.torrents_info(filter='uncategorized', sort='name')
+            torrents_to_check = client.get_torrents(filter='uncategorized', sort='name')
         else:
             logging.info(f"Scanning for torrents in category: '{category_to_scan}'")
-            torrents_to_check = client.torrents_info(category=category_to_scan, sort='name')
+            torrents_to_check = client.get_torrents(category=category_to_scan, sort='name')
 
         if not torrents_to_check:
             logging.info(f"No torrents found in '{category_to_scan or 'uncategorized'}' that need categorization.")
             return
 
-        available_categories = sorted(list(client.torrent_categories.categories.keys()))
+        available_categories = sorted(client.get_categories())
         if not available_categories:
             logging.error("No categories found on the destination client. Cannot perform categorization.")
             return
@@ -966,7 +943,7 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan, 
                 elif torrent.category != auto_category:
                     logging.info(f"Rule found for '{torrent.name}'. Setting category to '{auto_category}'.")
                     try:
-                        client.torrents_set_category(torrent_hashes=torrent.hash, category=auto_category)
+                        client.set_category(torrent_hashes=torrent.hash, category=auto_category)
                     except Exception as e:
                         logging.error(f"Failed to set category for '{torrent.name}': {e}", exc_info=True)
                 # If rule applied or torrent already in correct category, skip manual interaction
@@ -980,7 +957,7 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan, 
             print("-" * 60)
             print(f"Torrent needs categorization: [bold]{torrent.name}[/bold]")
             print(f"   Current Category: {torrent.category or 'None'}")
-            trackers = client.torrents_trackers(torrent_hash=torrent.hash)
+            trackers = client.get_trackers(torrent_hash=torrent.hash)
             torrent_domains = sorted(list(set(d for d in [get_tracker_domain(t.get('url')) for t in trackers] if d)))
             print(f"   Tracker Domains: {', '.join(torrent_domains) if torrent_domains else 'None found'}")
             print("\nPlease choose an action:")
@@ -1012,7 +989,7 @@ def run_interactive_categorization(client, rules, script_dir, category_to_scan, 
                     if 0 <= choice_idx < len(available_categories):
                         chosen_category = available_categories[choice_idx]
                         print(f"Setting category to '{chosen_category}'.")
-                        client.torrents_set_category(torrent_hashes=torrent.hash, category=chosen_category)
+                        client.set_category(torrent_hashes=torrent.hash, category=chosen_category)
                         if torrent_domains:
                             while True:
                                 learn = input("Create a rule for this choice? (y/n): ").lower()
@@ -1137,7 +1114,7 @@ def main():
             lock_file_path.unlink()
 
     default_config_path = script_dir / 'config.ini'
-    parser = argparse.ArgumentParser(description="A script to move qBittorrent torrents and data between servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(description="A script to move torrents and data between clients.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--config', default=str(default_config_path), help='Path to the configuration file.')
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
@@ -1196,8 +1173,11 @@ def main():
 
         if args.interactive_categorize:
             try:
-                dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
-                destination_qbit = connect_qbit(config[dest_client_section], "Destination")
+                dest_client_section_name = config['SETTINGS']['destination_client_section']
+                dest_client_type = config[dest_client_section_name]['type']
+                destination_client = get_client(dest_client_type, config[dest_client_section_name])
+                destination_client.connect()
+                logging.info(f"Successfully connected to Destination {dest_client_type.capitalize()}. Version: {destination_client.get_app_version()}")
                 # Determine the category to scan
                 if args.category:
                     cat_to_scan = args.category
@@ -1210,7 +1190,7 @@ def main():
                         logging.warning("No category specified via --category or in config. Defaulting to 'uncategorized'.")
                         cat_to_scan = '' # Empty string scans for uncategorized
 
-                run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
+                run_interactive_categorization(destination_client, tracker_rules, script_dir, cat_to_scan, args.no_rules)
             except Exception as e:
                 logging.error(f"Failed to run interactive categorization: {e}", exc_info=True)
             return 0
@@ -1230,17 +1210,27 @@ def main():
             source_section_name = config['SETTINGS']['source_client_section']
             dest_section_name = config['SETTINGS']['destination_client_section']
 
-            source_qbit = connect_qbit(config[source_section_name], "Source")
-            destination_qbit = connect_qbit(config[dest_section_name], "Destination")
+            source_client_type = config[source_section_name]['type']
+            dest_client_type = config[dest_section_name]['type']
+
+            logging.info(f"Connecting to Source client ({source_client_type.capitalize()})...")
+            source_client = get_client(source_client_type, config[source_section_name])
+            source_client.connect()
+            logging.info(f"Successfully connected to Source. Version: {source_client.get_app_version()}")
+
+            logging.info(f"Connecting to Destination client ({dest_client_type.capitalize()})...")
+            destination_client = get_client(dest_client_type, config[dest_section_name])
+            destination_client.connect()
+            logging.info(f"Successfully connected to Destination. Version: {destination_client.get_app_version()}")
+
         except KeyError as e:
-            logging.error(f"Configuration Error: The client section '{e}' is defined in your [SETTINGS] but not found in the config file.")
-            logging.error("Please ensure 'source_client_section' and 'destination_client_section' in [SETTINGS] match the actual section names (e.g., [SOURCE_CLIENT]).")
+            logging.error(f"Configuration Error: The key '{e}' is missing. Please check your config.ini.")
             return 1
         except Exception as e:
-            logging.error(f"Failed to connect to qBittorrent client after multiple retries: {e}", exc_info=True)
-            logging.error("One or more qBittorrent connections failed. Aborting.")
+            logging.error(f"Failed to connect to a torrent client after multiple retries: {e}", exc_info=True)
+            logging.error("One or more client connections failed. Aborting.")
             return 1
-        logging.info("qBittorrent connections established successfully.")
+        logging.info("Torrent client connections established successfully.")
 
         tracker_rules = load_tracker_rules(script_dir) # Load rules for the main run
 
@@ -1254,7 +1244,7 @@ def main():
                 logging.error(f"Invalid value for 'size_threshold_gb': '{size_threshold_gb_str}'. It must be a number. Disabling threshold.")
                 size_threshold_gb = None
 
-        eligible_torrents = get_eligible_torrents(source_qbit, category_to_move, size_threshold_gb)
+        eligible_torrents = get_eligible_torrents(source_client, category_to_move, size_threshold_gb)
         if not eligible_torrents:
             logging.info("No torrents to move at this time.")
             return 0
@@ -1334,7 +1324,7 @@ def main():
 
                                 transfer_future = transfer_executor.submit(
                                     transfer_torrent, analyzed_torrent, total_size,
-                                    source_qbit, destination_qbit, sftp_config, config, tracker_rules,
+                                    source_client, destination_client, sftp_config, config, tracker_rules,
                                     job_progress, overall_progress, overall_task,
                                     file_counts, count_lock, task_add_lock,
                                     args.dry_run, args.test_run
