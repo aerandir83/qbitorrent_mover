@@ -93,8 +93,11 @@ def update_config(config_path, template_path):
 
     # --- Backup and Update existing config ---
     try:
-        # Create a backup
-        backup_path = config_file.with_suffix(f'.bak_{time.strftime("%Y%m%d-%H%M%S")}')
+        # Create a backup in a 'backup' sub-folder
+        backup_dir = config_file.parent / 'backup'
+        backup_dir.mkdir(exist_ok=True)
+        backup_filename = f"{config_file.stem}.bak_{time.strftime('%Y%m%d-%H%M%S')}"
+        backup_path = backup_dir / backup_filename
         shutil.copy2(config_file, backup_path)
         logging.info(f"Backed up existing configuration to '{backup_path}'")
 
