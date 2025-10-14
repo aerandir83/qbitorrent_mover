@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 import configparser
 import sys
@@ -91,16 +91,8 @@ def update_config(config_path, template_path):
             sys.exit(1)
         return
 
-    # --- Backup and Update existing config ---
+    # --- Update existing config ---
     try:
-        # Create a backup in a 'backup' sub-folder
-        backup_dir = config_file.parent / 'backup'
-        backup_dir.mkdir(exist_ok=True)
-        backup_filename = f"{config_file.stem}.bak_{time.strftime('%Y%m%d-%H%M%S')}"
-        backup_path = backup_dir / backup_filename
-        shutil.copy2(config_file, backup_path)
-        logging.info(f"Backed up existing configuration to '{backup_path}'")
-
         # Use ConfigUpdater to preserve comments for both reading and writing
         updater = configupdater.ConfigUpdater()
         updater.read(config_file, encoding='utf-8')
@@ -137,6 +129,13 @@ def update_config(config_path, template_path):
                         logging.info(f"Added new option in [{section_name}]: {key}")
 
         if changes_made:
+            # Create a backup in a 'backup' sub-folder
+            backup_dir = config_file.parent / 'backup'
+            backup_dir.mkdir(exist_ok=True)
+            backup_filename = f"{config_file.stem}.bak_{time.strftime('%Y%m%d-%H%M%S')}"
+            backup_path = backup_dir / backup_filename
+            shutil.copy2(config_file, backup_path)
+            logging.info(f"Backed up existing configuration to '{backup_path}'")
             updater.write_to_file(config_file, encoding='utf-8')
             logging.info("Configuration file has been updated with new options.")
         else:
