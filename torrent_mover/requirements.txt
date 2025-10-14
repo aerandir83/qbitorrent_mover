@@ -1,4 +1,5 @@
 argcomplete
+deluge-web-client
 paramiko
 qbittorrent-api
 rich

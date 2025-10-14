@@ -10,22 +10,33 @@
 #
 
 [SOURCE_CLIENT]
-# Connection details for the SOURCE qBittorrent client (e.g., your seedbox).
+# Connection details for the SOURCE client (e.g., your seedbox).
+# type can be 'qbittorrent' or 'deluge'.
+type = qbittorrent
 host = https://source-qbittorrent.example.com
 port = 443
 username = your_username
 password = your_password
-# Set to false if you use a self-signed certificate and understand the risks.
+# (qBittorrent only) Set to false if you use a self-signed certificate.
 verify_cert = True
 
 [DESTINATION_CLIENT]
-# Connection details for the DESTINATION qBittorrent client (e.g., your home server).
+# Connection details for the DESTINATION client (e.g., your home server).
+type = qbittorrent
 host = https://destination-qbittorrent.example.com
 port = 443
 username = your_username
 password = your_password
-# Set to false if you use a self-signed certificate and understand the risks.
+# (qBittorrent only) Set to false if you use a self-signed certificate.
 verify_cert = True
+
+[DESTINATION_DELUGE]
+# Example configuration for a Deluge client.
+# Deluge WebUI port is typically 8112 for HTTP.
+type = deluge
+host = http://destination-deluge.example.com
+port = 8112
+password = your_deluge_web_password
 
 [SOURCE_SERVER]
 # Connection details for the SOURCE server where the files are stored.
