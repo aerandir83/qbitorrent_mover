@@ -3,3 +3,4 @@ paramiko
 qbittorrent-api
 rich
 tqdm
+configupdater
