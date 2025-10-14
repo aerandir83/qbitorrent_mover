@@ -24,6 +24,7 @@ import errno
 from utils import retry
 import tempfile
 import getpass
+import configupdater
 
 
 SSH_CONTROL_PATH = None
@@ -65,6 +66,85 @@ def _get_ssh_command(port):
         multiplex_opts = f"-o ControlMaster=auto -o ControlPath={SSH_CONTROL_PATH} -o ControlPersist=60s"
         return f"{base_ssh_cmd} {multiplex_opts}"
     return base_ssh_cmd
+
+
+def update_config(config_path, template_path):
+    """
+    Updates the config.ini from the template, preserving existing values and comments.
+    Also creates a backup of the original config file.
+    """
+    config_file = Path(config_path)
+    template_file = Path(template_path)
+
+    if not template_file.is_file():
+        logging.error(f"FATAL: Config template '{template_path}' not found.")
+        sys.exit(1)
+
+    # If config.ini doesn't exist, create it from the template
+    if not config_file.is_file():
+        logging.warning(f"Configuration file not found at '{config_path}'.")
+        logging.warning("Creating a new one from the template. Please review and fill it out.")
+        try:
+            shutil.copy2(template_file, config_file)
+        except OSError as e:
+            logging.error(f"FATAL: Could not create config file: {e}")
+            sys.exit(1)
+        return
+
+    # --- Backup and Update existing config ---
+    try:
+        # Create a backup in a 'backup' sub-folder
+        backup_dir = config_file.parent / 'backup'
+        backup_dir.mkdir(exist_ok=True)
+        backup_filename = f"{config_file.stem}.bak_{time.strftime('%Y%m%d-%H%M%S')}"
+        backup_path = backup_dir / backup_filename
+        shutil.copy2(config_file, backup_path)
+        logging.info(f"Backed up existing configuration to '{backup_path}'")
+
+        # Use ConfigUpdater to preserve comments for both reading and writing
+        updater = configupdater.ConfigUpdater()
+        updater.read(config_file, encoding='utf-8')
+
+        template_updater = configupdater.ConfigUpdater()
+        template_updater.read(template_file, encoding='utf-8')
+
+        changes_made = False
+        # Iterate over template sections and options
+        for section_name in template_updater.sections():
+            template_section = template_updater[section_name]
+            if not updater.has_section(section_name):
+                # Add the new section with comments
+                user_section = updater.add_section(section_name)
+                for key, opt in template_section.items():
+                    user_opt = user_section.set(key, opt.value)
+                    if opt.comments.above:
+                        user_opt.add_comment('\n'.join(opt.comments.above), above=True)
+                    if opt.comments.inline:
+                        user_opt.add_comment(opt.comments.inline, inline=True)
+                changes_made = True
+                logging.info(f"Added new section to config: [{section_name}]")
+            else:
+                # Section exists, check for new options
+                user_section = updater[section_name]
+                for key, opt in template_section.items():
+                    if not user_section.has_option(key):
+                        user_opt = user_section.set(key, opt.value)
+                        if opt.comments.above:
+                            user_opt.add_comment('\n'.join(opt.comments.above), above=True)
+                        if opt.comments.inline:
+                            user_opt.add_comment(opt.comments.inline, inline=True)
+                        changes_made = True
+                        logging.info(f"Added new option in [{section_name}]: {key}")
+
+        if changes_made:
+            updater.write_to_file(config_file, encoding='utf-8')
+            logging.info("Configuration file has been updated with new options.")
+        else:
+            logging.info("Configuration file is already up-to-date.")
+
+    except Exception as e:
+        logging.error(f"FATAL: An error occurred during config update: {e}", exc_info=True)
+        sys.exit(1)
 
 
 def load_config(config_path="config.ini"):
@@ -1155,6 +1235,10 @@ def main():
     args = parser.parse_args()
 
     setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
+
+    # Check for config updates before loading it
+    config_template_path = script_dir / 'config.ini.template'
+    update_config(args.config, str(config_template_path))
 
     # --- Early exit argument handling ---
     if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize:
