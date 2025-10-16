@@ -129,12 +129,10 @@ def update_config(config_path, template_path):
                 user_section = updater[section_name]
                 for key, opt in template_section.items():
                     if not user_section.has_option(key):
-                        # Add the new option with its value and comments
-                        new_opt = user_section.set(key, opt.value)
-                        if opt.comments.above:
-                            new_opt.add_comment('\n'.join(opt.comments.above), above=True)
-                        if opt.comments.inline:
-                            new_opt.add_comment(opt.comments.inline, inline=True)
+                        # Add the new option with its value.
+                        # The comment-copying logic is removed to prevent a crash,
+                        # likely caused by a change in the configupdater library.
+                        user_section.set(key, opt.value)
                         changes_made = True
                         logging.info(f"Added new option in [{section_name}]: {key}")
 
