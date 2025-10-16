@@ -120,12 +120,14 @@ def update_config(config_path, template_path):
         for section_name in template_updater.sections():
             template_section = template_updater[section_name]
             if not updater.has_section(section_name):
-                # Add the new section if it doesn't exist
-                user_section = updater.add_section(section_name)
+                # Add the new section if it doesn't exist.
+                # Do not assign the return value as it may be None.
+                updater.add_section(section_name)
                 changes_made = True
                 logging.info(f"Added new section to config: [{section_name}]")
-            else:
-                user_section = updater[section_name]
+
+            # Always get the section object from the updater after ensuring it exists.
+            user_section = updater[section_name]
 
             # Now, check for and add new options within that section
             for key, opt in template_section.items():
