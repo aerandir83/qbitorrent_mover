@@ -520,6 +520,47 @@ def transfer_torrent(torrent: Torrent, total_size: int, remote_content_path: str
                 original_description = job_progress.tasks[parent_task_id].description
                 job_progress.update(parent_task_id, description=f"[green]✓[/green] {original_description}")
 
+
+def setup_logging(script_dir, dry_run, test_run, debug):
+    """Configures logging to both console and a file."""
+    log_dir = script_dir / 'logs'
+    log_dir.mkdir(exist_ok=True)
+
+    timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+    log_file_name = f"torrent_mover_{timestamp}.log"
+    log_file_path = log_dir / log_file_name
+
+    # Get the root logger
+    logger = logging.getLogger()
+    log_level = logging.DEBUG if debug else logging.INFO
+    logger.setLevel(log_level)
+
+    # Remove any existing handlers to avoid duplicates
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    # Create file handler
+    file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
+
+    # Create console handler with Rich
+    rich_handler = RichHandler(show_path=False, rich_tracebacks=True, markup=True)
+    rich_formatter = logging.Formatter('%(message)s')
+    rich_handler.setFormatter(rich_formatter)
+    logger.addHandler(rich_handler)
+
+    logging.getLogger("paramiko").setLevel(logging.WARNING)
+
+    # Initial log messages
+    logging.info("--- Torrent Mover script started ---")
+    if dry_run:
+        logging.warning("!!! DRY RUN MODE ENABLED. NO CHANGES WILL BE MADE. !!!")
+    if test_run:
+        logging.warning("!!! TEST RUN MODE ENABLED. SOURCE TORRENTS WILL NOT BE DELETED. !!!")
+
+
 def pid_exists(pid):
     """Check whether a process with the given PID exists."""
     if pid <= 0: return False
