@@ -15,10 +15,10 @@ class DelugeClient(TorrentClient):
     @retry(tries=2, delay=5)
     def connect(self) -> None:
         """Connects to the Deluge daemon."""
-        host = self.config.get('host')
-        port = int(self.config.get('port'))
-        username = self.config.get('username')
-        password = self.config.get('password')
+        host = self.config.get('host').value
+        port = int(self.config.get('port').value)
+        username = self.config.get('username').value
+        password = self.config.get('password').value
 
         logging.info(f"Connecting to Deluge at {host}:{port}...")
         self.client = DelugeRPCClient(host, port, username, password, decode_utf8=True)

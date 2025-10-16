@@ -7,9 +7,10 @@ def get_client(config_section: Dict[str, str]) -> TorrentClient:
     """
     Factory function to get a torrent client instance based on the config.
     """
-    client_type = config_section.get('type')
-    if not client_type:
+    client_type_opt = config_section.get('type')
+    if not client_type_opt or not client_type_opt.value:
         raise ValueError("Client 'type' not specified in the configuration section.")
+    client_type = client_type_opt.value
 
     logging.info(f"Creating client of type: {client_type}")
 

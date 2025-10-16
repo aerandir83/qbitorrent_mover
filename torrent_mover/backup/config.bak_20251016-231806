@@ -1,0 +1,29 @@
+[SETTINGS]
+source = MySeedbox
+destination = HomeServer
+category_to_move = move-me
+transfer_mode = sftp
+
+[MySeedbox]
+type = qbittorrent
+host = https://source-client.example.com
+port = 443
+username = user
+password = pass
+verify_cert = True
+remote_host = source-server.example.com
+remote_port = 22
+remote_user = user
+remote_password = pass
+source_client_path = /downloads
+source_transfer_path = /mnt/storage/downloads
+
+[HomeServer]
+type = qbittorrent
+host = https://destination-client.example.com
+port = 443
+username = user
+password = pass
+verify_cert = True
+destination_transfer_path = /path/to/your/downloads
+destination_client_path = /downloads

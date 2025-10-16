@@ -15,11 +15,12 @@ class QBittorrentClient(TorrentClient):
     @retry(tries=2, delay=5)
     def connect(self) -> None:
         """Connects to the qBittorrent client."""
-        host = self.config.get('host')
-        port = self.config.get('port')
-        username = self.config.get('username')
-        password = self.config.get('password')
-        verify_cert = self.config.getboolean('verify_cert', fallback=True)
+        host = self.config.get('host').value
+        port = self.config.get('port').value
+        username = self.config.get('username').value
+        password = self.config.get('password').value
+        verify_cert_opt = self.config.get('verify_cert')
+        verify_cert = verify_cert_opt.value.lower() == 'true' if verify_cert_opt and verify_cert_opt.value else True
 
         logging.info(f"Connecting to qBittorrent at {host}...")
         self.client = qbittorrentapi.Client(

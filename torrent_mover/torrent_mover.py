@@ -171,10 +171,10 @@ def get_remote_size_rsync(sftp_config, remote_path):
     """
     Gets the total size of a remote file or directory using rsync --stats.
     """
-    host = sftp_config['remote_host']
-    port = sftp_config.getint('remote_port')
-    username = sftp_config['remote_user']
-    password = sftp_config['remote_password']
+    host = sftp_config.get('remote_host').value
+    port = int(sftp_config.get('remote_port').value)
+    username = sftp_config.get('remote_user').value
+    password = sftp_config.get('remote_password').value
 
     remote_spec = f"{username}@{host}:{remote_path}"
 
@@ -215,10 +215,10 @@ def get_remote_size_rsync(sftp_config, remote_path):
 
 def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
     """Transfers a remote file or directory to a local path using rsync."""
-    host = sftp_config['remote_host']
-    port = sftp_config.getint('remote_port')
-    username = sftp_config['remote_user']
-    password = sftp_config['remote_password']
+    host = sftp_config.get('remote_host').value
+    port = int(sftp_config.get('remote_port').value)
+    username = sftp_config.get('remote_user').value
+    password = sftp_config.get('remote_password').value
 
     local_parent_dir = os.path.dirname(local_path)
     Path(local_parent_dir).mkdir(parents=True, exist_ok=True)
@@ -391,8 +391,10 @@ def analyze_torrent(torrent: Torrent, source_config, live_console):
     logging.info(f"Analyzing torrent: {name}")
 
     # Apply source path mapping to get the real path for the transfer tool
-    client_path_prefix = source_config.get('source_client_path', '').rstrip('/')
-    transfer_path_prefix = source_config.get('source_transfer_path', '').rstrip('/')
+    client_path_opt = source_config.get('source_client_path')
+    transfer_path_opt = source_config.get('source_transfer_path')
+    client_path_prefix = client_path_opt.value.rstrip('/') if client_path_opt and client_path_opt.value else ''
+    transfer_path_prefix = transfer_path_opt.value.rstrip('/') if transfer_path_opt and transfer_path_opt.value else ''
 
     if client_path_prefix and transfer_path_prefix:
         if torrent.content_path.startswith(client_path_prefix):
@@ -425,11 +427,13 @@ def transfer_torrent(torrent: Torrent, total_size: int, remote_content_path: str
     success = False
     try:
         # --- Determine Destination Paths ---
-        dest_transfer_base_path = dest_config.get('destination_transfer_path')
-        if not dest_transfer_base_path:
+        dest_transfer_opt = dest_config.get('destination_transfer_path')
+        if not dest_transfer_opt or not dest_transfer_opt.value:
             raise ValueError("`destination_transfer_path` is not defined in the destination config.")
+        dest_transfer_base_path = dest_transfer_opt.value
 
-        dest_client_base_path = dest_config.get('destination_client_path') or dest_transfer_base_path
+        dest_client_opt = dest_config.get('destination_client_path')
+        dest_client_base_path = dest_client_opt.value if dest_client_opt and dest_client_opt.value else dest_transfer_base_path
 
         content_name = os.path.basename(remote_content_path)
         local_dest_path = os.path.join(dest_transfer_base_path, content_name)
@@ -606,12 +610,44 @@ def main():
         with open(lock_file_path, 'w') as f: f.write(str(os.getpid()))
 
         config = load_config(args.config)
-        if config['SETTINGS'].get('transfer_mode', 'rsync').lower() == 'rsync':
+
+        # --- Robustly load settings from the config file ---
+        # This logic correctly handles the 'Option' objects returned by configupdater
+        settings = config['SETTINGS']
+
+        transfer_mode_opt = settings.get('transfer_mode')
+        transfer_mode = transfer_mode_opt.value.lower() if transfer_mode_opt and transfer_mode_opt.value else 'rsync'
+        if transfer_mode == 'rsync':
             check_sshpass_installed()
 
+        source_name_opt = settings.get('source')
+        if not source_name_opt or not source_name_opt.value:
+            logging.error("FATAL: 'source' client name not defined in [SETTINGS] section.")
+            return 1
+        source_section_name = source_name_opt.value
+
+        dest_name_opt = settings.get('destination')
+        if not dest_name_opt or not dest_name_opt.value:
+            logging.error("FATAL: 'destination' client name not defined in [SETTINGS] section.")
+            return 1
+        dest_section_name = dest_name_opt.value
+
+        category_opt = settings.get('category_to_move')
+        if not category_opt or not category_opt.value:
+            logging.error("FATAL: 'category_to_move' not defined in [SETTINGS] section.")
+            return 1
+        category_to_move = category_opt.value
+
+        size_opt = settings.get('size_threshold_gb')
+        size_threshold_gb = None
+        if size_opt and size_opt.value and size_opt.value.strip():
+            try:
+                size_threshold_gb = float(size_opt.value)
+            except (ValueError, TypeError):
+                logging.warning(f"Invalid value for 'size_threshold_gb': '{size_opt.value}'. Disabling threshold.")
+                size_threshold_gb = None
+
         try:
-            source_section_name = config['SETTINGS']['source'].value
-            dest_section_name = config['SETTINGS']['destination'].value
             source_config = config[source_section_name]
             dest_config = config[dest_section_name]
 
