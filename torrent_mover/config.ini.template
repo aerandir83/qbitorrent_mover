@@ -3,63 +3,92 @@
 #
 # INSTRUCTIONS:
 # 1. Rename this file to "config.ini".
-# 2. Fill in the details for your source and destination servers below.
-# 3. You can rename the [SOURCE_CLIENT] and [DESTINATION_CLIENT] sections,
-#    but make sure to update the names in the [SETTINGS] section to match.
-# 4. Ensure all paths are absolute paths.
+# 2. In [SETTINGS], specify which server sections to use for your source and destination.
+# 3. Create and fill out the server sections (e.g., [MySeedbox], [HomeServer]).
+#    You can name these sections whatever you like, as long as they match [SETTINGS].
+# 4. Pay close attention to the Path Mapping settings, especially if you use Docker/containers.
 #
 
-[SOURCE_CLIENT]
-# Connection details for the SOURCE qBittorrent client (e.g., your seedbox).
-host = https://source-qbittorrent.example.com
-port = 443
-username = your_username
-password = your_password
-# Set to false if you use a self-signed certificate and understand the risks.
-verify_cert = True
-
-[DESTINATION_CLIENT]
-# Connection details for the DESTINATION qBittorrent client (e.g., your home server).
-host = https://destination-qbittorrent.example.com
-port = 443
-username = your_username
-password = your_password
-# Set to false if you use a self-signed certificate and understand the risks.
-verify_cert = True
-
-[SOURCE_SERVER]
-# Connection details for the SOURCE server where the files are stored.
-# This is typically the same machine as the source qBittorrent client.
-host = source-server.example.com
-port = 22
-username = your_sftp_username
-password = your_sftp_password
-
-[DESTINATION_PATHS]
-# The absolute path on the DESTINATION server where the torrent data will be moved to.
-# This is the local path where the script will write the files.
-destination_path = /path/to/your/downloads
-# (Optional) The path that the DESTINATION qBittorrent client uses to see the data.
-# Use this if qBittorrent is running in a Docker container with different path mappings.
-# If left blank, it will default to the 'destination_path' value above.
-# Example: If your downloads are at /mnt/data/downloads on the host, but the container
-# sees this as /downloads, you would set remote_destination_path=/downloads
-remote_destination_path =
-
 [SETTINGS]
-# The names of the sections above that define your qBittorrent clients.
-# These must match the section names you use for your clients.
-source_client_section = SOURCE_CLIENT
-destination_client_section = DESTINATION_CLIENT
+# The names of the sections below that define your source and destination clients.
+source = MySeedbox
+destination = HomeServer
 
-# The category in the SOURCE qBittorrent client that marks torrents for moving.
+# The category in the SOURCE client that marks torrents for moving.
 category_to_move = move-me
+
 # (Optional) The desired total size in GB for the category after moving.
 # If set, the script will only move the oldest torrents until the category's
 # total size is at or below this threshold.
 # Leave blank to move all completed torrents in the category.
 size_threshold_gb =
+
 # The transfer mode to use. Options: sftp, rsync.
-# rsync mode is generally faster but requires 'sshpass' to be installed on the
-# system running this script.
+# rsync is generally faster but requires 'sshpass' to be installed locally.
 transfer_mode = rsync
+
+
+# --- SERVER SECTIONS ---
+# You can add as many server sections as you like and reference them in [SETTINGS].
+# Below are two examples.
+
+[MySeedbox]
+# --- Client Connection ---
+# The type of torrent client. Supported: qbittorrent, deluge
+type = qbittorrent
+host = https://source-client.example.com
+port = 443
+username = your_client_username
+password = your_client_password
+# Set to false if you use a self-signed certificate and understand the risks.
+verify_cert = True
+
+# --- Transfer Connection (for rsync/sftp from this server) ---
+# The server where the torrent files are actually stored.
+remote_host = source-server.example.com
+remote_port = 22
+remote_user = your_sftp_username
+remote_password = your_sftp_password
+
+# --- Source Path Mappings ---
+# Use these if your torrent client runs in a container and its paths do not
+# match the real paths on the filesystem that rsync/sftp needs to access.
+#
+# `client_path`: The path prefix reported by the torrent client's API.
+# `transfer_path`: The corresponding real path on the server that rsync/sftp can access.
+#
+# Example: The client reports a torrent at `/downloads/my_movie`, but the actual
+# files are at `/mnt/storage/downloads/my_movie` on the host. You would set:
+#   source_client_path = /downloads
+#   source_transfer_path = /mnt/storage/downloads
+#
+# If no mapping is needed (the paths are the same), you can leave these blank.
+source_client_path =
+source_transfer_path =
+
+
+[HomeServer]
+# --- Client Connection ---
+# The type of torrent client. Supported: qbittorrent, deluge
+type = qbittorrent
+host = https://destination-client.example.com
+port = 443
+username = your_client_username
+password = your_client_password
+verify_cert = True
+
+# --- Destination Path Mappings ---
+# This script assumes it is running on the destination server or has direct
+# access to the destination filesystem.
+
+# `transfer_path`: The absolute local path where rsync/sftp will move the files TO.
+#   This path MUST be specified.
+#   Example: /mnt/data/media
+destination_transfer_path = /path/to/your/downloads
+
+# `client_path`: The path that the DESTINATION client will be told to use for the data.
+#   Use this if the destination client is in a container and sees the data path differently.
+#   If left blank, it will default to the 'destination_transfer_path' value.
+#   Example: `destination_transfer_path` is `/mnt/data/media`, but the client
+#   container mounts this as `/media`. You would set this to `/media`.
+destination_client_path =
