@@ -118,23 +118,21 @@ def update_config(config_path, template_path):
 
         changes_made = False
         for section_name in template_updater.sections():
+            template_section = template_updater[section_name]
             if not updater.has_section(section_name):
-                updater.add_section(section_name)
-                # Copy the whole section including comments
-                updater[section_name].from_string(str(template_updater[section_name]))
+                # Add the new section if it doesn't exist
+                user_section = updater.add_section(section_name)
                 changes_made = True
                 logging.info(f"Added new section to config: [{section_name}]")
             else:
-                template_section = template_updater[section_name]
                 user_section = updater[section_name]
-                for key, opt in template_section.items():
-                    if not user_section.has_option(key):
-                        # Add the new option with its value.
-                        # The comment-copying logic is removed to prevent a crash,
-                        # likely caused by a change in the configupdater library.
-                        user_section.set(key, opt.value)
-                        changes_made = True
-                        logging.info(f"Added new option in [{section_name}]: {key}")
+
+            # Now, check for and add new options within that section
+            for key, opt in template_section.items():
+                if not user_section.has_option(key):
+                    user_section.set(key, opt.value)
+                    changes_made = True
+                    logging.info(f"Added new option in [{section_name}]: {key}")
 
         if changes_made:
             backup_dir = config_file.parent / 'backup'
