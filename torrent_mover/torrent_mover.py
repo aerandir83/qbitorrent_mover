@@ -822,7 +822,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
     raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {max_retries} attempts.")
 
 
-def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run=False):
+def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run=False):
     """
     Transfers a remote file or directory to a local path, preserving structure.
     Handles directories by downloading their files concurrently.
@@ -835,8 +835,7 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, p
         with count_lock:
             file_counts[parent_task_id] = [0, len(all_files)]
 
-        MAX_CONCURRENT_FILES = 5
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FILES) as file_executor:
+        with ThreadPoolExecutor(max_workers=max_concurrent_transfers) as file_executor:
             futures = [
                 file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map.get(remote_f), dry_run)
                 for remote_f, local_f in all_files
@@ -850,7 +849,7 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, p
         # For single-file torrents, there is no sub-task, so we pass None for file_task_id
         _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, None, dry_run)
 
-def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_path, dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run=False):
+def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_path, dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run=False):
     """
     Transfers a remote file or directory from a source SFTP to a destination SFTP server.
     """
@@ -862,8 +861,7 @@ def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sf
         with count_lock:
             file_counts[parent_task_id] = [0, len(all_files)]
 
-        MAX_CONCURRENT_FILES = 5
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FILES) as file_executor:
+        with ThreadPoolExecutor(max_workers=max_concurrent_transfers) as file_executor:
             futures = [
                 file_executor.submit(_sftp_upload_file, source_sftp_config, dest_sftp_config, source_f, dest_f, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map.get(source_f), dry_run)
                 for source_f, dest_f in all_files
@@ -1124,14 +1122,16 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                         task_id = job_progress.add_task(f"└─ [cyan]{file_name}[/]", total=file_size, start=False, visible=False)
                         file_task_map[remote_f] = task_id
 
+            max_concurrent_transfers = config['SETTINGS'].getint('max_concurrent_file_transfers', 5)
+
             if transfer_mode == 'sftp_upload':
                 logging.info(f"Starting SFTP-to-SFTP upload for '{name}'")
                 dest_sftp_config = config['DESTINATION_SERVER']
-                transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run)
+                transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run)
                 logging.info(f"SFTP-to-SFTP upload completed for '{name}'.")
             else: # Default 'sftp' download
                 logging.info(f"Starting SFTP download for '{name}'")
-                transfer_content(source_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, dry_run)
+                transfer_content(source_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run)
                 logging.info(f"SFTP download completed successfully for '{name}'.")
 
         destination_save_path = remote_dest_base_path.replace("\\", "/")
@@ -1400,38 +1400,68 @@ def pid_exists(pid):
     else:
         return True
 
-def test_path_permissions(path_to_test):
+def test_path_permissions(path_to_test, remote_config=None):
     """
     Tests write permissions for a given path by creating and deleting a temporary file.
+    If 'remote_config' is provided, it performs the test on the remote SFTP server.
+    Otherwise, it tests the local path.
     """
-    p = Path(path_to_test)
-    logging.info(f"--- Running Permission Test on: {p} ---")
+    if remote_config:
+        logging.info(f"--- Running REMOTE Permission Test on: {path_to_test} ---")
+        sftp, ssh = None, None
+        try:
+            sftp, ssh = connect_sftp(remote_config)
+            # Normalize to use forward slashes for remote paths
+            path_to_test = path_to_test.replace('\\', '/')
+            test_file_path = f"{path_to_test.rstrip('/')}/permission_test_{os.getpid()}.tmp"
 
-    if not p.exists():
-        logging.error(f"Error: The path '{p}' does not exist.")
-        logging.error("Please ensure the base directory is created and accessible.")
-        return False
-    if not p.is_dir():
-        logging.error(f"Error: The path '{p}' is not a directory.")
-        return False
+            logging.info(f"Attempting to create a remote test file: {test_file_path}")
+            with sftp.open(test_file_path, 'w') as f:
+                f.write('test')
+            logging.info("Remote test file created successfully.")
+            sftp.remove(test_file_path)
+            logging.info("Remote test file removed successfully.")
+            logging.info(f"[bold green]SUCCESS:[/] Remote write permissions are correctly configured for '{remote_config['username']}' on path '{path_to_test}'")
+            return True
+        except PermissionError:
+            logging.error(f"[bold red]FAILURE:[/] Permission denied on remote server when trying to write to '{path_to_test}'.")
+            logging.error(f"Please ensure the user '{remote_config['username']}' has write access to this path on the remote server.")
+            return False
+        except Exception as e:
+            logging.error(f"[bold red]FAILURE:[/] An unexpected error occurred during remote permission test: {e}", exc_info=True)
+            return False
+        finally:
+            if sftp: sftp.close()
+            if ssh: ssh.close()
+    else:
+        p = Path(path_to_test)
+        logging.info(f"--- Running LOCAL Permission Test on: {p} ---")
 
-    test_file_path = p / f"permission_test_{os.getpid()}.tmp"
-    try:
-        logging.info(f"Attempting to create a test file: {test_file_path}")
-        with open(test_file_path, 'w') as f:
-            f.write('test')
-        logging.info("Test file created successfully.")
-        os.remove(test_file_path)
-        logging.info("Test file removed successfully.")
-        logging.info(f"[bold green]SUCCESS:[/] Write permissions are correctly configured for {p}")
-        return True
-    except PermissionError:
-        logging.error(f"[bold red]FAILURE:[/] Permission denied when trying to write to '{p}'.")
-        logging.error(f"Please ensure the user '{getpass.getuser()}' running the script has write access to this path.")
-        return False
-    except Exception as e:
-        logging.error(f"[bold red]FAILURE:[/] An unexpected error occurred: {e}", exc_info=True)
-        return False
+        if not p.exists():
+            logging.error(f"Error: The local path '{p}' does not exist.")
+            logging.error("Please ensure the base directory is created and accessible.")
+            return False
+        if not p.is_dir():
+            logging.error(f"Error: The local path '{p}' is not a directory.")
+            return False
+
+        test_file_path = p / f"permission_test_{os.getpid()}.tmp"
+        try:
+            logging.info(f"Attempting to create a test file: {test_file_path}")
+            with open(test_file_path, 'w') as f:
+                f.write('test')
+            logging.info("Test file created successfully.")
+            os.remove(test_file_path)
+            logging.info("Test file removed successfully.")
+            logging.info(f"[bold green]SUCCESS:[/] Local write permissions are correctly configured for {p}")
+            return True
+        except PermissionError:
+            logging.error(f"[bold red]FAILURE:[/] Permission denied when trying to write to local path '{p}'.")
+            logging.error(f"Please ensure the user '{getpass.getuser()}' running the script has write access to this path.")
+            return False
+        except Exception as e:
+            logging.error(f"[bold red]FAILURE:[/] An unexpected error occurred during local permission test: {e}", exc_info=True)
+            return False
 
 def main():
     """Main entry point for the script."""
@@ -1484,11 +1514,20 @@ def main():
         logging.info("Executing utility command...")
 
         if args.test_permissions:
+            transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
             dest_path = config['DESTINATION_PATHS'].get('destination_path')
             if not dest_path:
                 logging.error("FATAL: 'destination_path' is not defined in your config file.")
                 return 1
-            test_path_permissions(dest_path)
+
+            remote_config = None
+            if transfer_mode == 'sftp_upload':
+                if 'DESTINATION_SERVER' not in config:
+                    logging.error("FATAL: 'transfer_mode' is 'sftp_upload' but [DESTINATION_SERVER] is not defined in config.")
+                    return 1
+                remote_config = config['DESTINATION_SERVER']
+
+            test_path_permissions(dest_path, remote_config=remote_config)
             return 0
 
         if args.list_rules:
