@@ -35,9 +35,19 @@ port = 22
 username = your_sftp_username
 password = your_sftp_password
 
+[DESTINATION_SERVER]
+# (Optional) Connection details for the DESTINATION server.
+# Required only if using 'sftp_upload' transfer mode.
+# If omitted, transfers will be downloaded to the machine running this script.
+host = destination-server.example.com
+port = 22
+username = your_sftp_username
+password = your_sftp_password
+
 [DESTINATION_PATHS]
-# The absolute path on the DESTINATION server where the torrent data will be moved to.
-# This is the local path where the script will write the files.
+# The absolute path where torrent data will be moved.
+# - For 'rsync' and 'sftp' modes, this is a LOCAL path on the machine running the script.
+# - For 'sftp_upload' mode, this is a REMOTE path on the DESTINATION_SERVER.
 destination_path = /path/to/your/downloads
 # (Optional) The path that the DESTINATION qBittorrent client uses to see the data.
 # Use this if qBittorrent is running in a Docker container with different path mappings.
@@ -59,7 +69,8 @@ category_to_move = move-me
 # total size is at or below this threshold.
 # Leave blank to move all completed torrents in the category.
 size_threshold_gb =
-# The transfer mode to use. Options: sftp, rsync.
-# rsync mode is generally faster but requires 'sshpass' to be installed on the
-# system running this script.
+# The transfer mode to use. Options: sftp, rsync, sftp_upload.
+# - sftp: Downloads files from the source server to this machine via SFTP.
+# - rsync: Downloads files from the source server to this machine via rsync (faster).
+# - sftp_upload: Transfers files directly from the source server to the destination server via SFTP.
 transfer_mode = rsync
