@@ -20,9 +20,5 @@ def get_client(config_section: Dict[str, str]) -> TorrentClient:
     elif client_type.lower() == 'deluge':
         from .deluge import DelugeClient
         return DelugeClient(config_section)
-    # Future clients can be added here
-    # elif client_type.lower() == 'transmission':
-    #     from .transmission import TransmissionClient
-    #     return TransmissionClient(config_section)
     else:
         raise ValueError(f"Unsupported client type: {client_type}")

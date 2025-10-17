@@ -121,7 +121,6 @@ def update_config(config_path, template_path):
             template_section = template_updater[section_name]
             if not updater.has_section(section_name):
                 # Add the new section if it doesn't exist.
-                # Do not assign the return value as it may be None.
                 updater.add_section(section_name)
                 changes_made = True
                 logging.info(f"Added new section to config: [{section_name}]")
@@ -611,43 +610,39 @@ def main():
 
         config = load_config(args.config)
 
-        # --- Robustly load settings from the config file ---
-        # This logic correctly handles the 'Option' objects returned by configupdater
-        settings = config['SETTINGS']
-
-        transfer_mode_opt = settings.get('transfer_mode')
-        transfer_mode = transfer_mode_opt.value.lower() if transfer_mode_opt and transfer_mode_opt.value else 'rsync'
-        if transfer_mode == 'rsync':
-            check_sshpass_installed()
-
-        source_name_opt = settings.get('source')
-        if not source_name_opt or not source_name_opt.value:
-            logging.error("FATAL: 'source' client name not defined in [SETTINGS] section.")
-            return 1
-        source_section_name = source_name_opt.value
-
-        dest_name_opt = settings.get('destination')
-        if not dest_name_opt or not dest_name_opt.value:
-            logging.error("FATAL: 'destination' client name not defined in [SETTINGS] section.")
-            return 1
-        dest_section_name = dest_name_opt.value
-
-        category_opt = settings.get('category_to_move')
-        if not category_opt or not category_opt.value:
-            logging.error("FATAL: 'category_to_move' not defined in [SETTINGS] section.")
-            return 1
-        category_to_move = category_opt.value
-
-        size_opt = settings.get('size_threshold_gb')
-        size_threshold_gb = None
-        if size_opt and size_opt.value and size_opt.value.strip():
-            try:
-                size_threshold_gb = float(size_opt.value)
-            except (ValueError, TypeError):
-                logging.warning(f"Invalid value for 'size_threshold_gb': '{size_opt.value}'. Disabling threshold.")
-                size_threshold_gb = None
-
+        # --- Robustly load settings and connect to clients ---
+        eligible_torrents = []
         try:
+            settings = config['SETTINGS']
+
+            transfer_mode_opt = settings.get('transfer_mode')
+            transfer_mode = transfer_mode_opt.value.lower() if transfer_mode_opt and transfer_mode_opt.value else 'rsync'
+            if transfer_mode == 'rsync':
+                check_sshpass_installed()
+
+            source_name_opt = settings.get('source')
+            if not source_name_opt or not source_name_opt.value:
+                raise ValueError("'source' client name not defined in [SETTINGS]")
+            source_section_name = source_name_opt.value
+
+            dest_name_opt = settings.get('destination')
+            if not dest_name_opt or not dest_name_opt.value:
+                raise ValueError("'destination' client name not defined in [SETTINGS]")
+            dest_section_name = dest_name_opt.value
+
+            category_opt = settings.get('category_to_move')
+            if not category_opt or not category_opt.value:
+                raise ValueError("'category_to_move' not defined in [SETTINGS]")
+            category_to_move = category_opt.value
+
+            size_opt = settings.get('size_threshold_gb')
+            size_threshold_gb = None
+            if size_opt and size_opt.value and size_opt.value.strip():
+                try:
+                    size_threshold_gb = float(size_opt.value)
+                except (ValueError, TypeError):
+                    logging.warning(f"Invalid value for 'size_threshold_gb': '{size_opt.value}'. Disabling threshold.")
+
             source_config = config[source_section_name]
             dest_config = config[dest_section_name]
 
@@ -655,15 +650,17 @@ def main():
             source_client.connect()
             dest_client = get_client(dest_config)
             dest_client.connect()
+
+            tracker_rules = load_tracker_rules(script_dir)
+            eligible_torrents = source_client.get_torrents_to_move(category_to_move, size_threshold_gb)
+
         except (KeyError, ValueError) as e:
             logging.error(f"Configuration Error: {e}", exc_info=True)
             return 1
+        except Exception as e:
+            logging.error(f"Failed during setup: {e}", exc_info=True)
+            return 1
 
-        tracker_rules = load_tracker_rules(script_dir)
-        category_to_move = config['SETTINGS']['category_to_move'].value
-        size_threshold_gb = config['SETTINGS'].getfloat('size_threshold_gb', fallback=None)
-
-        eligible_torrents = source_client.get_torrents_to_move(category_to_move, size_threshold_gb)
         if not eligible_torrents:
             logging.info("No torrents to move at this time.")
             return 0
