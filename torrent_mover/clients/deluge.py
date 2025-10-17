@@ -48,7 +48,11 @@ class DelugeClient(TorrentClient):
 
     def get_torrents_to_move(self, category: str, size_threshold_gb: Optional[float] = None) -> List[Torrent]:
         """Retrieves a list of torrents to be moved from Deluge."""
-        all_torrents = self.client.get_torrents_status()
+        response = self.client.get_torrents_status()
+        if not response.result:
+            logging.error("Failed to get torrents from Deluge: %s", response.error)
+            return []
+        all_torrents = response.result
 
         torrents_in_category = [t for t in all_torrents.values() if t.get('label') == category]
 
@@ -90,7 +94,8 @@ class DelugeClient(TorrentClient):
 
     def add_torrent(self, torrent_content: Optional[bytes], save_path: str, is_paused: bool, category: str, use_auto_tm: bool, torrent_url: Optional[str] = None) -> None:
         """Adds a torrent to Deluge via the Web UI."""
-        hashes_before = set(self.client.get_torrents_status().keys())
+        response_before = self.client.get_torrents_status()
+        hashes_before = set(response_before.result.keys()) if response_before.result else set()
 
         if torrent_url:
             self.client.add_torrent_magnet(magnet_uri=torrent_url, download_location=save_path)
@@ -101,7 +106,8 @@ class DelugeClient(TorrentClient):
 
         time.sleep(2)
 
-        hashes_after = set(self.client.get_torrents_status().keys())
+        response_after = self.client.get_torrents_status()
+        hashes_after = set(response_after.result.keys()) if response_after.result else set()
         new_hashes = hashes_after - hashes_before
 
         if not new_hashes:
@@ -137,10 +143,11 @@ class DelugeClient(TorrentClient):
 
     def get_torrent_info(self, torrent_hash: str) -> Optional[Torrent]:
         """Gets detailed information for a single torrent."""
-        all_torrents = self.client.get_torrents_status()
-        torrent_data = all_torrents.get(torrent_hash)
-        if torrent_data:
-            return self._to_torrent_dataclass(torrent_data)
+        response = self.client.get_torrents_status()
+        if response.result:
+            torrent_data = response.result.get(torrent_hash)
+            if torrent_data:
+                return self._to_torrent_dataclass(torrent_data)
         return None
 
     def export_torrent(self, torrent_hash: str) -> Optional[bytes]:
@@ -150,21 +157,24 @@ class DelugeClient(TorrentClient):
 
     def get_torrent_url(self, torrent_hash: str) -> Optional[str]:
         """Gets the magnet URI for a torrent."""
-        all_torrents = self.client.get_torrents_status()
-        torrent = all_torrents.get(torrent_hash)
-        if torrent:
-            trackers = [t['url'] for t in torrent.get('trackers', [])]
-            magnet_uri = f"magnet:?xt=urn:btih:{torrent['hash']}&dn={torrent['name']}"
-            for tracker in trackers:
-                magnet_uri += f"&tr={tracker}"
-            return magnet_uri
+        response = self.client.get_torrents_status()
+        if response.result:
+            torrent = response.result.get(torrent_hash)
+            if torrent:
+                trackers = [t['url'] for t in torrent.get('trackers', [])]
+                magnet_uri = f"magnet:?xt=urn:btih:{torrent['hash']}&dn={torrent['name']}"
+                for tracker in trackers:
+                    magnet_uri += f"&tr={tracker}"
+                return magnet_uri
         return None
 
     def get_all_categories(self) -> Dict[str, Any]:
         """Gets all available labels (categories) from Deluge."""
-        all_torrents = self.client.get_torrents_status()
-        labels = set(t.get('label') for t in all_torrents.values() if t.get('label'))
-        return {label: {} for label in labels}
+        response = self.client.get_torrents_status()
+        if response.result:
+            labels = set(t.get('label') for t in response.result.values() if t.get('label'))
+            return {label: {} for label in labels}
+        return {}
 
     def set_category(self, torrent_hash: str, category: str) -> None:
         """Sets the label (category) for a torrent."""
