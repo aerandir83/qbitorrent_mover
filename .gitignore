@@ -157,3 +157,8 @@ cython_debug/
 
 # VSCode
 .vscode/
+
+# Torrent Mover
+torrent_mover/backup/
+config.ini
+logs/
