@@ -3,9 +3,8 @@ import base64
 import os
 import time
 from typing import List, Dict, Any, Optional
-from urllib.parse import urljoin
 
-from deluge_client import DelugeRPCClient
+from deluge_web_client import DelugeWebClient
 
 from .base import TorrentClient, Torrent
 from ..utils import retry
@@ -17,24 +16,28 @@ class DelugeClient(TorrentClient):
 
     @retry(tries=2, delay=5)
     def connect(self) -> None:
-        """Connects to the Deluge daemon."""
-        host = self.config.get('host').value
-        port = int(self.config.get('port').value)
-        username = self.config.get('username').value
+        """Connects to the Deluge Web UI."""
+        base_url = self.config.get('host').value
         password = self.config.get('password').value
 
-        logging.info(f"Connecting to Deluge at {host}:{port}...")
-        self.client = DelugeRPCClient(host, port, username, password, decode_utf8=True)
+        logging.info(f"Connecting to Deluge Web UI at {base_url}...")
+        self.client = DelugeWebClient(base_url=base_url, password=password)
         self.client.connect()
-        logging.info(f"Successfully connected to Deluge.")
+        logging.info("Successfully connected to Deluge Web UI.")
 
     def _to_torrent_dataclass(self, deluge_torrent: Dict[str, Any]) -> Torrent:
         """Converts a Deluge torrent dictionary to the standardized Torrent dataclass."""
+        save_path = deluge_torrent.get('save_path', '')
+        # The Web UI API returns a combined path in 'save_path', but sometimes it's just the directory.
+        # The most reliable content path is the save_path joined with the torrent name,
+        # as rsync can handle both file and directory sources correctly.
+        content_path = os.path.join(save_path, deluge_torrent['name'])
+
         return Torrent(
             hash=deluge_torrent['hash'],
             name=deluge_torrent['name'],
             category=deluge_torrent.get('label', ''),
-            content_path=deluge_torrent['save_path'],
+            content_path=content_path,
             size=deluge_torrent['total_size'],
             added_on=int(deluge_torrent['time_added']),
             progress=deluge_torrent['progress'] / 100.0,
@@ -44,7 +47,7 @@ class DelugeClient(TorrentClient):
 
     def get_torrents_to_move(self, category: str, size_threshold_gb: Optional[float] = None) -> List[Torrent]:
         """Retrieves a list of torrents to be moved from Deluge."""
-        all_torrents = self.client.call('core.get_torrents_status', {}, ['name', 'hash', 'label', 'save_path', 'total_size', 'time_added', 'progress', 'state'])
+        all_torrents = self.client.get_torrents_status()
 
         torrents_in_category = [t for t in all_torrents.values() if t.get('label') == category]
 
@@ -85,93 +88,91 @@ class DelugeClient(TorrentClient):
         return [self._to_torrent_dataclass(t) for t in torrents_to_move]
 
     def add_torrent(self, torrent_content: Optional[bytes], save_path: str, is_paused: bool, category: str, use_auto_tm: bool, torrent_url: Optional[str] = None) -> None:
-        """Adds a torrent to Deluge."""
-        options = {'add_paused': is_paused}
-        if category:
-            options['label'] = category
+        """Adds a torrent to Deluge via the Web UI."""
+        hashes_before = set(self.client.get_torrents_status().keys())
 
         if torrent_url:
-            # The add_torrent_magnet method in the version of deluge-client I'm using doesn't seem to accept download_location
-            # It must be set after adding.
-            hashes_before = set(self.client.call('core.get_torrents_status', {}, ['hash']).keys())
-            self.client.call('core.add_torrent_magnet', torrent_url, options)
-            time.sleep(2)
-            hashes_after = set(self.client.call('core.get_torrents_status', {}, ['hash']).keys())
-            new_hashes = hashes_after - hashes_before
-            if new_hashes:
-                self.client.call('core.move_storage', list(new_hashes), save_path)
-
+            self.client.add_torrent_magnet(magnet_uri=torrent_url, download_location=save_path)
         elif torrent_content:
-            b64_content = base64.b64encode(torrent_content).decode('utf-8')
-            options['download_location'] = save_path
-            self.client.call('core.add_torrent_file', '', b64_content, options)
+            self.client.add_torrent_file(file_content=torrent_content, download_location=save_path)
         else:
             raise ValueError("Either torrent_content or torrent_url must be provided.")
 
+        time.sleep(2)
+
+        hashes_after = set(self.client.get_torrents_status().keys())
+        new_hashes = hashes_after - hashes_before
+
+        if not new_hashes:
+            logging.error("Could not identify hash of newly added torrent.")
+            return
+
+        torrent_hash = new_hashes.pop()
+        logging.info(f"Identified new torrent hash: {torrent_hash}")
+
+        options = {}
+        if is_paused:
+            self.client.pause_torrent(torrent_ids=[torrent_hash])
+        if category:
+            options['label'] = category
+        if options:
+            self.client.set_torrent_options(torrent_ids=[torrent_hash], options=options)
+
     def remove_torrent(self, torrent_hash: str, delete_files: bool) -> None:
         """Removes a torrent from Deluge."""
-        self.client.call('core.remove_torrent', torrent_hash, delete_files)
+        self.client.remove_torrent(torrent_id=torrent_hash, remove_data=delete_files)
 
     def recheck(self, torrent_hash: str) -> None:
         """Triggers a recheck for a torrent."""
-        self.client.call('core.force_recheck', [torrent_hash])
+        self.client.force_recheck(torrent_ids=[torrent_hash])
 
     def resume(self, torrent_hash: str) -> None:
         """Resumes a torrent."""
-        self.client.call('core.resume_torrent', [torrent_hash])
+        self.client.resume_torrent(torrent_ids=[torrent_hash])
 
     def pause(self, torrent_hash: str) -> None:
         """Pauses a torrent."""
-        self.client.call('core.pause_torrent', [torrent_hash])
+        self.client.pause_torrent(torrent_ids=[torrent_hash])
 
     def get_torrent_info(self, torrent_hash: str) -> Optional[Torrent]:
         """Gets detailed information for a single torrent."""
-        torrent_data = self.client.call('core.get_torrents_status', {'hash': torrent_hash}, [])
+        all_torrents = self.client.get_torrents_status()
+        torrent_data = all_torrents.get(torrent_hash)
         if torrent_data:
-            return self._to_torrent_dataclass(list(torrent_data.values())[0])
+            return self._to_torrent_dataclass(torrent_data)
         return None
 
     def export_torrent(self, torrent_hash: str) -> Optional[bytes]:
-        """Deluge RPC does not support exporting .torrent files directly."""
+        """Deluge Web UI does not support exporting .torrent files directly."""
         logging.warning("Deluge client does not support exporting .torrent files. Will rely on magnet URI.")
         return None
 
     def get_torrent_url(self, torrent_hash: str) -> Optional[str]:
         """Gets the magnet URI for a torrent."""
-        try:
-            # This is a bit of a hack, it seems deluge-client doesn't have a direct magnet URI method
-            torrents = self.client.call('core.get_torrents_status', {'hash': torrent_hash}, ['name', 'trackers'])
-            if not torrents:
-                return None
-            torrent = list(torrents.values())[0]
+        all_torrents = self.client.get_torrents_status()
+        torrent = all_torrents.get(torrent_hash)
+        if torrent:
             trackers = [t['url'] for t in torrent.get('trackers', [])]
             magnet_uri = f"magnet:?xt=urn:btih:{torrent['hash']}&dn={torrent['name']}"
             for tracker in trackers:
                 magnet_uri += f"&tr={tracker}"
             return magnet_uri
-        except Exception as e:
-            logging.error(f"Could not get magnet URI for {torrent_hash}: {e}")
-            return None
+        return None
 
     def get_all_categories(self) -> Dict[str, Any]:
         """Gets all available labels (categories) from Deluge."""
-        try:
-            labels = self.client.call('label.get_labels')
-            return {label: {} for label in labels}
-        except Exception:
-            logging.warning("Could not fetch labels from Deluge. Is the 'label' plugin enabled?")
-            return {}
+        all_torrents = self.client.get_torrents_status()
+        labels = set(t.get('label') for t in all_torrents.values() if t.get('label'))
+        return {label: {} for label in labels}
 
     def set_category(self, torrent_hash: str, category: str) -> None:
         """Sets the label (category) for a torrent."""
-        try:
-            self.client.call('label.set_torrent', torrent_hash, category)
-        except Exception:
-            logging.warning(f"Could not set label '{category}' for torrent {torrent_hash}. Is the 'label' plugin enabled?")
+        self.client.set_torrent_options(torrent_ids=[torrent_hash], options={'label': category})
 
     def get_trackers(self, torrent_hash: str) -> List[Dict[str, Any]]:
         """Gets the list of trackers for a torrent."""
-        torrent_info = self.client.call('core.get_torrent_status', {'hash': torrent_hash}, ['trackers'])
+        all_torrents = self.client.get_torrents_status()
+        torrent_info = all_torrents.get(torrent_hash)
         if torrent_info and 'trackers' in torrent_info:
-            return list(torrent_info.values())[0]['trackers']
+            return torrent_info['trackers']
         return []

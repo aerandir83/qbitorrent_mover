@@ -4,5 +4,4 @@ qbittorrent-api
 rich
 tqdm
 configupdater
-deluge-client
 deluge-web-client
