@@ -1400,6 +1400,39 @@ def pid_exists(pid):
     else:
         return True
 
+def test_path_permissions(path_to_test):
+    """
+    Tests write permissions for a given path by creating and deleting a temporary file.
+    """
+    p = Path(path_to_test)
+    logging.info(f"--- Running Permission Test on: {p} ---")
+
+    if not p.exists():
+        logging.error(f"Error: The path '{p}' does not exist.")
+        logging.error("Please ensure the base directory is created and accessible.")
+        return False
+    if not p.is_dir():
+        logging.error(f"Error: The path '{p}' is not a directory.")
+        return False
+
+    test_file_path = p / f"permission_test_{os.getpid()}.tmp"
+    try:
+        logging.info(f"Attempting to create a test file: {test_file_path}")
+        with open(test_file_path, 'w') as f:
+            f.write('test')
+        logging.info("Test file created successfully.")
+        os.remove(test_file_path)
+        logging.info("Test file removed successfully.")
+        logging.info(f"[bold green]SUCCESS:[/] Write permissions are correctly configured for {p}")
+        return True
+    except PermissionError:
+        logging.error(f"[bold red]FAILURE:[/] Permission denied when trying to write to '{p}'.")
+        logging.error(f"Please ensure the user '{getpass.getuser()}' running the script has write access to this path.")
+        return False
+    except Exception as e:
+        logging.error(f"[bold red]FAILURE:[/] An unexpected error occurred: {e}", exc_info=True)
+        return False
+
 def main():
     """Main entry point for the script."""
     script_dir = Path(__file__).resolve().parent
@@ -1433,6 +1466,7 @@ def main():
     parser.add_argument('-c', '--categorize', dest='interactive_categorize', action='store_true', help='Interactively categorize torrents on destination.')
     parser.add_argument('--category', help='(For -c mode) Specify a category to scan, overriding the config.')
     parser.add_argument('-nr', '--no-rules', action='store_true', help='(For -c mode) Ignore existing rules and show all torrents in the category.')
+    parser.add_argument('--test-permissions', action='store_true', help='Test write permissions for the configured destination_path and exit.')
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
@@ -1444,10 +1478,18 @@ def main():
     update_config(args.config, str(config_template_path))
 
     # --- Early exit argument handling ---
-    if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize:
+    if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions:
         config = load_config(args.config)
         tracker_rules = load_tracker_rules(script_dir)
         logging.info("Executing utility command...")
+
+        if args.test_permissions:
+            dest_path = config['DESTINATION_PATHS'].get('destination_path')
+            if not dest_path:
+                logging.error("FATAL: 'destination_path' is not defined in your config file.")
+                return 1
+            test_path_permissions(dest_path)
+            return 0
 
         if args.list_rules:
             if not tracker_rules:
