@@ -1,6 +1,9 @@
 import logging
 import base64
+import os
+import time
 from typing import List, Dict, Any, Optional
+from urllib.parse import urljoin
 
 from deluge_client import DelugeRPCClient
 
@@ -9,7 +12,7 @@ from ..utils import retry
 
 class DelugeClient(TorrentClient):
     """
-    A Deluge client implementation.
+    A Deluge client implementation that connects to the Deluge Web UI.
     """
 
     @retry(tries=2, delay=5)
@@ -27,28 +30,22 @@ class DelugeClient(TorrentClient):
 
     def _to_torrent_dataclass(self, deluge_torrent: Dict[str, Any]) -> Torrent:
         """Converts a Deluge torrent dictionary to the standardized Torrent dataclass."""
-        # Deluge's 'state' is more detailed, we can map it to broader categories if needed
-        # For now, using it directly.
         return Torrent(
             hash=deluge_torrent['hash'],
             name=deluge_torrent['name'],
-            # Deluge has a 'label' plugin for categories. If not installed, this might be empty.
             category=deluge_torrent.get('label', ''),
-            content_path=deluge_torrent['save_path'], # Note: This is the directory, not the content path itself
+            content_path=deluge_torrent['save_path'],
             size=deluge_torrent['total_size'],
             added_on=int(deluge_torrent['time_added']),
-            progress=deluge_torrent['progress'],
+            progress=deluge_torrent['progress'] / 100.0,
             state=deluge_torrent['state'],
             raw_torrent=deluge_torrent,
         )
 
     def get_torrents_to_move(self, category: str, size_threshold_gb: Optional[float] = None) -> List[Torrent]:
         """Retrieves a list of torrents to be moved from Deluge."""
-        # Deluge uses the 'label' plugin for categories.
-        # We fetch all torrents and filter by the label.
         all_torrents = self.client.call('core.get_torrents_status', {}, ['name', 'hash', 'label', 'save_path', 'total_size', 'time_added', 'progress', 'state'])
 
-        # Filter by category (label)
         torrents_in_category = [t for t in all_torrents.values() if t.get('label') == category]
 
         if size_threshold_gb is None:
@@ -56,7 +53,6 @@ class DelugeClient(TorrentClient):
             logging.info(f"Found {len(completed_torrents)} completed torrent(s) in category '{category}' to move.")
             return [self._to_torrent_dataclass(t) for t in completed_torrents]
 
-        # --- Threshold logic ---
         logging.info(f"Size threshold of {size_threshold_gb} GB is active for category '{category}'.")
         current_total_size = sum(t['total_size'] for t in torrents_in_category)
         threshold_bytes = size_threshold_gb * (1024**3)
@@ -90,20 +86,24 @@ class DelugeClient(TorrentClient):
 
     def add_torrent(self, torrent_content: Optional[bytes], save_path: str, is_paused: bool, category: str, use_auto_tm: bool, torrent_url: Optional[str] = None) -> None:
         """Adds a torrent to Deluge."""
-        options = {
-            'download_location': save_path,
-            'add_paused': is_paused
-        }
+        options = {'add_paused': is_paused}
         if category:
-            # Requires the 'label' plugin to be enabled in Deluge
             options['label'] = category
 
         if torrent_url:
+            # The add_torrent_magnet method in the version of deluge-client I'm using doesn't seem to accept download_location
+            # It must be set after adding.
+            hashes_before = set(self.client.call('core.get_torrents_status', {}, ['hash']).keys())
             self.client.call('core.add_torrent_magnet', torrent_url, options)
+            time.sleep(2)
+            hashes_after = set(self.client.call('core.get_torrents_status', {}, ['hash']).keys())
+            new_hashes = hashes_after - hashes_before
+            if new_hashes:
+                self.client.call('core.move_storage', list(new_hashes), save_path)
+
         elif torrent_content:
             b64_content = base64.b64encode(torrent_content).decode('utf-8')
-            # The first argument to add_torrent_file is the filename, which is not available here.
-            # We can pass an empty string, as it's primarily for display.
+            options['download_location'] = save_path
             self.client.call('core.add_torrent_file', '', b64_content, options)
         else:
             raise ValueError("Either torrent_content or torrent_url must be provided.")
@@ -138,21 +138,26 @@ class DelugeClient(TorrentClient):
 
     def get_torrent_url(self, torrent_hash: str) -> Optional[str]:
         """Gets the magnet URI for a torrent."""
-        # This requires the webui to be running to construct the magnet URI.
-        # A bit of a hack, but it's the most reliable way.
         try:
-            torrent_info = self.client.call('web.get_torrent_status', torrent_hash, ['magnet_uri'])
-            return torrent_info.get('magnet_uri')
+            # This is a bit of a hack, it seems deluge-client doesn't have a direct magnet URI method
+            torrents = self.client.call('core.get_torrents_status', {'hash': torrent_hash}, ['name', 'trackers'])
+            if not torrents:
+                return None
+            torrent = list(torrents.values())[0]
+            trackers = [t['url'] for t in torrent.get('trackers', [])]
+            magnet_uri = f"magnet:?xt=urn:btih:{torrent['hash']}&dn={torrent['name']}"
+            for tracker in trackers:
+                magnet_uri += f"&tr={tracker}"
+            return magnet_uri
         except Exception as e:
-            logging.error(f"Could not get magnet URI for {torrent_hash} from Deluge Web API: {e}")
+            logging.error(f"Could not get magnet URI for {torrent_hash}: {e}")
             return None
 
     def get_all_categories(self) -> Dict[str, Any]:
         """Gets all available labels (categories) from Deluge."""
-        # Requires the 'label' plugin
         try:
             labels = self.client.call('label.get_labels')
-            return {label: {} for label in labels} # Mimic qBittorrent's category structure
+            return {label: {} for label in labels}
         except Exception:
             logging.warning("Could not fetch labels from Deluge. Is the 'label' plugin enabled?")
             return {}
@@ -166,8 +171,7 @@ class DelugeClient(TorrentClient):
 
     def get_trackers(self, torrent_hash: str) -> List[Dict[str, Any]]:
         """Gets the list of trackers for a torrent."""
-        torrent_info = self.client.call('core.get_torrent_status', torrent_hash, ['trackers'])
+        torrent_info = self.client.call('core.get_torrent_status', {'hash': torrent_hash}, ['trackers'])
         if torrent_info and 'trackers' in torrent_info:
-            # Deluge's tracker format is already a list of dicts with a 'url' key
-            return torrent_info['trackers']
+            return list(torrent_info.values())[0]['trackers']
         return []

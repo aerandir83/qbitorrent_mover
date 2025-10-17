@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source client
 # to a destination client and transfer the files via SFTP or rsync.
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 import sys
 import logging
@@ -120,20 +120,19 @@ def update_config(config_path, template_path):
         for section_name in template_updater.sections():
             template_section = template_updater[section_name]
             if not updater.has_section(section_name):
-                # Add the new section if it doesn't exist.
                 updater.add_section(section_name)
+                # Copy the whole section including comments
+                for key, opt in template_section.items():
+                    new_opt = updater[section_name].set(key, opt.value)
                 changes_made = True
                 logging.info(f"Added new section to config: [{section_name}]")
-
-            # Always get the section object from the updater after ensuring it exists.
-            user_section = updater[section_name]
-
-            # Now, check for and add new options within that section
-            for key, opt in template_section.items():
-                if not user_section.has_option(key):
-                    user_section.set(key, opt.value)
-                    changes_made = True
-                    logging.info(f"Added new option in [{section_name}]: {key}")
+            else:
+                user_section = updater[section_name]
+                for key, opt in template_section.items():
+                    if not user_section.has_option(key):
+                        user_section.set(key, opt.value)
+                        changes_made = True
+                        logging.info(f"Added new option in [{section_name}]: {key}")
 
         if changes_made:
             backup_dir = config_file.parent / 'backup'

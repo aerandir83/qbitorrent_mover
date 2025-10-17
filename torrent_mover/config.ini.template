@@ -35,6 +35,8 @@ transfer_mode = rsync
 [MySeedbox]
 # --- Client Connection ---
 # The type of torrent client. Supported: qbittorrent, deluge
+# For qBittorrent, 'host' is the base URL and 'port' is the port number.
+# For Deluge, 'host' is the FULL URL to the Web UI (e.g., https://my-deluge.com), and 'port' is ignored.
 type = qbittorrent
 host = https://source-client.example.com
 port = 443
@@ -70,6 +72,8 @@ source_transfer_path =
 [HomeServer]
 # --- Client Connection ---
 # The type of torrent client. Supported: qbittorrent, deluge
+# For qBittorrent, 'host' is the base URL and 'port' is the port number.
+# For Deluge, 'host' is the FULL URL to the Web UI (e.g., https://my-deluge.com), and 'port' is ignored.
 type = qbittorrent
 host = https://destination-client.example.com
 port = 443
