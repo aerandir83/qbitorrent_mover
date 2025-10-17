@@ -21,8 +21,9 @@ class DelugeClient(TorrentClient):
         password = self.config.get('password').value
 
         logging.info(f"Connecting to Deluge Web UI at {base_url}...")
-        self.client = DelugeWebClient(base_url=base_url, password=password)
-        self.client.connect()
+        self.client = DelugeWebClient(url=base_url, password=password)
+        self.client.login()
+        # The previous .connect() call was for a different library and is not needed here.
         logging.info("Successfully connected to Deluge Web UI.")
 
     def _to_torrent_dataclass(self, deluge_torrent: Dict[str, Any]) -> Torrent:
