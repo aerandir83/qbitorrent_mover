@@ -74,3 +74,6 @@ size_threshold_gb =
 # - rsync: Downloads files from the source server to this machine via rsync (faster).
 # - sftp_upload: Transfers files directly from the source server to the destination server via SFTP.
 transfer_mode = rsync
+# The maximum number of files to transfer simultaneously within a single torrent job.
+# This applies to the 'sftp' and 'sftp_upload' modes.
+max_concurrent_file_transfers = 5
