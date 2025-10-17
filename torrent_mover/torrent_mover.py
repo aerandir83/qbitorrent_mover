@@ -505,6 +505,10 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
             else:
                 raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_dest_size}")
 
+        except PermissionError as e:
+            logging.error(f"Permission denied on destination server. Check user permissions for path: {dest_file_path}")
+            logging.error(f"The user '{dest_sftp_config['username']}' may not have write access to that directory on the destination server.")
+            raise e
         except Exception as e:
             logging.error(f"Upload failed for {file_name}: {e}")
             if file_task_id is not None:
@@ -643,6 +647,11 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
                 # This could happen if the remote file changed size during transfer
                 raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_local_size}")
 
+        except PermissionError as e:
+            logging.error(f"Permission denied while trying to write to local path: {local_path.parent}")
+            logging.error("Please check that the user running the script has write permissions for this directory.")
+            logging.error("If you intended to transfer to another remote server, use 'transfer_mode = sftp_upload' in your config.")
+            raise e
         except Exception as e:
             logging.error(f"Download failed for {file_name}: {e}")
             if file_task_id is not None:
@@ -787,8 +796,12 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
 
             # Non-retryable error
             else:
-                logging.error(f"Rsync failed for '{os.path.basename(remote_path)}' with non-retryable exit code {process.returncode}.")
-                logging.error(f"Rsync stderr: {stderr_output}")
+                if "permission denied" in stderr_output.lower():
+                    logging.error(f"Rsync failed due to a permission error on the local machine.")
+                    logging.error(f"Please check that the user running the script has write permissions for the destination path: {local_parent_dir}")
+                else:
+                    logging.error(f"Rsync failed for '{os.path.basename(remote_path)}' with non-retryable exit code {process.returncode}.")
+                    logging.error(f"Rsync stderr: {stderr_output}")
                 raise Exception(f"Rsync transfer failed for {os.path.basename(remote_path)}")
 
         except FileNotFoundError:
