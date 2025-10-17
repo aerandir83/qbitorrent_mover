@@ -69,7 +69,26 @@ With your virtual environment active, install the required Python libraries from
 pip install -r requirements.txt
 ```
 
-### 3. Create and Edit Your Configuration
+### 3. Install `sshpass` (Required for Rsync)
+
+If you plan to use the `rsync` transfer mode (which is recommended for performance), you must install `sshpass`. This utility allows the script to provide an SSH password non-interactively.
+
+*   **For Debian/Ubuntu:**
+    ```bash
+    sudo apt-get update && sudo apt-get install sshpass
+    ```
+
+*   **For Fedora/CentOS/RHEL:**
+    ```bash
+    sudo yum install sshpass
+    ```
+
+*   **For Arch Linux:**
+    ```bash
+    sudo pacman -S sshpass
+    ```
+
+### 4. Create and Edit Your Configuration
 
 Copy the `config.ini.template` to create your own `config.ini` file.
 
