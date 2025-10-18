@@ -10,7 +10,13 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.3.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **1.3.1**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+
+## Changelog
+
+### Version 1.3.1 (Latest)
+*   **Fix**: Implemented a robust, per-server SSH session throttling mechanism to prevent `Secsh channel open FAILED` errors. This resolves issues where analyzing or transferring many torrents at once could exhaust the server's available SSH session slots.
+*   **New Config Option**: Added `max_concurrent_ssh_sessions` to each server block in `config.ini.template`, allowing granular control over connection limits for both source and destination servers.
 
 ## Features
 
