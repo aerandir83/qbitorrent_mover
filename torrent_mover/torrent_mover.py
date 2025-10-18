@@ -1238,7 +1238,7 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_client=None, ssh_client=None, semaphore=None):
+def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, semaphore=None):
     """
     Analyzes a single torrent to determine its size.
     Can reuse existing SFTP/SSH client connections and a semaphore for rate limiting.
@@ -1918,7 +1918,7 @@ def main():
                         return 1
 
                     analysis_future_to_torrent = {
-                        analysis_executor.submit(analyze_torrent, torrent, sftp_config, transfer_mode, live.console, sftp_client=sftp_analysis_client, ssh_client=ssh_analysis_client, semaphore=source_ssh_semaphore): torrent
+                        analysis_executor.submit(analyze_torrent, torrent, sftp_config, transfer_mode, live.console, semaphore=source_ssh_semaphore): torrent
                         for torrent in eligible_torrents
                     }
                     transfer_future_to_torrent = {}
