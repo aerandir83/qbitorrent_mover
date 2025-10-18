@@ -551,8 +551,8 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
         logging.error(f"Upload from cache failed for {file_name}: {e}")
         raise
     finally:
-        if upload_successful:
-            job_progress.update(parent_task_id, advance=1)
+        if effective_task_id != parent_task_id:
+            job_progress.update(parent_task_id, advance=increment)
         if file_task_id is not None:
             job_progress.stop_task(file_task_id)
             if upload_successful:
@@ -677,8 +677,8 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
                 job_progress.update(parent_task_id, description=f"[bold red]Failed: {job_progress.tasks[parent_task_id].description} -> {file_name}[/]")
             raise
         finally:
-            if upload_successful:
-                job_progress.update(parent_task_id, advance=1)
+            if effective_task_id != parent_task_id:
+                job_progress.update(parent_task_id, advance=increment)
             if file_task_id is not None:
                 job_progress.stop_task(file_task_id)
                 if upload_successful:
@@ -812,8 +812,8 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
                 job_progress.update(parent_task_id, description=f"[bold red]Failed: {job_progress.tasks[parent_task_id].description} -> {file_name}[/]")
             raise
         finally:
-            if download_successful:
-                job_progress.update(parent_task_id, advance=1)
+            if effective_task_id != parent_task_id:
+                job_progress.update(parent_task_id, advance=increment)
             if file_task_id is not None:
                 job_progress.stop_task(file_task_id)
                 if download_successful:
@@ -1305,8 +1305,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         # A map to hold progress bars for individual files
         file_progress_map = {}
         with task_add_lock:
-            # The parent task will now track the number of files, not bytes
-            parent_task_id = job_progress.add_task(name, total=0, start=True)
+            parent_task_id = job_progress.add_task(name, total=total_size, start=True)
 
         # --- Execute Transfer ---
         if transfer_mode == 'rsync':
@@ -1322,9 +1321,6 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                 _get_all_files_recursive(source_sftp, source_content_path, dest_content_path, all_files)
             else:  # It's a single file
                 all_files.append((source_content_path, dest_content_path))
-
-            # Update the parent task to have a total of the number of files
-            job_progress.update(parent_task_id, total=len(all_files))
 
             file_task_map = {}
             if len(all_files) > 1:
@@ -1874,8 +1870,7 @@ def main():
             TextColumn("  {task.description}", justify="left"),
             BarColumn(finished_style="green"),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            MofNCompleteColumn(),
-            FileSizeColumn(),
+            TotalFileSizeColumn(),
             TransferSpeedColumn(),
             TimeRemainingColumn(),
             TimeElapsedColumn(),
