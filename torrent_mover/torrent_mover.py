@@ -551,8 +551,6 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
         logging.error(f"Upload from cache failed for {file_name}: {e}")
         raise
     finally:
-        if effective_task_id != parent_task_id:
-            job_progress.update(parent_task_id, advance=increment)
         if file_task_id is not None:
             job_progress.stop_task(file_task_id)
             if upload_successful:
@@ -677,8 +675,6 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
                 job_progress.update(parent_task_id, description=f"[bold red]Failed: {job_progress.tasks[parent_task_id].description} -> {file_name}[/]")
             raise
         finally:
-            if effective_task_id != parent_task_id:
-                job_progress.update(parent_task_id, advance=increment)
             if file_task_id is not None:
                 job_progress.stop_task(file_task_id)
                 if upload_successful:
@@ -812,8 +808,6 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
                 job_progress.update(parent_task_id, description=f"[bold red]Failed: {job_progress.tasks[parent_task_id].description} -> {file_name}[/]")
             raise
         finally:
-            if effective_task_id != parent_task_id:
-                job_progress.update(parent_task_id, advance=increment)
             if file_task_id is not None:
                 job_progress.stop_task(file_task_id)
                 if download_successful:
