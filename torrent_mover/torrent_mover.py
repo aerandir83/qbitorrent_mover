@@ -403,6 +403,21 @@ def get_remote_size_du(ssh_client, remote_path, semaphore):
         semaphore.release()
 
 
+def is_remote_dir(ssh_client, path):
+    """Checks if a remote path is a directory using 'test -d'."""
+    try:
+        # Escape single quotes to prevent command injection
+        escaped_path = path.replace("'", "'\\''")
+        command = f"test -d '{escaped_path}'"
+        stdin, stdout, stderr = ssh_client.exec_command(command, timeout=30)
+        exit_status = stdout.channel.recv_exit_status()
+        return exit_status == 0
+    except Exception as e:
+        logging.error(f"Error checking if remote path '{path}' is a directory: {e}")
+        # Default to assuming it's not a directory on error for safety
+        return False
+
+
 def _get_all_files_recursive(sftp, remote_path, base_dest_path, file_list):
     """
     Recursively walks a remote directory to build a flat list of all files to transfer.
@@ -1131,13 +1146,34 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
     try:
         dest_base_path = config['DESTINATION_PATHS']['destination_path']
         remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
-
+        source_sftp_config = config['SOURCE_SERVER']
         source_content_path = torrent.content_path
-        content_name = os.path.basename(source_content_path)
-        dest_content_path = os.path.join(dest_base_path, content_name)
+
+        # Check if the source content is a directory or a single file to construct the correct destination path
+        content_is_dir = False
+        temp_ssh = None
+        try:
+            _, temp_ssh = connect_sftp(source_sftp_config)
+            content_is_dir = is_remote_dir(temp_ssh, source_content_path)
+            logging.info(f"Source content '{os.path.basename(source_content_path)}' is a directory: {content_is_dir}")
+        except Exception as e:
+            logging.error(f"Could not determine if '{source_content_path}' is a directory. Assuming it is (maintaining old behavior). Error: {e}", exc_info=True)
+            content_is_dir = True # Default to old behavior on error to be safe
+        finally:
+            if temp_ssh:
+                temp_ssh.close()
+
+        if content_is_dir:
+            # If it's a directory, the destination path is the base path plus the directory name.
+            content_name = os.path.basename(source_content_path)
+            dest_content_path = os.path.join(dest_base_path, content_name)
+        else:
+            # If it's a single file, create a directory for it named after the torrent.
+            content_name = os.path.basename(source_content_path)
+            dest_content_path = os.path.join(dest_base_path, torrent.name, content_name)
+            logging.info(f"Single-file torrent detected. Adjusting destination path to: {dest_content_path}")
 
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-        source_sftp_config = config['SOURCE_SERVER']
 
         with task_add_lock:
             parent_task_id = job_progress.add_task(name, total=total_size, start=True)
