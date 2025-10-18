@@ -1282,9 +1282,9 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_clie
             try:
                 # We need to establish a temporary connection to get an SSH client
                 temp_sftp, temp_ssh = connect_sftp(sftp_config)
-                # Since this is a temporary connection, we also need a temporary semaphore
-                temp_semaphore = threading.Semaphore(8)
-                total_size = get_remote_size_du(temp_ssh, remote_content_path, temp_semaphore)
+                # Use the globally-defined, shared semaphore to limit concurrent connections
+                # even for these temporary SSH sessions.
+                total_size = get_remote_size_du(temp_ssh, remote_content_path, semaphore)
             finally:
                 if temp_sftp: temp_sftp.close()
                 if temp_ssh: temp_ssh.close()
