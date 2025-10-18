@@ -138,7 +138,8 @@ def update_config(config_path, template_path):
             backup_path = backup_dir / backup_filename
             shutil.copy2(config_file, backup_path)
             logging.info(f"Backed up existing configuration to '{backup_path}'")
-            updater.write_to_file(config_file, encoding='utf-8')
+            with config_file.open('w', encoding='utf-8') as f:
+                updater.write(f)
             logging.info("Configuration file has been updated with new options.")
         else:
             logging.info("Configuration file is already up-to-date.")
