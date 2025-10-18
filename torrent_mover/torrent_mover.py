@@ -365,17 +365,15 @@ def get_remote_size_rsync(sftp_config, remote_path):
 
 
 @retry(tries=2, delay=5)
-def get_remote_size_du(ssh_client, remote_path, semaphore):
+def _get_remote_size_du_core(ssh_client, remote_path):
     """
-    Gets the total size of a remote file or directory using 'du -sb'.
-    This is significantly faster for directories than recursive SFTP stat calls.
-    Requires a connected Paramiko SSHClient and uses a semaphore to limit concurrency.
+    Core logic for getting remote size using 'du -sb'. Does not handle concurrency.
+    This function is retried on failure.
     """
     # Escape single quotes in the path to prevent command injection issues.
     escaped_path = remote_path.replace("'", "'\\''")
     command = f"du -sb '{escaped_path}'"
 
-    semaphore.acquire()
     try:
         stdin, stdout, stderr = ssh_client.exec_command(command, timeout=60)
         exit_status = stdout.channel.recv_exit_status()  # Wait for command to finish
@@ -399,6 +397,16 @@ def get_remote_size_du(ssh_client, remote_path, semaphore):
         logging.error(f"An error occurred executing 'du' command for '{remote_path}': {e}")
         # Re-raise to be handled by the retry decorator or the calling function
         raise
+
+
+def get_remote_size_du(ssh_client, remote_path, semaphore):
+    """
+    Gets the total size of a remote file or directory using 'du -sb'.
+    This is a wrapper that handles semaphore acquisition before calling the retriable core logic.
+    """
+    semaphore.acquire()
+    try:
+        return _get_remote_size_du_core(ssh_client, remote_path)
     finally:
         semaphore.release()
 
@@ -1277,17 +1285,19 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_clie
         elif transfer_mode == 'rsync':
             total_size = get_remote_size_rsync(sftp_config, remote_content_path)
         else:
-            # Fallback for sftp/sftp_upload mode when no shared SSH client is available
+            # Fallback for sftp/sftp_upload mode when no shared SSH client is available.
+            # We acquire the semaphore here to limit concurrent *connections* and executions.
             temp_sftp, temp_ssh = None, None
+            semaphore.acquire()
             try:
                 # We need to establish a temporary connection to get an SSH client
                 temp_sftp, temp_ssh = connect_sftp(sftp_config)
-                # Use the globally-defined, shared semaphore to limit concurrent connections
-                # even for these temporary SSH sessions.
-                total_size = get_remote_size_du(temp_ssh, remote_content_path, semaphore)
+                # Call the core, retriable function directly, as we already have the lock.
+                total_size = _get_remote_size_du_core(temp_ssh, remote_content_path)
             finally:
                 if temp_sftp: temp_sftp.close()
                 if temp_ssh: temp_ssh.close()
+                semaphore.release()
 
     except Exception as e:
         live_console.log(f"[bold red]Error calculating size for '{name}': {e}[/]")
