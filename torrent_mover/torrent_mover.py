@@ -138,7 +138,8 @@ def update_config(config_path, template_path):
             backup_path = backup_dir / backup_filename
             shutil.copy2(config_file, backup_path)
             logging.info(f"Backed up existing configuration to '{backup_path}'")
-            updater.write_to_file(config_file, encoding='utf-8')
+            with config_file.open('w', encoding='utf-8') as f:
+                updater.write(f)
             logging.info("Configuration file has been updated with new options.")
         else:
             logging.info("Configuration file is already up-to-date.")
@@ -361,6 +362,42 @@ def get_remote_size_rsync(sftp_config, remote_path):
     except Exception as e:
         # Re-raise to be handled by the retry decorator or the calling function
         raise e
+
+
+@retry(tries=2, delay=5)
+def get_remote_size_du(ssh_client, remote_path):
+    """
+    Gets the total size of a remote file or directory using 'du -sb'.
+    This is significantly faster for directories than recursive SFTP stat calls.
+    Requires a connected Paramiko SSHClient.
+    """
+    # Escape single quotes in the path to prevent command injection issues.
+    escaped_path = remote_path.replace("'", "'\\''")
+    command = f"du -sb '{escaped_path}'"
+    try:
+        stdin, stdout, stderr = ssh_client.exec_command(command, timeout=60)
+        exit_status = stdout.channel.recv_exit_status()  # Wait for command to finish
+
+        if exit_status != 0:
+            stderr_output = stderr.read().decode('utf-8').strip()
+            if "No such file or directory" in stderr_output:
+                logging.warning(f"'du' command failed for path '{remote_path}': File not found.")
+                return 0
+            raise Exception(f"'du' command failed with exit code {exit_status}. Stderr: {stderr_output}")
+
+        output = stdout.read().decode('utf-8').strip()
+        # The output is like "12345\t/path/to/dir". We only need the number.
+        size_str = output.split()[0]
+        if size_str.isdigit():
+            return int(size_str)
+        else:
+            raise ValueError(f"Could not parse 'du' output. Raw output: '{output}'")
+
+    except Exception as e:
+        logging.error(f"An error occurred executing 'du' command for '{remote_path}': {e}")
+        # Re-raise to be handled by the retry decorator or the calling function
+        raise
+
 
 def _get_all_files_recursive(sftp, remote_path, base_dest_path, file_list):
     """
@@ -1037,10 +1074,10 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_client=None):
+def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_client=None, ssh_client=None):
     """
     Analyzes a single torrent to determine its size.
-    Can reuse an existing SFTP client connection if one is provided.
+    Can reuse existing SFTP/SSH client connections.
     Returns a tuple of (torrent, size). Size is None if calculation fails.
     """
     name = torrent.name
@@ -1049,19 +1086,23 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_clie
     total_size = None
 
     try:
-        if transfer_mode == 'rsync':
+        # Prioritize the fastest method if an SSH client is available
+        if ssh_client:
+            total_size = get_remote_size_du(ssh_client, remote_content_path)
+        elif transfer_mode == 'rsync':
             total_size = get_remote_size_rsync(sftp_config, remote_content_path)
-        else:  # sftp or sftp_upload mode
+        else:  # sftp or sftp_upload mode, but no pre-existing ssh_client
             # If no sftp client is provided, create a temporary one.
             if sftp_client is None:
-                sftp, ssh_client = None, None
+                temp_sftp, temp_ssh = None, None
                 try:
-                    sftp, ssh_client = connect_sftp(sftp_config)
-                    total_size = get_remote_size(sftp, remote_content_path)
+                    # We can use the ssh client from this new connection for 'du'
+                    temp_sftp, temp_ssh = connect_sftp(sftp_config)
+                    total_size = get_remote_size_du(temp_ssh, remote_content_path)
                 finally:
-                    if sftp: sftp.close()
-                    if ssh_client: ssh_client.close()
-            # Otherwise, use the provided client.
+                    if temp_sftp: temp_sftp.close()
+                    if temp_ssh: temp_ssh.close()
+            # Otherwise, use the provided sftp client (slower method)
             else:
                 total_size = get_remote_size(sftp_client, remote_content_path)
 
@@ -1686,7 +1727,7 @@ def main():
                      ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as transfer_executor:
 
                     analysis_future_to_torrent = {
-                        analysis_executor.submit(analyze_torrent, torrent, sftp_config, transfer_mode, live.console, sftp_client=sftp_analysis_client): torrent
+                        analysis_executor.submit(analyze_torrent, torrent, sftp_config, transfer_mode, live.console, sftp_client=sftp_analysis_client, ssh_client=ssh_analysis_client): torrent
                         for torrent in eligible_torrents
                     }
                     transfer_future_to_torrent = {}
