@@ -21,7 +21,7 @@ import re
 import threading
 from collections import defaultdict
 import errno
-from utils import retry
+from .utils import retry
 import tempfile
 import getpass
 import configupdater
@@ -109,9 +109,10 @@ def update_config(config_path, template_path):
                 user_section = updater.add_section(section_name)
                 for key, opt in template_section.items():
                     user_opt = user_section.set(key, opt.value)
-                    if opt.comments.above:
+                    # Check if comments exist before trying to access them
+                    if hasattr(opt, 'comments') and opt.comments.above:
                         user_opt.add_comment('\n'.join(opt.comments.above), above=True)
-                    if opt.comments.inline:
+                    if hasattr(opt, 'comments') and opt.comments.inline:
                         user_opt.add_comment(opt.comments.inline, inline=True)
                 changes_made = True
                 logging.info(f"Added new section to config: [{section_name}]")
@@ -121,9 +122,10 @@ def update_config(config_path, template_path):
                 for key, opt in template_section.items():
                     if not user_section.has_option(key):
                         user_opt = user_section.set(key, opt.value)
-                        if opt.comments.above:
+                        # Check if comments exist before trying to access them
+                        if hasattr(opt, 'comments') and opt.comments.above:
                             user_opt.add_comment('\n'.join(opt.comments.above), above=True)
-                        if opt.comments.inline:
+                        if hasattr(opt, 'comments') and opt.comments.inline:
                             user_opt.add_comment(opt.comments.inline, inline=True)
                         changes_made = True
                         logging.info(f"Added new option in [{section_name}]: {key}")
