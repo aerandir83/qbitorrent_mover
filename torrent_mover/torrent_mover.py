@@ -1310,7 +1310,7 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_clie
     return torrent, total_size
 
 
-def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
+def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, ssh_semaphore, dry_run=False, test_run=False):
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
@@ -1328,6 +1328,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         # Check if the source content is a directory or a single file to construct the correct destination path
         content_is_dir = False
         temp_ssh = None
+        ssh_semaphore.acquire()
         try:
             _, temp_ssh = connect_sftp(source_sftp_config)
             content_is_dir = is_remote_dir(temp_ssh, source_content_path)
@@ -1338,6 +1339,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         finally:
             if temp_ssh:
                 temp_ssh.close()
+            ssh_semaphore.release()
 
         if content_is_dir:
             # If it's a directory, the destination path is the base path plus the directory name.
@@ -1971,7 +1973,7 @@ def main():
                                     transfer_torrent, analyzed_torrent, total_size,
                                     source_qbit, destination_qbit, config, tracker_rules,
                                     job_progress, overall_progress, overall_task,
-                                    file_counts, count_lock, task_add_lock,
+                                    file_counts, count_lock, task_add_lock, ssh_semaphore,
                                     args.dry_run, args.test_run
                                 )
                                 transfer_future_to_torrent[transfer_future] = analyzed_torrent
