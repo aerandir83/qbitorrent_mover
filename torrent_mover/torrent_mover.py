@@ -191,10 +191,25 @@ def connect_qbit(config_section, client_name):
     logging.info(f"Successfully connected to {client_name}. Version: {client.app.version}")
     return client
 
+def disconnect_sftp(sftp, ssh_client, semaphore=None):
+    """Closes SFTP and SSH connections and releases the semaphore if provided."""
+    try:
+        if sftp:
+            sftp.close()
+        if ssh_client:
+            ssh_client.close()
+    finally:
+        if semaphore:
+            logging.debug(f"Releasing SSH semaphore...")
+            semaphore.release()
+            logging.debug(f"Released SSH semaphore.")
+
+
 @retry(tries=2, delay=5)
-def connect_sftp(config_section):
+def connect_sftp(config_section, semaphore=None):
     """
     Connects to a server via SFTP using SSHClient for better timeout control.
+    Acquires a semaphore to limit concurrent connections if provided.
     Returns a connected SFTP client and the SSHClient object, or raises an exception on failure.
     """
     host = config_section['host']
@@ -203,20 +218,30 @@ def connect_sftp(config_section):
     password = config_section['password']
 
     logging.info(f"Establishing SFTP connection to {host}...")
+    if semaphore:
+        logging.debug(f"Acquiring SSH semaphore for {host}...")
+        semaphore.acquire()
+        logging.debug(f"Acquired SSH semaphore for {host}.")
+
     ssh_client = paramiko.SSHClient()
     ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-    # The timeout parameter here is crucial for fast failure detection
-    ssh_client.connect(hostname=host, port=port, username=username, password=password, timeout=10)
+    try:
+        # The timeout parameter here is crucial for fast failure detection
+        ssh_client.connect(hostname=host, port=port, username=username, password=password, timeout=10)
 
-    # Enable keepalives on the underlying transport
-    transport = ssh_client.get_transport()
-    if transport:
-        transport.set_keepalive(30)
+        # Enable keepalives on the underlying transport
+        transport = ssh_client.get_transport()
+        if transport:
+            transport.set_keepalive(30)
 
-    sftp = ssh_client.open_sftp()
-    logging.info(f"Successfully established SFTP connection to {host}.")
-    return sftp, ssh_client
+        sftp = ssh_client.open_sftp()
+        logging.info(f"Successfully established SFTP connection to {host}.")
+        return sftp, ssh_client
+    except Exception as e:
+        if semaphore:
+            semaphore.release() # Must release on failure
+        raise e
 
 import os
 import sys
@@ -365,17 +390,15 @@ def get_remote_size_rsync(sftp_config, remote_path):
 
 
 @retry(tries=2, delay=5)
-def get_remote_size_du(ssh_client, remote_path, semaphore):
+def _get_remote_size_du_core(ssh_client, remote_path):
     """
-    Gets the total size of a remote file or directory using 'du -sb'.
-    This is significantly faster for directories than recursive SFTP stat calls.
-    Requires a connected Paramiko SSHClient and uses a semaphore to limit concurrency.
+    Core logic for getting remote size using 'du -sb'. Does not handle concurrency.
+    This function is retried on failure.
     """
     # Escape single quotes in the path to prevent command injection issues.
     escaped_path = remote_path.replace("'", "'\\''")
     command = f"du -sb '{escaped_path}'"
 
-    semaphore.acquire()
     try:
         stdin, stdout, stderr = ssh_client.exec_command(command, timeout=60)
         exit_status = stdout.channel.recv_exit_status()  # Wait for command to finish
@@ -399,6 +422,16 @@ def get_remote_size_du(ssh_client, remote_path, semaphore):
         logging.error(f"An error occurred executing 'du' command for '{remote_path}': {e}")
         # Re-raise to be handled by the retry decorator or the calling function
         raise
+
+
+def get_remote_size_du(ssh_client, remote_path, semaphore):
+    """
+    Gets the total size of a remote file or directory using 'du -sb'.
+    This is a wrapper that handles semaphore acquisition before calling the retriable core logic.
+    """
+    semaphore.acquire()
+    try:
+        return _get_remote_size_du_core(ssh_client, remote_path)
     finally:
         semaphore.release()
 
@@ -449,7 +482,129 @@ def _get_all_files_recursive(sftp, remote_path, base_dest_path, file_list):
             continue
 
 @retry(tries=2, delay=5)
-def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, dest_file_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_id, dry_run=False):
+def _sftp_download_to_cache(source_sftp_config, source_file_path, local_cache_path, ssh_semaphore=None):
+    """
+    Downloads a file from SFTP to a local cache path, with resume support.
+    This runs in a separate thread pool and does not use Rich progress bars.
+    """
+    sftp, ssh = None, None
+    try:
+        sftp, ssh = connect_sftp(source_sftp_config, semaphore=ssh_semaphore)
+
+        remote_stat = sftp.stat(source_file_path)
+        total_size = remote_stat.st_size
+
+        local_size = 0
+        if local_cache_path.exists():
+            local_size = local_cache_path.stat().st_size
+
+        if local_size < total_size:
+            logging.info(f"Downloading to cache: {os.path.basename(source_file_path)}")
+            mode = 'r+b' if local_size > 0 else 'wb'
+            with sftp.open(source_file_path, 'rb') as remote_f:
+                remote_f.seek(local_size)
+                remote_f.prefetch()
+                with open(local_cache_path, mode) as local_f:
+                    if local_size > 0:
+                        local_f.seek(local_size)
+                    while True:
+                        chunk = remote_f.read(65536)
+                        if not chunk: break
+                        local_f.write(chunk)
+        else:
+            logging.info(f"Cache hit, skipping download: {os.path.basename(source_file_path)}")
+
+    except Exception as e:
+        logging.error(f"Failed to download to cache for {source_file_path}: {e}")
+        raise
+    finally:
+        disconnect_sftp(sftp, ssh, semaphore=ssh_semaphore)
+
+@retry(tries=2, delay=5)
+def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_id, ssh_semaphore=None):
+    """
+    Uploads a file from a local cache path to the destination SFTP server.
+    """
+    sftp, ssh = None, None
+    upload_successful = False
+    file_name = local_cache_path.name
+    try:
+        sftp, ssh = connect_sftp(dest_sftp_config, semaphore=ssh_semaphore)
+
+        total_size = local_cache_path.stat().st_size
+        dest_size = 0
+        try:
+            dest_size = sftp.stat(dest_file_path).st_size
+        except FileNotFoundError:
+            pass
+
+        if dest_size >= total_size:
+            logging.info(f"Skipping upload (exists and size matches): {file_name}")
+            job_progress.update(parent_task_id, advance=total_size)
+            overall_progress.update(overall_task_id, advance=total_size)
+            if file_task_id is not None:
+                job_progress.update(file_task_id, completed=total_size)
+            upload_successful = True
+            return
+
+        effective_task_id = file_task_id if file_task_id is not None else parent_task_id
+        job_progress.update(effective_task_id, completed=dest_size)
+        if dest_size > 0:
+            if effective_task_id != parent_task_id:
+                job_progress.update(parent_task_id, advance=dest_size)
+            overall_progress.update(overall_task_id, advance=dest_size)
+
+        if file_task_id is not None:
+            job_progress.update(file_task_id, visible=True)
+            job_progress.start_task(file_task_id)
+
+        dest_dir = os.path.dirname(dest_file_path)
+        try:
+            sftp.stat(dest_dir)
+        except FileNotFoundError:
+            # A simple recursive mkdir
+            parts = dest_dir.replace('\\', '/').split('/')
+            current_dir = ''
+            for part in parts:
+                if not part: continue # Handles leading slash
+                current_dir = f"{current_dir}/{part}"
+                try:
+                    sftp.stat(current_dir)
+                except FileNotFoundError:
+                    sftp.mkdir(current_dir)
+
+        with open(local_cache_path, 'rb') as source_f:
+            source_f.seek(dest_size)
+            with sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f:
+                while True:
+                    chunk = source_f.read(32768)
+                    if not chunk: break
+                    dest_f.write(chunk)
+                    increment = len(chunk)
+                    if effective_task_id != parent_task_id:
+                        job_progress.update(parent_task_id, advance=increment)
+                    job_progress.update(effective_task_id, advance=increment)
+                    overall_progress.update(overall_task_id, advance=increment)
+
+        if sftp.stat(dest_file_path).st_size == total_size:
+            logging.info(f"Upload from cache of '{file_name}' completed.")
+            upload_successful = True
+        else:
+            raise Exception("Final size mismatch during cached upload.")
+
+    except Exception as e:
+        logging.error(f"Upload from cache failed for {file_name}: {e}")
+        raise
+    finally:
+        with count_lock:
+            file_counts[parent_task_id][0] += 1
+        if file_task_id is not None:
+            job_progress.stop_task(file_task_id)
+            if upload_successful:
+                job_progress.update(file_task_id, description=f"└─ [green]✓[/green] [cyan]{file_name}[/]")
+        disconnect_sftp(sftp, ssh, semaphore=ssh_semaphore)
+
+def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, dest_file_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_id, dry_run=False, source_ssh_semaphore=None, dest_ssh_semaphore=None):
     """
     Streams a single file from a source SFTP server to a destination SFTP server with a progress bar.
     Establishes its own SFTP sessions for thread safety. Supports resuming.
@@ -461,8 +616,8 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
 
     try:
         # Connect to both servers
-        source_sftp, source_ssh = connect_sftp(source_sftp_config)
-        dest_sftp, dest_ssh = connect_sftp(dest_sftp_config)
+        source_sftp, source_ssh = connect_sftp(source_sftp_config, semaphore=source_ssh_semaphore)
+        dest_sftp, dest_ssh = connect_sftp(dest_sftp_config, semaphore=dest_ssh_semaphore)
 
         # Get source file size
         try:
@@ -583,13 +738,11 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
                     job_progress.update(file_task_id, description=f"└─ [green]✓[/green] [cyan]{file_name}[/]")
 
     finally:
-        if source_sftp: source_sftp.close()
-        if source_ssh: source_ssh.close()
-        if dest_sftp: dest_sftp.close()
-        if dest_ssh: dest_ssh.close()
+        disconnect_sftp(source_sftp, source_ssh, semaphore=source_ssh_semaphore)
+        disconnect_sftp(dest_sftp, dest_ssh, semaphore=dest_ssh_semaphore)
 
 @retry(tries=2, delay=5)
-def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_id, dry_run=False):
+def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_id, dry_run=False, ssh_semaphore=None):
     """
     Downloads a single file with a progress bar, with retries. Establishes its own SFTP session
     to ensure thread safety when called from a ThreadPoolExecutor.
@@ -603,7 +756,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
     ssh_client = None
     download_successful = False
     try:
-        sftp, ssh_client = connect_sftp(sftp_config)
+        sftp, ssh_client = connect_sftp(sftp_config, semaphore=ssh_semaphore)
 
         remote_stat = sftp.stat(remote_file)
         total_size = remote_stat.st_size
@@ -726,10 +879,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
                     job_progress.update(file_task_id, description=f"└─ [green]✓[/green] [cyan]{file_name}[/]")
 
     finally:
-        if sftp:
-            sftp.close()
-        if ssh_client:
-            ssh_client.close()
+        disconnect_sftp(sftp, ssh_client, semaphore=ssh_semaphore)
 
 def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run=False):
     """
@@ -880,7 +1030,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, job_progress, p
     raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {max_retries} attempts.")
 
 
-def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run=False):
+def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run=False, ssh_semaphore=None):
     """
     Transfers a remote file or directory to a local path, preserving structure.
     Handles directories by downloading their files concurrently.
@@ -895,7 +1045,7 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, p
 
         with ThreadPoolExecutor(max_workers=max_concurrent_transfers) as file_executor:
             futures = [
-                file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map.get(remote_f), dry_run)
+                file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map.get(remote_f), dry_run, ssh_semaphore=ssh_semaphore)
                 for remote_f, local_f in all_files
             ]
             for future in as_completed(futures):
@@ -905,12 +1055,13 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, p
         with count_lock:
             file_counts[parent_task_id] = [0, 1]
         # For single-file torrents, there is no sub-task, so we pass None for file_task_id
-        _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, None, dry_run)
+        _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, None, dry_run, ssh_semaphore=ssh_semaphore)
 
-def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_path, dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run=False):
+def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_path, dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run=False, local_cache_sftp_upload=False, source_ssh_semaphore=None, dest_ssh_semaphore=None):
     """
     Transfers a remote file or directory from a source SFTP to a destination SFTP server.
     """
+
     source_stat = source_sftp.stat(source_path)
     if source_stat.st_mode & 0o40000:  # S_ISDIR
         all_files = []
@@ -919,17 +1070,58 @@ def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sf
         with count_lock:
             file_counts[parent_task_id] = [0, len(all_files)]
 
-        with ThreadPoolExecutor(max_workers=max_concurrent_transfers) as file_executor:
-            futures = [
-                file_executor.submit(_sftp_upload_file, source_sftp_config, dest_sftp_config, source_f, dest_f, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map.get(source_f), dry_run)
-                for source_f, dest_f in all_files
-            ]
-            for future in as_completed(futures):
-                future.result()  # Raise exceptions if any occurred
+        if local_cache_sftp_upload:
+            if dry_run:
+                logging.info(f"[DRY RUN] Would download {len(all_files)} files to cache and then upload.")
+                task = job_progress.tasks[parent_task_id]
+                job_progress.update(parent_task_id, advance=task.total)
+                overall_progress.update(overall_task_id, advance=task.total)
+                with count_lock:
+                    file_counts[parent_task_id][0] = file_counts[parent_task_id][1]
+                return
+
+            temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{os.getpid()}"
+            temp_dir.mkdir(exist_ok=True)
+
+            # Use a separate, unlimited thread pool for downloads
+            with ThreadPoolExecutor(thread_name_prefix='CacheDownloader') as download_executor:
+                download_futures = {
+                    download_executor.submit(_sftp_download_to_cache, source_sftp_config, source_f, temp_dir / os.path.basename(source_f), ssh_semaphore=source_ssh_semaphore): (source_f, dest_f)
+                    for source_f, dest_f in all_files
+                }
+                for future in as_completed(download_futures):
+                    future.result() # Propagate exceptions
+
+            with ThreadPoolExecutor(max_workers=max_concurrent_transfers, thread_name_prefix='CacheUploader') as upload_executor:
+                upload_futures = [
+                    upload_executor.submit(_sftp_upload_from_cache, dest_sftp_config, temp_dir / os.path.basename(source_f), dest_f, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map.get(source_f), ssh_semaphore=dest_ssh_semaphore)
+                    for source_f, dest_f in all_files
+                ]
+                for future in as_completed(upload_futures):
+                    future.result()
+
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        else: # Streaming mode
+            with ThreadPoolExecutor(max_workers=max_concurrent_transfers) as file_executor:
+                futures = [
+                    file_executor.submit(_sftp_upload_file, source_sftp_config, dest_sftp_config, source_f, dest_f, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map.get(source_f), dry_run, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore)
+                    for source_f, dest_f in all_files
+                ]
+                for future in as_completed(futures):
+                    future.result()
     else:  # It's a single file
         with count_lock:
             file_counts[parent_task_id] = [0, 1]
-        _sftp_upload_file(source_sftp_config, dest_sftp_config, source_path, dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, None, dry_run)
+        if local_cache_sftp_upload:
+            temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{os.getpid()}"
+            temp_dir.mkdir(exist_ok=True)
+            local_path = temp_dir / os.path.basename(source_path)
+            _sftp_download_to_cache(source_sftp_config, source_path, local_path, ssh_semaphore=source_ssh_semaphore)
+            _sftp_upload_from_cache(dest_sftp_config, local_path, dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, None, ssh_semaphore=dest_ssh_semaphore)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        else:
+            _sftp_upload_file(source_sftp_config, dest_sftp_config, source_path, dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, None, dry_run, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore)
 
 # --- Torrent Processing Logic ---
 
@@ -1111,17 +1303,19 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_clie
         elif transfer_mode == 'rsync':
             total_size = get_remote_size_rsync(sftp_config, remote_content_path)
         else:
-            # Fallback for sftp/sftp_upload mode when no shared SSH client is available
+            # Fallback for sftp/sftp_upload mode when no shared SSH client is available.
+            # We acquire the semaphore here to limit concurrent *connections* and executions.
             temp_sftp, temp_ssh = None, None
+            semaphore.acquire()
             try:
                 # We need to establish a temporary connection to get an SSH client
                 temp_sftp, temp_ssh = connect_sftp(sftp_config)
-                # Since this is a temporary connection, we also need a temporary semaphore
-                temp_semaphore = threading.Semaphore(8)
-                total_size = get_remote_size_du(temp_ssh, remote_content_path, temp_semaphore)
+                # Call the core, retriable function directly, as we already have the lock.
+                total_size = _get_remote_size_du_core(temp_ssh, remote_content_path)
             finally:
                 if temp_sftp: temp_sftp.close()
                 if temp_ssh: temp_ssh.close()
+                semaphore.release()
 
     except Exception as e:
         live_console.log(f"[bold red]Error calculating size for '{name}': {e}[/]")
@@ -1134,7 +1328,7 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_clie
     return torrent, total_size
 
 
-def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, dry_run=False, test_run=False):
+def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config, tracker_rules, job_progress, overall_progress, overall_task_id, file_counts, count_lock, task_add_lock, ssh_semaphores, dry_run=False, test_run=False):
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
@@ -1151,17 +1345,17 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
 
         # Check if the source content is a directory or a single file to construct the correct destination path
         content_is_dir = False
-        temp_ssh = None
+        temp_sftp, temp_ssh = None, None
+        source_ssh_semaphore = ssh_semaphores.get('SOURCE_SERVER')
         try:
-            _, temp_ssh = connect_sftp(source_sftp_config)
+            temp_sftp, temp_ssh = connect_sftp(source_sftp_config, semaphore=source_ssh_semaphore)
             content_is_dir = is_remote_dir(temp_ssh, source_content_path)
             logging.info(f"Source content '{os.path.basename(source_content_path)}' is a directory: {content_is_dir}")
         except Exception as e:
             logging.error(f"Could not determine if '{source_content_path}' is a directory. Assuming it is (maintaining old behavior). Error: {e}", exc_info=True)
             content_is_dir = True # Default to old behavior on error to be safe
         finally:
-            if temp_ssh:
-                temp_ssh.close()
+            disconnect_sftp(temp_sftp, temp_ssh, semaphore=source_ssh_semaphore)
 
         if content_is_dir:
             # If it's a directory, the destination path is the base path plus the directory name.
@@ -1183,6 +1377,8 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
             transfer_content_rsync(source_sftp_config, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, dry_run)
             logging.info(f"Rsync transfer completed successfully for '{name}'.")
         else:  # sftp or sftp_upload
+            # This connection is just for listing files, so we don't need a semaphore here,
+            # as it will be closed before the concurrent file transfers start.
             source_sftp, source_ssh = connect_sftp(source_sftp_config)
             all_files = []
             source_stat = source_sftp.stat(source_content_path)
@@ -1208,11 +1404,13 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
             if transfer_mode == 'sftp_upload':
                 logging.info(f"Starting SFTP-to-SFTP upload for '{name}'")
                 dest_sftp_config = config['DESTINATION_SERVER']
-                transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run)
+                local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
+                dest_ssh_semaphore = ssh_semaphores.get('DESTINATION_SERVER')
+                transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run, local_cache_sftp_upload, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore)
                 logging.info(f"SFTP-to-SFTP upload completed for '{name}'.")
             else: # Default 'sftp' download
                 logging.info(f"Starting SFTP download for '{name}'")
-                transfer_content(source_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run)
+                transfer_content(source_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run, ssh_semaphore=source_ssh_semaphore)
                 logging.info(f"SFTP download completed successfully for '{name}'.")
 
         destination_save_path = remote_dest_base_path.replace("\\", "/")
@@ -1725,8 +1923,13 @@ def main():
         task_add_lock = threading.Lock()
         plan_lock = threading.Lock()
         overall_progress_lock = threading.Lock()
-        # Limit concurrent SSH exec_command calls to prevent overwhelming the server
-        ssh_semaphore = threading.Semaphore(8)
+        # Create a dictionary of semaphores, one for each server, to manage concurrent SSH sessions.
+        ssh_semaphores = {}
+        server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
+        for section_name in server_sections:
+            max_sessions = config[section_name].getint('max_concurrent_ssh_sessions', 8)
+            ssh_semaphores[section_name] = threading.Semaphore(max_sessions)
+            logging.info(f"Initialized SSH session limit for '{section_name}' to {max_sessions}.")
 
         job_progress = Progress(
             TextColumn("  {task.description}", justify="left"),
@@ -1766,8 +1969,15 @@ def main():
                 with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as analysis_executor, \
                      ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as transfer_executor:
 
+                    # Get the correct semaphore for the source server to pass to the threads.
+                    source_server_section = 'SOURCE_SERVER'
+                    source_ssh_semaphore = ssh_semaphores.get(source_server_section)
+                    if not source_ssh_semaphore:
+                        live.console.log(f"[bold red]Error: SSH semaphore for server section '{source_server_section}' not found. Check config.[/]")
+                        return 1
+
                     analysis_future_to_torrent = {
-                        analysis_executor.submit(analyze_torrent, torrent, sftp_config, transfer_mode, live.console, sftp_client=sftp_analysis_client, ssh_client=ssh_analysis_client, semaphore=ssh_semaphore): torrent
+                        analysis_executor.submit(analyze_torrent, torrent, sftp_config, transfer_mode, live.console, sftp_client=sftp_analysis_client, ssh_client=ssh_analysis_client, semaphore=source_ssh_semaphore): torrent
                         for torrent in eligible_torrents
                     }
                     transfer_future_to_torrent = {}
@@ -1793,7 +2003,7 @@ def main():
                                     transfer_torrent, analyzed_torrent, total_size,
                                     source_qbit, destination_qbit, config, tracker_rules,
                                     job_progress, overall_progress, overall_task,
-                                    file_counts, count_lock, task_add_lock,
+                                    file_counts, count_lock, task_add_lock, ssh_semaphores,
                                     args.dry_run, args.test_run
                                 )
                                 transfer_future_to_torrent[transfer_future] = analyzed_torrent

@@ -34,6 +34,10 @@ host = source-server.example.com
 port = 22
 username = your_sftp_username
 password = your_sftp_password
+# The maximum number of concurrent SSH sessions to use for remote operations on this server.
+# A lower number can help prevent "Secsh channel open FAILED" errors.
+# It is recommended to keep this value at or below your SSH server's 'MaxSessions' setting (often 10).
+max_concurrent_ssh_sessions = 8
 
 [DESTINATION_SERVER]
 # (Optional) Connection details for the DESTINATION server.
@@ -43,6 +47,8 @@ host = destination-server.example.com
 port = 22
 username = your_sftp_username
 password = your_sftp_password
+# The maximum number of concurrent SSH sessions to use for remote operations on this server.
+max_concurrent_ssh_sessions = 8
 
 [DESTINATION_PATHS]
 # The absolute path where torrent data will be moved.
@@ -77,3 +83,8 @@ transfer_mode = rsync
 # The maximum number of files to transfer simultaneously within a single torrent job.
 # This applies to the 'sftp' and 'sftp_upload' modes.
 max_concurrent_file_transfers = 5
+# (Optional) For 'sftp_upload' mode, download the file to a local temporary location before uploading.
+# This can be useful on systems with low memory to avoid potential buffering issues with Paramiko,
+# at the cost of requiring local disk space for the transfer. The local download does not
+# count towards the 'max_concurrent_file_transfers' limit.
+local_cache_sftp_upload = False
