@@ -365,15 +365,17 @@ def get_remote_size_rsync(sftp_config, remote_path):
 
 
 @retry(tries=2, delay=5)
-def get_remote_size_du(ssh_client, remote_path):
+def get_remote_size_du(ssh_client, remote_path, semaphore):
     """
     Gets the total size of a remote file or directory using 'du -sb'.
     This is significantly faster for directories than recursive SFTP stat calls.
-    Requires a connected Paramiko SSHClient.
+    Requires a connected Paramiko SSHClient and uses a semaphore to limit concurrency.
     """
     # Escape single quotes in the path to prevent command injection issues.
     escaped_path = remote_path.replace("'", "'\\''")
     command = f"du -sb '{escaped_path}'"
+
+    semaphore.acquire()
     try:
         stdin, stdout, stderr = ssh_client.exec_command(command, timeout=60)
         exit_status = stdout.channel.recv_exit_status()  # Wait for command to finish
@@ -397,6 +399,23 @@ def get_remote_size_du(ssh_client, remote_path):
         logging.error(f"An error occurred executing 'du' command for '{remote_path}': {e}")
         # Re-raise to be handled by the retry decorator or the calling function
         raise
+    finally:
+        semaphore.release()
+
+
+def is_remote_dir(ssh_client, path):
+    """Checks if a remote path is a directory using 'test -d'."""
+    try:
+        # Escape single quotes to prevent command injection
+        escaped_path = path.replace("'", "'\\''")
+        command = f"test -d '{escaped_path}'"
+        stdin, stdout, stderr = ssh_client.exec_command(command, timeout=30)
+        exit_status = stdout.channel.recv_exit_status()
+        return exit_status == 0
+    except Exception as e:
+        logging.error(f"Error checking if remote path '{path}' is a directory: {e}")
+        # Default to assuming it's not a directory on error for safety
+        return False
 
 
 def _get_all_files_recursive(sftp, remote_path, base_dest_path, file_list):
@@ -1074,10 +1093,10 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_client=None, ssh_client=None):
+def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_client=None, ssh_client=None, semaphore=None):
     """
     Analyzes a single torrent to determine its size.
-    Can reuse existing SFTP/SSH client connections.
+    Can reuse existing SFTP/SSH client connections and a semaphore for rate limiting.
     Returns a tuple of (torrent, size). Size is None if calculation fails.
     """
     name = torrent.name
@@ -1086,25 +1105,23 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_clie
     total_size = None
 
     try:
-        # Prioritize the fastest method if an SSH client is available
-        if ssh_client:
-            total_size = get_remote_size_du(ssh_client, remote_content_path)
+        # Prioritize the fastest method if an SSH client and semaphore are available
+        if ssh_client and semaphore:
+            total_size = get_remote_size_du(ssh_client, remote_content_path, semaphore)
         elif transfer_mode == 'rsync':
             total_size = get_remote_size_rsync(sftp_config, remote_content_path)
-        else:  # sftp or sftp_upload mode, but no pre-existing ssh_client
-            # If no sftp client is provided, create a temporary one.
-            if sftp_client is None:
-                temp_sftp, temp_ssh = None, None
-                try:
-                    # We can use the ssh client from this new connection for 'du'
-                    temp_sftp, temp_ssh = connect_sftp(sftp_config)
-                    total_size = get_remote_size_du(temp_ssh, remote_content_path)
-                finally:
-                    if temp_sftp: temp_sftp.close()
-                    if temp_ssh: temp_ssh.close()
-            # Otherwise, use the provided sftp client (slower method)
-            else:
-                total_size = get_remote_size(sftp_client, remote_content_path)
+        else:
+            # Fallback for sftp/sftp_upload mode when no shared SSH client is available
+            temp_sftp, temp_ssh = None, None
+            try:
+                # We need to establish a temporary connection to get an SSH client
+                temp_sftp, temp_ssh = connect_sftp(sftp_config)
+                # Since this is a temporary connection, we also need a temporary semaphore
+                temp_semaphore = threading.Semaphore(8)
+                total_size = get_remote_size_du(temp_ssh, remote_content_path, temp_semaphore)
+            finally:
+                if temp_sftp: temp_sftp.close()
+                if temp_ssh: temp_ssh.close()
 
     except Exception as e:
         live_console.log(f"[bold red]Error calculating size for '{name}': {e}[/]")
@@ -1129,13 +1146,34 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
     try:
         dest_base_path = config['DESTINATION_PATHS']['destination_path']
         remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
-
+        source_sftp_config = config['SOURCE_SERVER']
         source_content_path = torrent.content_path
-        content_name = os.path.basename(source_content_path)
-        dest_content_path = os.path.join(dest_base_path, content_name)
+
+        # Check if the source content is a directory or a single file to construct the correct destination path
+        content_is_dir = False
+        temp_ssh = None
+        try:
+            _, temp_ssh = connect_sftp(source_sftp_config)
+            content_is_dir = is_remote_dir(temp_ssh, source_content_path)
+            logging.info(f"Source content '{os.path.basename(source_content_path)}' is a directory: {content_is_dir}")
+        except Exception as e:
+            logging.error(f"Could not determine if '{source_content_path}' is a directory. Assuming it is (maintaining old behavior). Error: {e}", exc_info=True)
+            content_is_dir = True # Default to old behavior on error to be safe
+        finally:
+            if temp_ssh:
+                temp_ssh.close()
+
+        if content_is_dir:
+            # If it's a directory, the destination path is the base path plus the directory name.
+            content_name = os.path.basename(source_content_path)
+            dest_content_path = os.path.join(dest_base_path, content_name)
+        else:
+            # If it's a single file, create a directory for it named after the torrent.
+            content_name = os.path.basename(source_content_path)
+            dest_content_path = os.path.join(dest_base_path, torrent.name, content_name)
+            logging.info(f"Single-file torrent detected. Adjusting destination path to: {dest_content_path}")
 
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-        source_sftp_config = config['SOURCE_SERVER']
 
         with task_add_lock:
             parent_task_id = job_progress.add_task(name, total=total_size, start=True)
@@ -1687,6 +1725,8 @@ def main():
         task_add_lock = threading.Lock()
         plan_lock = threading.Lock()
         overall_progress_lock = threading.Lock()
+        # Limit concurrent SSH exec_command calls to prevent overwhelming the server
+        ssh_semaphore = threading.Semaphore(8)
 
         job_progress = Progress(
             TextColumn("  {task.description}", justify="left"),
@@ -1727,7 +1767,7 @@ def main():
                      ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as transfer_executor:
 
                     analysis_future_to_torrent = {
-                        analysis_executor.submit(analyze_torrent, torrent, sftp_config, transfer_mode, live.console, sftp_client=sftp_analysis_client, ssh_client=ssh_analysis_client): torrent
+                        analysis_executor.submit(analyze_torrent, torrent, sftp_config, transfer_mode, live.console, sftp_client=sftp_analysis_client, ssh_client=ssh_analysis_client, semaphore=ssh_semaphore): torrent
                         for torrent in eligible_torrents
                     }
                     transfer_future_to_torrent = {}
