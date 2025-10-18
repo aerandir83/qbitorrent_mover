@@ -77,6 +77,10 @@ transfer_mode = rsync
 # The maximum number of files to transfer simultaneously within a single torrent job.
 # This applies to the 'sftp' and 'sftp_upload' modes.
 max_concurrent_file_transfers = 5
+# (Optional) The maximum number of concurrent SSH sessions to use for remote operations (like calculating directory sizes).
+# A lower number can help prevent "Secsh channel open FAILED" errors on some SSH servers.
+# It is recommended to keep this value at or below your SSH server's 'MaxSessions' setting (often 10).
+max_concurrent_ssh_sessions = 8
 # (Optional) For 'sftp_upload' mode, download the file to a local temporary location before uploading.
 # This can be useful on systems with low memory to avoid potential buffering issues with Paramiko,
 # at the cost of requiring local disk space for the transfer. The local download does not

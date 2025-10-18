@@ -1893,7 +1893,8 @@ def main():
         plan_lock = threading.Lock()
         overall_progress_lock = threading.Lock()
         # Limit concurrent SSH exec_command calls to prevent overwhelming the server
-        ssh_semaphore = threading.Semaphore(8)
+        max_ssh_sessions = config['SETTINGS'].getint('max_concurrent_ssh_sessions', 8)
+        ssh_semaphore = threading.Semaphore(max_ssh_sessions)
 
         job_progress = Progress(
             TextColumn("  {task.description}", justify="left"),
