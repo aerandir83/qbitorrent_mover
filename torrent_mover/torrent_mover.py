@@ -1346,7 +1346,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                 dest_sftp_config = config['DESTINATION_SERVER']
                 local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
                 dest_ssh_semaphore = ssh_semaphores.get('DESTINATION_SERVER')
-                transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, torrent.hash, dry_run, local_cache_sftp_upload, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore)
+                transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, count_lock, file_task_map, max_concurrent_transfers, torrent.hash, dry_run, local_cache_sftp_upload, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore)
                 logging.info(f"SFTP-to-SFTP upload completed for '{name}'.")
             else: # Default 'sftp' download
                 logging.info(f"Starting SFTP download for '{name}'")
@@ -1418,10 +1418,10 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                 logging.error(f"Failed to resume torrent {name} on Source after error: {resume_e}")
         return False
     finally:
-        if sftp:
-            sftp.close()
-        if ssh_client:
-            ssh_client.close()
+        if source_sftp:
+            source_sftp.close()
+        if source_ssh:
+            source_ssh.close()
         if parent_task_id is not None:
             job_progress.stop_task(parent_task_id)
             if success:
@@ -1957,7 +1957,7 @@ def main():
                             if future.result():
                                 processed_count += 1
                         except Exception as e:
-                            live.console.log(f"[bold red]An exception was thrown for torrent '{torrent.name}': {e}[/]", exc_info=True)
+                            logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
                         finally:
                             torrent_progress.update(torrent_task, advance=1)
                             if len(job_progress.tasks) > 0 and job_progress.tasks[-1].description != " ":
