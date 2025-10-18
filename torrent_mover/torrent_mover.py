@@ -267,54 +267,6 @@ from rich.logging import RichHandler
 from rich.text import Text
 from rich.prompt import Prompt
 
-# --- Custom Columns ---
-
-class FileCountColumn(TextColumn):
-    """A column to display the number of completed files vs total files for parent tasks."""
-    def __init__(self, file_counts, *args, **kwargs):
-        super().__init__("", *args, **kwargs)
-        self.file_counts = file_counts
-
-    def render(self, task: "Task") -> Text:
-        if task.id in self.file_counts:
-            completed, total = self.file_counts[task.id]
-            return Text(f"{completed}/{total}", style="progress.percentage")
-        return Text("")
-
-class ConditionalTimeElapsedColumn(TimeElapsedColumn):
-    """A column that displays the elapsed time only for child tasks."""
-    def __init__(self, file_counts, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.file_counts = file_counts
-
-    def render(self, task: "Task") -> Text:
-        # If it's a parent task, don't render anything
-        if task.id in self.file_counts:
-            return Text("")
-        return super().render(task)
-
-class FixedWidthTimeRemainingColumn(TimeRemainingColumn):
-    """Renders time remaining with a fixed width to prevent flickering."""
-    def render(self, task: "Task") -> Text:
-        """Render time remaining in a fixed-width column."""
-        # Get the text from the parent class
-        original_text_obj = super().render(task)
-        original_text = original_text_obj.plain
-        # Pad the text to a fixed width to prevent the column from changing size
-        padded_text = f"{original_text:>10}"
-        return Text(padded_text, style=original_text_obj.style)
-
-class FixedWidthTransferSpeedColumn(TransferSpeedColumn):
-    """Renders transfer speed with a fixed width to prevent flickering."""
-    def render(self, task: "Task") -> Text:
-        """Render transfer speed in a fixed-width column."""
-        # Get the text from the parent class
-        original_text_obj = super().render(task)
-        original_text = original_text_obj.plain
-        # Pad the text to a fixed width to prevent the column from changing size
-        padded_text = f"{original_text:>12}"
-        return Text(padded_text, style=original_text_obj.style)
-
 # --- SFTP Transfer Logic with Progress Bar ---
 
 def get_remote_size(sftp, remote_path):
@@ -1057,7 +1009,7 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, job_progress, p
         # For single-file torrents, there is no sub-task, so we pass None for file_task_id
         _sftp_download_file(sftp_config, remote_path, local_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, None, dry_run, ssh_semaphore=ssh_semaphore)
 
-def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_path, dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run=False, local_cache_sftp_upload=False, source_ssh_semaphore=None, dest_ssh_semaphore=None):
+def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_path, dest_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, torrent_hash, dry_run=False, local_cache_sftp_upload=False, source_ssh_semaphore=None, dest_ssh_semaphore=None):
     """
     Transfers a remote file or directory from a source SFTP to a destination SFTP server.
     """
@@ -1080,7 +1032,8 @@ def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sf
                     file_counts[parent_task_id][0] = file_counts[parent_task_id][1]
                 return
 
-            temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{os.getpid()}"
+            # Use a predictable directory name based on the torrent hash for resuming
+            temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{torrent_hash}"
             temp_dir.mkdir(exist_ok=True)
 
             # Use a separate, unlimited thread pool for downloads
@@ -1114,7 +1067,7 @@ def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sf
         with count_lock:
             file_counts[parent_task_id] = [0, 1]
         if local_cache_sftp_upload:
-            temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{os.getpid()}"
+            temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{torrent_hash}"
             temp_dir.mkdir(exist_ok=True)
             local_path = temp_dir / os.path.basename(source_path)
             _sftp_download_to_cache(source_sftp_config, source_path, local_path, ssh_semaphore=source_ssh_semaphore)
@@ -1297,25 +1250,20 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, sftp_clie
     total_size = None
 
     try:
-        # Prioritize the fastest method if an SSH client and semaphore are available
-        if ssh_client and semaphore:
-            total_size = get_remote_size_du(ssh_client, remote_content_path, semaphore)
-        elif transfer_mode == 'rsync':
+        if transfer_mode == 'rsync':
             total_size = get_remote_size_rsync(sftp_config, remote_content_path)
         else:
-            # Fallback for sftp/sftp_upload mode when no shared SSH client is available.
-            # We acquire the semaphore here to limit concurrent *connections* and executions.
+            # For SFTP modes, always establish a temporary, independent connection for analysis.
+            # This is more robust against "Secsh channel open FAILED" errors than sharing one connection.
+            # The semaphore still correctly limits the total number of concurrent connections.
             temp_sftp, temp_ssh = None, None
-            semaphore.acquire()
             try:
-                # We need to establish a temporary connection to get an SSH client
-                temp_sftp, temp_ssh = connect_sftp(sftp_config)
-                # Call the core, retriable function directly, as we already have the lock.
+                # connect_sftp already acquires the semaphore for us.
+                temp_sftp, temp_ssh = connect_sftp(sftp_config, semaphore=semaphore)
                 total_size = _get_remote_size_du_core(temp_ssh, remote_content_path)
             finally:
-                if temp_sftp: temp_sftp.close()
-                if temp_ssh: temp_ssh.close()
-                semaphore.release()
+                # disconnect_sftp releases the semaphore for us.
+                disconnect_sftp(temp_sftp, temp_ssh, semaphore=semaphore)
 
     except Exception as e:
         live_console.log(f"[bold red]Error calculating size for '{name}': {e}[/]")
@@ -1406,7 +1354,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                 dest_sftp_config = config['DESTINATION_SERVER']
                 local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
                 dest_ssh_semaphore = ssh_semaphores.get('DESTINATION_SERVER')
-                transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, dry_run, local_cache_sftp_upload, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore)
+                transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, file_counts, count_lock, file_task_map, max_concurrent_transfers, torrent.hash, dry_run, local_cache_sftp_upload, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore)
                 logging.info(f"SFTP-to-SFTP upload completed for '{name}'.")
             else: # Default 'sftp' download
                 logging.info(f"Starting SFTP download for '{name}'")
@@ -1915,10 +1863,9 @@ def main():
         torrent_task = torrent_progress.add_task("Completed", total=total_count)
         analysis_task = analysis_progress.add_task("Analyzed", total=total_count)
 
-        overall_progress = Progress(TextColumn("[bold green]Overall"), BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), TotalFileSizeColumn(), FixedWidthTransferSpeedColumn(), FixedWidthTimeRemainingColumn())
+        overall_progress = Progress(TextColumn("[bold green]Overall"), BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), TotalFileSizeColumn(), TransferSpeedColumn(), TimeRemainingColumn())
         overall_task = overall_progress.add_task("Total progress", total=0)
 
-        file_counts = defaultdict(lambda: [0, 0])
         count_lock = threading.Lock()
         task_add_lock = threading.Lock()
         plan_lock = threading.Lock()
@@ -1935,11 +1882,11 @@ def main():
             TextColumn("  {task.description}", justify="left"),
             BarColumn(finished_style="green"),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TotalFileSizeColumn(),
-            FixedWidthTransferSpeedColumn(),
-            FixedWidthTimeRemainingColumn(),
-            ConditionalTimeElapsedColumn(file_counts),
-            FileCountColumn(file_counts)
+            FileSizeColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+            TimeElapsedColumn(),
+            MofNCompleteColumn(),
         )
 
         plan_text = Text(f"Found {total_count} torrents to process...\n", style="bold")
@@ -1959,13 +1906,7 @@ def main():
 
             analysis_workers = max(10, args.parallel_jobs * 2)
 
-            sftp_analysis_client, ssh_analysis_client = None, None
             try:
-                # If using an SFTP-based transfer mode, create one client for all analysis jobs
-                if transfer_mode in ['sftp', 'sftp_upload']:
-                    logging.info("Pre-connecting to source SFTP server for analysis...")
-                    sftp_analysis_client, ssh_analysis_client = connect_sftp(sftp_config)
-
                 with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as analysis_executor, \
                      ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as transfer_executor:
 
@@ -2035,13 +1976,6 @@ def main():
                 live.console.print("\n[bold yellow]Process interrupted by user. Transfers will be cancelled.[/bold yellow]")
                 # No need to manually shutdown, the `with` block handles it.
                 raise # Re-raise to be caught by the outer try/except
-            finally:
-                # Clean up the dedicated analysis SFTP client if it was created
-                if sftp_analysis_client:
-                    logging.info("Closing analysis SFTP connection.")
-                    sftp_analysis_client.close()
-                if ssh_analysis_client:
-                    ssh_analysis_client.close()
         logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
     except KeyboardInterrupt:
         pass
