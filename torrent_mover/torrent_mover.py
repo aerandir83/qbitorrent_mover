@@ -483,6 +483,16 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
     sftp, ssh = None, None
     upload_successful = False
     file_name = local_cache_path.name
+
+    if not local_cache_path.is_file():
+        logging.warning(f"Cannot upload '{file_name}' from cache: File does not exist in the cache directory.")
+        # We can't advance progress because we don't know the file size.
+        # This scenario happens if the source file vanishes after being listed but before being downloaded.
+        # The overall torrent transfer will likely fail later, but this prevents a crash.
+        if file_task_id is not None:
+            job_progress.update(file_task_id, description=f"└─ [yellow]Skipped (not found)[/] [cyan]{file_name}[/]")
+        return
+
     try:
         sftp, ssh = connect_sftp(dest_sftp_config, semaphore=ssh_semaphore)
 
@@ -1288,11 +1298,14 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
             # If it's a directory, the destination path is the base path plus the directory name.
             content_name = os.path.basename(source_content_path)
             dest_content_path = os.path.join(dest_base_path, content_name)
+            destination_save_path = remote_dest_base_path
         else:
             # If it's a single file, create a directory for it named after the torrent.
             content_name = os.path.basename(source_content_path)
             dest_content_path = os.path.join(dest_base_path, torrent.name, content_name)
+            destination_save_path = os.path.join(remote_dest_base_path, torrent.name)
             logging.info(f"Single-file torrent detected. Adjusting destination path to: {dest_content_path}")
+            logging.info(f"Single-file torrent detected. Adjusting remote save path to: {destination_save_path}")
 
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
@@ -1340,7 +1353,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                 transfer_content(source_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, count_lock, file_task_map, max_concurrent_transfers, dry_run, ssh_semaphore=source_ssh_semaphore)
                 logging.info(f"SFTP download completed successfully for '{name}'.")
 
-        destination_save_path = remote_dest_base_path.replace("\\", "/")
+        destination_save_path = destination_save_path.replace("\\", "/")
 
         if not dry_run:
             logging.info(f"Exporting .torrent file for {name}")
