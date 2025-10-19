@@ -1280,7 +1280,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         source_sftp_config = config['SOURCE_SERVER']
         source_content_path = torrent.content_path
 
-        # Check if the source content is a directory or a single file to construct the correct destination path
+        # Check if the source content is a directory or a single file. This is still useful for logging.
         content_is_dir = False
         temp_sftp, temp_ssh = None, None
         source_ssh_semaphore = ssh_semaphores.get('SOURCE_SERVER')
@@ -1294,18 +1294,14 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         finally:
             disconnect_sftp(temp_sftp, temp_ssh, semaphore=source_ssh_semaphore)
 
-        if content_is_dir:
-            # If it's a directory, the destination path is the base path plus the directory name.
-            content_name = os.path.basename(source_content_path)
-            dest_content_path = os.path.join(dest_base_path, content_name)
-            destination_save_path = remote_dest_base_path
-        else:
-            # If it's a single file, create a directory for it named after the torrent.
-            content_name = os.path.basename(source_content_path)
-            dest_content_path = os.path.join(dest_base_path, torrent.name, content_name)
-            destination_save_path = os.path.join(remote_dest_base_path, torrent.name)
-            logging.info(f"Single-file torrent detected. Adjusting destination path to: {dest_content_path}")
-            logging.info(f"Single-file torrent detected. Adjusting remote save path to: {destination_save_path}")
+        # --- Path Construction ---
+        # The content's name (whether file or directory) is appended to the base path for the physical transfer.
+        content_name = os.path.basename(source_content_path)
+        dest_content_path = os.path.join(dest_base_path, content_name)
+
+        # The save path for the client is always the base directory. The client itself handles
+        # creating subdirectories if the torrent contains them. This ensures a 1:1 mapping.
+        destination_save_path = remote_dest_base_path
 
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
