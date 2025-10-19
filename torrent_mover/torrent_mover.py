@@ -524,7 +524,7 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
 
     try:
         sftp, ssh = connect_sftp(dest_sftp_config, semaphore=ssh_semaphore)
-
+        start_time = time.time()
         total_size = local_cache_path.stat().st_size
         dest_size = 0
         try:
@@ -569,8 +569,16 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
                     overall_progress.update(overall_task_id, advance=increment)
 
         if sftp.stat(dest_file_path).st_size == total_size:
+            end_time = time.time()
+            duration = end_time - start_time
             logging.info(f"Upload from cache of '{file_name}' completed.")
             upload_successful = True
+            if duration > 0:
+                speed_mbps = (total_size * 8) / (duration * 1024 * 1024)
+                logging.info(f"PERF: (cache) '{file_name}' ({total_size / 1024**2:.2f} MiB) took {duration:.2f} seconds.")
+                logging.info(f"PERF: Average speed: {speed_mbps:.2f} Mbps.")
+            else:
+                logging.info(f"PERF: (cache) '{file_name}' completed in < 1 second.")
         else:
             raise Exception("Final size mismatch during cached upload.")
 
@@ -598,7 +606,7 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
         # Connect to both servers
         source_sftp, source_ssh = connect_sftp(source_sftp_config, semaphore=source_ssh_semaphore)
         dest_sftp, dest_ssh = connect_sftp(dest_sftp_config, semaphore=dest_ssh_semaphore)
-
+        start_time = time.time()
         # Get source file size
         try:
             source_stat = source_sftp.stat(source_file_path)
@@ -673,8 +681,16 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
 
             final_dest_size = dest_sftp.stat(dest_file_path).st_size
             if final_dest_size == total_size:
+                end_time = time.time()
+                duration = end_time - start_time
                 logging.info(f"Upload of '{file_name}' completed.")
                 upload_successful = True
+                if duration > 0:
+                    speed_mbps = (total_size * 8) / (duration * 1024 * 1024)
+                    logging.info(f"PERF: '{file_name}' ({total_size / 1024**2:.2f} MiB) took {duration:.2f} seconds.")
+                    logging.info(f"PERF: Average speed: {speed_mbps:.2f} Mbps.")
+                else:
+                    logging.info(f"PERF: '{file_name}' completed in < 1 second.")
             else:
                 raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_dest_size}")
 
@@ -715,7 +731,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
     download_successful = False
     try:
         sftp, ssh_client = connect_sftp(sftp_config, semaphore=ssh_semaphore)
-
+        start_time = time.time()
         remote_stat = sftp.stat(remote_file)
         total_size = remote_stat.st_size
         logging.debug(f"SFTP Check: Remote file '{remote_file}' size: {total_size}")
@@ -804,8 +820,16 @@ def _sftp_download_file(sftp_config, remote_file, local_file, job_progress, pare
             # Final check
             final_local_size = local_path.stat().st_size
             if final_local_size == total_size:
+                end_time = time.time()
+                duration = end_time - start_time
                 logging.info(f"Download of '{file_name}' completed.")
                 download_successful = True
+                if duration > 0:
+                    speed_mbps = (total_size * 8) / (duration * 1024 * 1024)
+                    logging.info(f"PERF: '{file_name}' ({total_size / 1024**2:.2f} MiB) took {duration:.2f} seconds.")
+                    logging.info(f"PERF: Average speed: {speed_mbps:.2f} Mbps.")
+                else:
+                    logging.info(f"PERF: '{file_name}' completed in < 1 second.")
             else:
                 # This could happen if the remote file changed size during transfer
                 raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_local_size}")
@@ -1154,6 +1178,107 @@ def wait_for_recheck_completion(client, torrent_hash, timeout_seconds=900, dry_r
             return False
     logging.error(f"Timeout: Recheck did not complete for torrent {torrent_hash[:10]} in {timeout_seconds}s.")
     return False
+
+
+def cleanup_orphaned_cache(destination_qbit):
+    """
+    Scans for leftover cache directories from previous runs and removes them
+    if the corresponding torrent is already successfully on the destination client.
+    """
+    temp_dir = Path(tempfile.gettempdir())
+    cache_prefix = "torrent_mover_cache_"
+    logging.info("--- Running Orphaned Cache Cleanup ---")
+
+    try:
+        # Get all hashes from the destination that are 100% complete
+        all_dest_hashes = {t.hash for t in destination_qbit.torrents_info() if t.progress == 1}
+        logging.info(f"Found {len(all_dest_hashes)} completed torrent hashes on the destination client for cleanup check.")
+    except Exception as e:
+        logging.error(f"Could not retrieve torrents from destination client for cache cleanup: {e}")
+        return
+
+    found_cache_dirs = 0
+    cleaned_cache_dirs = 0
+    for item in temp_dir.iterdir():
+        if item.is_dir() and item.name.startswith(cache_prefix):
+            found_cache_dirs += 1
+            torrent_hash = item.name[len(cache_prefix):]
+            # If the torrent hash from the cache folder exists on the destination and is complete,
+            # it means the transfer was successful and the cache is now orphaned.
+            if torrent_hash in all_dest_hashes:
+                logging.warning(f"Found orphaned cache for a completed torrent: {torrent_hash}. Removing.")
+                try:
+                    shutil.rmtree(item)
+                    cleaned_cache_dirs += 1
+                except OSError as e:
+                    logging.error(f"Failed to remove orphaned cache directory '{item}': {e}")
+            else:
+                logging.info(f"Found valid cache for an incomplete or non-existent torrent: {torrent_hash}. Leaving it for resume.")
+
+    if found_cache_dirs == 0:
+        logging.info("No leftover cache directories found.")
+    else:
+        logging.info(f"Cleanup complete. Removed {cleaned_cache_dirs}/{found_cache_dirs} orphaned cache directories.")
+
+
+def destination_health_check(config, total_transfer_size_bytes):
+    """
+    Performs checks on the destination (local or remote) to ensure it's ready.
+    - Checks for sufficient disk space.
+    - Verifies write permissions.
+    Returns True if checks pass, False otherwise.
+    """
+    logging.info("--- Running Destination Health Check ---")
+    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+    dest_path = config['DESTINATION_PATHS'].get('destination_path')
+    remote_config = config.get('DESTINATION_SERVER') if transfer_mode == 'sftp_upload' else None
+
+    # --- Disk Space Check ---
+    available_space = -1
+    try:
+        if remote_config:
+            sftp, ssh = connect_sftp(remote_config)
+            try:
+                # statvfs returns stats for the filesystem containing the given path
+                stats = sftp.statvfs(dest_path)
+                available_space = stats.f_bavail * stats.f_frsize
+            finally:
+                disconnect_sftp(sftp, ssh)
+        else:
+            stats = os.statvfs(dest_path)
+            available_space = stats.f_bavail * stats.f_frsize
+
+        required_space_gb = total_transfer_size_bytes / (1024**3)
+        available_space_gb = available_space / (1024**3)
+        logging.info(f"Required space for this run: {required_space_gb:.2f} GB. Available on destination: {available_space_gb:.2f} GB.")
+
+        if total_transfer_size_bytes > available_space:
+            logging.error("FATAL: Not enough disk space on the destination.")
+            logging.error(f"Required: {required_space_gb:.2f} GB, Available: {available_space_gb:.2f} GB.")
+            return False
+        else:
+            logging.info("[green]SUCCESS:[/] Destination has enough disk space.")
+
+    except FileNotFoundError:
+        logging.error(f"FATAL: The destination path '{dest_path}' does not exist.")
+        if not remote_config:
+            logging.error("Please ensure the base directory is created and accessible on the local filesystem.")
+        else:
+            logging.error("Please ensure the base directory is created and accessible on the remote server.")
+        return False
+    except Exception as e:
+        logging.error(f"An error occurred during disk space check: {e}", exc_info=True)
+        return False
+
+    # --- Permissions Check ---
+    # We can reuse the existing test_path_permissions function.
+    if not test_path_permissions(dest_path, remote_config=remote_config):
+        logging.error("FATAL: Destination permission check failed.")
+        return False
+
+    logging.info("--- Destination Health Check Passed ---")
+    return True
+
 
 # --- Tracker-based Categorization ---
 
@@ -1832,6 +1957,9 @@ def main():
             return 1
         logging.info("qBittorrent connections established successfully.")
 
+        # Run cleanup for orphaned cache directories from previous failed runs
+        cleanup_orphaned_cache(destination_qbit)
+
         tracker_rules = load_tracker_rules(script_dir) # Load rules for the main run
 
         category_to_move = config['SETTINGS']['category_to_move']
@@ -1897,62 +2025,64 @@ def main():
         with Live(layout, refresh_per_second=4, transient=True) as live:
             sftp_config = config['SOURCE_SERVER']
             transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-
             analysis_workers = max(10, args.parallel_jobs * 2)
 
+            # --- Step 1: Analyze all torrents ---
+            analyzed_torrents = []
+            total_transfer_size = 0
+            live.console.log("[cyan]Analyzing torrents...[/]")
             try:
-                with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as analysis_executor, \
-                     ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as transfer_executor:
-
-                    # Get the correct semaphore for the source server to pass to the threads.
+                with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as executor:
                     source_server_section = 'SOURCE_SERVER'
                     source_ssh_semaphore = ssh_semaphores.get(source_server_section)
                     if not source_ssh_semaphore:
                         live.console.log(f"[bold red]Error: SSH semaphore for server section '{source_server_section}' not found. Check config.[/]")
                         return 1
 
-                    analysis_future_to_torrent = {
-                        analysis_executor.submit(analyze_torrent, torrent, sftp_config, transfer_mode, live.console, semaphore=source_ssh_semaphore): torrent
-                        for torrent in eligible_torrents
-                    }
-                    transfer_future_to_torrent = {}
-
-                    # Pipeline: As analysis completes, feed into the transfer pool
-                    for future in as_completed(analysis_future_to_torrent):
-                        original_torrent = analysis_future_to_torrent[future]
+                    future_to_torrent = {executor.submit(analyze_torrent, t, sftp_config, transfer_mode, live.console, semaphore=source_ssh_semaphore): t for t in eligible_torrents}
+                    for future in as_completed(future_to_torrent):
+                        torrent = future_to_torrent[future]
                         try:
-                            analyzed_torrent, total_size = future.result()
-                            analysis_progress.update(analysis_task, advance=1)
-
-                            if total_size is not None and total_size > 0:
+                            _analyzed_torrent, size = future.result()
+                            if size is not None and size > 0:
+                                analyzed_torrents.append((_analyzed_torrent, size))
+                                total_transfer_size += size
                                 with plan_lock:
-                                    size_gb = total_size / 1024**3
-                                    plan_text.append(f" • {analyzed_torrent.name} (")
+                                    size_gb = size / 1024**3
+                                    plan_text.append(f" • {_analyzed_torrent.name} (")
                                     plan_text.append(f"{size_gb:.2f} GB", style="bold")
                                     plan_text.append(")\n")
-                                with overall_progress_lock:
-                                    current_total = overall_progress.tasks[overall_task].total
-                                    overall_progress.update(overall_task, total=current_total + total_size)
-
-                                transfer_future = transfer_executor.submit(
-                                    transfer_torrent, analyzed_torrent, total_size,
-                                    source_qbit, destination_qbit, config, tracker_rules,
-                                    job_progress, overall_progress, overall_task,
-                                    count_lock, task_add_lock, ssh_semaphores,
-                                    args.dry_run, args.test_run
-                                )
-                                transfer_future_to_torrent[transfer_future] = analyzed_torrent
-                            else:
-                                torrent_progress.update(torrent_task, advance=1)
-
                         except Exception as e:
-                            live.console.log(f"[bold red]Error processing analysis for '{original_torrent.name}': {e}[/]")
+                            live.console.log(f"[bold red]Error during analysis of '{torrent.name}': {e}[/]")
+                        finally:
                             analysis_progress.update(analysis_task, advance=1)
-                            torrent_progress.update(torrent_task, advance=1)
+            except Exception as e:
+                live.console.log(f"[bold red]A critical error occurred during the analysis phase: {e}[/]", exc_info=True)
+                return 1
 
-                    live.console.log("[green]All torrents analyzed. Waiting for transfers to complete...[/]")
+            live.console.log("[green]Analysis complete.[/]")
 
-                    # Wait for all transfers to complete
+            if not analyzed_torrents:
+                live.console.log("[yellow]No valid, non-zero size torrents to transfer.[/yellow]")
+                return 0
+
+            # --- Step 2: Health Check ---
+            overall_progress.update(overall_task, total=total_transfer_size)
+            if not args.dry_run and not destination_health_check(config, total_transfer_size):
+                live.console.log("[bold red]Destination health check failed. Aborting transfer process.[/]")
+                return 1
+
+            # --- Step 3: Transfer all valid torrents ---
+            try:
+                with ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as executor:
+                    transfer_future_to_torrent = {
+                        executor.submit(
+                            transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
+                            job_progress, overall_progress, overall_task, count_lock, task_add_lock,
+                            ssh_semaphores, args.dry_run, args.test_run
+                        ): t for t, size in analyzed_torrents
+                    }
+
                     for future in as_completed(transfer_future_to_torrent):
                         torrent = transfer_future_to_torrent[future]
                         try:
@@ -1962,6 +2092,7 @@ def main():
                             logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
                         finally:
                             torrent_progress.update(torrent_task, advance=1)
+                            # Add a blank line to better separate finished jobs in the UI
                             if len(job_progress.tasks) > 0 and job_progress.tasks[-1].description != " ":
                                 job_progress.add_task(" ", total=1, completed=1)
             except KeyboardInterrupt:
