@@ -1221,6 +1221,56 @@ def cleanup_orphaned_cache(destination_qbit):
         logging.info(f"Cleanup complete. Removed {cleaned_cache_dirs}/{found_cache_dirs} orphaned cache directories.")
 
 
+def recover_cached_torrents(source_qbit, destination_qbit):
+    """
+    Scans for leftover cache directories from previous runs and adds them back
+    to the processing queue if the torrent is not on the destination.
+    """
+    temp_dir = Path(tempfile.gettempdir())
+    cache_prefix = "torrent_mover_cache_"
+    logging.info("--- Checking for incomplete cached transfers to recover ---")
+    recovered_torrents = []
+
+    try:
+        # Get all hashes from the destination client
+        all_dest_hashes = {t.hash for t in destination_qbit.torrents_info()}
+        logging.info(f"Found {len(all_dest_hashes)} torrent hashes on the destination client for recovery check.")
+    except Exception as e:
+        logging.error(f"Could not retrieve torrents from destination client for cache recovery: {e}")
+        return []
+
+    cache_dirs = [item for item in temp_dir.iterdir() if item.is_dir() and item.name.startswith(cache_prefix)]
+
+    if not cache_dirs:
+        logging.info("No leftover cache directories found to recover.")
+        return []
+
+    logging.info(f"Found {len(cache_dirs)} cache directories to check for recovery.")
+    hashes_to_recover = []
+    for item in cache_dirs:
+        torrent_hash = item.name[len(cache_prefix):]
+        if torrent_hash not in all_dest_hashes:
+            logging.warning(f"Found an incomplete cached transfer: {torrent_hash}. Will attempt to recover.")
+            hashes_to_recover.append(torrent_hash)
+
+    if not hashes_to_recover:
+        logging.info("All found cache directories correspond to completed torrents.")
+        return []
+
+    try:
+        # Get full torrent objects from the source client for the hashes we need to recover
+        source_torrents = source_qbit.torrents_info(torrent_hashes=hashes_to_recover)
+        recovered_torrents = list(source_torrents)
+        if recovered_torrents:
+             logging.info(f"Successfully recovered {len(recovered_torrents)} torrent(s) from cache. They will be added to the queue.")
+        else:
+             logging.warning("Could not find matching torrents on the source for the incomplete cache directories.")
+    except Exception as e:
+        logging.error(f"An error occurred while trying to get torrent info from the source for recovery: {e}")
+
+    return recovered_torrents
+
+
 def destination_health_check(config, total_transfer_size_bytes):
     """
     Performs checks on the destination (local or remote) to ensure it's ready.
@@ -1231,7 +1281,7 @@ def destination_health_check(config, total_transfer_size_bytes):
     logging.info("--- Running Destination Health Check ---")
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
     dest_path = config['DESTINATION_PATHS'].get('destination_path')
-    remote_config = config.get('DESTINATION_SERVER') if transfer_mode == 'sftp_upload' else None
+    remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' and 'DESTINATION_SERVER' in config else None
 
     # --- Disk Space Check ---
     available_space = -1
@@ -1959,6 +2009,7 @@ def main():
 
         # Run cleanup for orphaned cache directories from previous failed runs
         cleanup_orphaned_cache(destination_qbit)
+        recovered_torrents = recover_cached_torrents(source_qbit, destination_qbit)
 
         tracker_rules = load_tracker_rules(script_dir) # Load rules for the main run
 
@@ -1973,6 +2024,14 @@ def main():
                 size_threshold_gb = None
 
         eligible_torrents = get_eligible_torrents(source_qbit, category_to_move, size_threshold_gb)
+
+        # Combine recovered torrents with newly eligible torrents, ensuring no duplicates
+        if recovered_torrents:
+            eligible_hashes = {t.hash for t in eligible_torrents}
+            for torrent in recovered_torrents:
+                if torrent.hash not in eligible_hashes:
+                    eligible_torrents.append(torrent)
+
         if not eligible_torrents:
             logging.info("No torrents to move at this time.")
             return 0
