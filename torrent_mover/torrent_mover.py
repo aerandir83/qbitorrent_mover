@@ -269,6 +269,35 @@ from rich.prompt import Prompt
 
 # --- SFTP Transfer Logic with Progress Bar ---
 
+def sftp_mkdir_p(sftp, remote_path):
+    """
+    Ensures a directory exists on the remote SFTP server, creating it recursively if necessary.
+    This is similar to `mkdir -p`.
+    """
+    if not remote_path:
+        return
+    # Normalize to forward slashes and remove any trailing slash
+    remote_path = remote_path.replace('\\', '/').rstrip('/')
+
+    try:
+        # Check if the path already exists and is a directory
+        sftp.stat(remote_path)
+    except FileNotFoundError:
+        # Path does not exist, so create it
+        parent_dir = os.path.dirname(remote_path)
+        sftp_mkdir_p(sftp, parent_dir) # Recurse
+        try:
+            sftp.mkdir(remote_path)
+        except IOError as e:
+            # This can happen due to race conditions or permission issues
+            logging.error(f"Failed to create remote directory '{remote_path}': {e}")
+            # Re-check if it was created by another thread just in case
+            try:
+                sftp.stat(remote_path)
+            except FileNotFoundError:
+                # If it still doesn't exist, the error is genuine
+                raise e
+
 def get_remote_size(sftp, remote_path):
     """Recursively gets the total size of a remote file or directory."""
     total_size = 0
@@ -483,6 +512,16 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
     sftp, ssh = None, None
     upload_successful = False
     file_name = local_cache_path.name
+
+    if not local_cache_path.is_file():
+        logging.warning(f"Cannot upload '{file_name}' from cache: File does not exist in the cache directory.")
+        # We can't advance progress because we don't know the file size.
+        # This scenario happens if the source file vanishes after being listed but before being downloaded.
+        # The overall torrent transfer will likely fail later, but this prevents a crash.
+        if file_task_id is not None:
+            job_progress.update(file_task_id, description=f"└─ [yellow]Skipped (not found)[/] [cyan]{file_name}[/]")
+        return
+
     try:
         sftp, ssh = connect_sftp(dest_sftp_config, semaphore=ssh_semaphore)
 
@@ -514,19 +553,7 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
             job_progress.start_task(file_task_id)
 
         dest_dir = os.path.dirname(dest_file_path)
-        try:
-            sftp.stat(dest_dir)
-        except FileNotFoundError:
-            # A simple recursive mkdir
-            parts = dest_dir.replace('\\', '/').split('/')
-            current_dir = ''
-            for part in parts:
-                if not part: continue # Handles leading slash
-                current_dir = f"{current_dir}/{part}"
-                try:
-                    sftp.stat(current_dir)
-                except FileNotFoundError:
-                    sftp.mkdir(current_dir)
+        sftp_mkdir_p(sftp, dest_dir)
 
         with open(local_cache_path, 'rb') as source_f:
             source_f.seek(dest_size)
@@ -621,19 +648,7 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
 
         # Ensure destination directory exists
         dest_dir = os.path.dirname(dest_file_path)
-        try:
-            dest_sftp.stat(dest_dir)
-        except FileNotFoundError:
-            # A simple recursive mkdir
-            parts = dest_dir.replace('\\', '/').split('/')
-            current_dir = ''
-            for part in parts:
-                if not part: continue # Handles leading slash
-                current_dir = f"{current_dir}/{part}"
-                try:
-                    dest_sftp.stat(current_dir)
-                except FileNotFoundError:
-                    dest_sftp.mkdir(current_dir)
+        sftp_mkdir_p(dest_sftp, dest_dir)
 
         if file_task_id is not None:
             job_progress.update(file_task_id, visible=True)
@@ -1268,9 +1283,11 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         dest_base_path = config['DESTINATION_PATHS']['destination_path']
         remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
         source_sftp_config = config['SOURCE_SERVER']
-        source_content_path = torrent.content_path
+        # Sanitize the source path to remove any trailing slashes. This is critical because
+        # os.path.basename('/path/to/file.mkv/') returns an empty string, which corrupts the destination path.
+        source_content_path = torrent.content_path.rstrip('/\\')
 
-        # Check if the source content is a directory or a single file to construct the correct destination path
+        # Check if the source content is a directory or a single file. This is still useful for logging.
         content_is_dir = False
         temp_sftp, temp_ssh = None, None
         source_ssh_semaphore = ssh_semaphores.get('SOURCE_SERVER')
@@ -1284,15 +1301,14 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         finally:
             disconnect_sftp(temp_sftp, temp_ssh, semaphore=source_ssh_semaphore)
 
-        if content_is_dir:
-            # If it's a directory, the destination path is the base path plus the directory name.
-            content_name = os.path.basename(source_content_path)
-            dest_content_path = os.path.join(dest_base_path, content_name)
-        else:
-            # If it's a single file, create a directory for it named after the torrent.
-            content_name = os.path.basename(source_content_path)
-            dest_content_path = os.path.join(dest_base_path, torrent.name, content_name)
-            logging.info(f"Single-file torrent detected. Adjusting destination path to: {dest_content_path}")
+        # --- Path Construction ---
+        # The content's name (whether file or directory) is appended to the base path for the physical transfer.
+        content_name = os.path.basename(source_content_path)
+        dest_content_path = os.path.join(dest_base_path, content_name)
+
+        # The save path for the client is always the base directory. The client itself handles
+        # creating subdirectories if the torrent contains them. This ensures a 1:1 mapping.
+        destination_save_path = remote_dest_base_path
 
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
@@ -1340,7 +1356,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                 transfer_content(source_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, count_lock, file_task_map, max_concurrent_transfers, dry_run, ssh_semaphore=source_ssh_semaphore)
                 logging.info(f"SFTP download completed successfully for '{name}'.")
 
-        destination_save_path = remote_dest_base_path.replace("\\", "/")
+        destination_save_path = destination_save_path.replace("\\", "/")
 
         if not dry_run:
             logging.info(f"Exporting .torrent file for {name}")
