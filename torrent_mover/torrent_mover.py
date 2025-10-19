@@ -269,6 +269,35 @@ from rich.prompt import Prompt
 
 # --- SFTP Transfer Logic with Progress Bar ---
 
+def sftp_mkdir_p(sftp, remote_path):
+    """
+    Ensures a directory exists on the remote SFTP server, creating it recursively if necessary.
+    This is similar to `mkdir -p`.
+    """
+    if not remote_path:
+        return
+    # Normalize to forward slashes and remove any trailing slash
+    remote_path = remote_path.replace('\\', '/').rstrip('/')
+
+    try:
+        # Check if the path already exists and is a directory
+        sftp.stat(remote_path)
+    except FileNotFoundError:
+        # Path does not exist, so create it
+        parent_dir = os.path.dirname(remote_path)
+        sftp_mkdir_p(sftp, parent_dir) # Recurse
+        try:
+            sftp.mkdir(remote_path)
+        except IOError as e:
+            # This can happen due to race conditions or permission issues
+            logging.error(f"Failed to create remote directory '{remote_path}': {e}")
+            # Re-check if it was created by another thread just in case
+            try:
+                sftp.stat(remote_path)
+            except FileNotFoundError:
+                # If it still doesn't exist, the error is genuine
+                raise e
+
 def get_remote_size(sftp, remote_path):
     """Recursively gets the total size of a remote file or directory."""
     total_size = 0
@@ -524,19 +553,7 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
             job_progress.start_task(file_task_id)
 
         dest_dir = os.path.dirname(dest_file_path)
-        try:
-            sftp.stat(dest_dir)
-        except FileNotFoundError:
-            # A simple recursive mkdir
-            parts = dest_dir.replace('\\', '/').split('/')
-            current_dir = ''
-            for part in parts:
-                if not part: continue # Handles leading slash
-                current_dir = f"{current_dir}/{part}"
-                try:
-                    sftp.stat(current_dir)
-                except FileNotFoundError:
-                    sftp.mkdir(current_dir)
+        sftp_mkdir_p(sftp, dest_dir)
 
         with open(local_cache_path, 'rb') as source_f:
             source_f.seek(dest_size)
@@ -631,19 +648,7 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
 
         # Ensure destination directory exists
         dest_dir = os.path.dirname(dest_file_path)
-        try:
-            dest_sftp.stat(dest_dir)
-        except FileNotFoundError:
-            # A simple recursive mkdir
-            parts = dest_dir.replace('\\', '/').split('/')
-            current_dir = ''
-            for part in parts:
-                if not part: continue # Handles leading slash
-                current_dir = f"{current_dir}/{part}"
-                try:
-                    dest_sftp.stat(current_dir)
-                except FileNotFoundError:
-                    dest_sftp.mkdir(current_dir)
+        sftp_mkdir_p(dest_sftp, dest_dir)
 
         if file_task_id is not None:
             job_progress.update(file_task_id, visible=True)
