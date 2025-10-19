@@ -1296,8 +1296,6 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
 
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
-        # A map to hold progress bars for individual files
-        file_progress_map = {}
         with task_add_lock:
             parent_task_id = job_progress.add_task(name, total=total_size, start=True)
 
@@ -1325,7 +1323,6 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                             file_size = source_sftp.stat(remote_f).st_size
                         except FileNotFoundError:
                             file_size = 0
-                        # Individual file tasks track bytes
                         task_id = job_progress.add_task(f"└─ [cyan]{file_name}[/]", total=file_size, start=False, visible=False)
                         file_task_map[remote_f] = task_id
 
