@@ -1283,7 +1283,9 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         dest_base_path = config['DESTINATION_PATHS']['destination_path']
         remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
         source_sftp_config = config['SOURCE_SERVER']
-        source_content_path = torrent.content_path
+        # Sanitize the source path to remove any trailing slashes. This is critical because
+        # os.path.basename('/path/to/file.mkv/') returns an empty string, which corrupts the destination path.
+        source_content_path = torrent.content_path.rstrip('/\\')
 
         # Check if the source content is a directory or a single file. This is still useful for logging.
         content_is_dir = False
