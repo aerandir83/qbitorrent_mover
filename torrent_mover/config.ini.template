@@ -88,3 +88,10 @@ max_concurrent_file_transfers = 5
 # at the cost of requiring local disk space for the transfer. The local download does not
 # count towards the 'max_concurrent_file_transfers' limit.
 local_cache_sftp_upload = False
+# (Optional) After a successful transfer, change the ownership of the files on the destination.
+# The user and group to be set. Leave blank to skip changing ownership.
+# For 'sftp_upload' mode, this is executed on the DESTINATION_SERVER.
+# For 'rsync'/'sftp' modes, this is executed LOCALLY on the machine running the script.
+# NOTE: The user running the script needs the appropriate permissions to perform 'chown'.
+chown_user =
+chown_group =
