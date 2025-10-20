@@ -1289,9 +1289,23 @@ def destination_health_check(config, total_transfer_size_bytes):
         if remote_config:
             sftp, ssh = connect_sftp(remote_config)
             try:
-                # statvfs returns stats for the filesystem containing the given path
-                stats = sftp.statvfs(dest_path)
-                available_space = stats.f_bavail * stats.f_frsize
+                # Escape single quotes to prevent command injection
+                escaped_path = dest_path.replace("'", "'\\''")
+                command = f"df -kP '{escaped_path}'"
+                stdin, stdout, stderr = ssh.exec_command(command, timeout=30)
+                exit_status = stdout.channel.recv_exit_status()
+
+                if exit_status != 0:
+                    stderr_output = stderr.read().decode('utf-8').strip()
+                    raise Exception(f"'df' command failed with exit code {exit_status}. Stderr: {stderr_output}")
+
+                output = stdout.read().decode('utf-8').strip().splitlines()
+                if len(output) < 2:
+                    raise ValueError(f"Could not parse 'df' output. Raw output: '{' '.join(output)}'")
+
+                # Get the 'Available' column (4th column, 1-K blocks) from the second line
+                available_kb = int(output[1].split()[3])
+                available_space = available_kb * 1024
             finally:
                 disconnect_sftp(sftp, ssh)
         else:
