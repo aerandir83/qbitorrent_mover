@@ -1287,27 +1287,44 @@ def destination_health_check(config, total_transfer_size_bytes):
     available_space = -1
     try:
         if remote_config:
-            sftp, ssh = connect_sftp(remote_config)
+            # Use a temporary SSH connection to check disk space
+            ssh = None
             try:
+                # We don't need the SFTP client for this check, only SSH
+                # Reusing connect_sftp to establish the base SSH connection
+                _sftp, ssh = connect_sftp(remote_config)
+                if _sftp: _sftp.close() # Close the SFTP channel immediately
+
                 # Escape single quotes to prevent command injection
                 escaped_path = dest_path.replace("'", "'\\''")
                 command = f"df -kP '{escaped_path}'"
                 stdin, stdout, stderr = ssh.exec_command(command, timeout=30)
-                exit_status = stdout.channel.recv_exit_status()
+                exit_status = stdout.channel.recv_exit_status() # Wait for command to complete
 
                 if exit_status != 0:
                     stderr_output = stderr.read().decode('utf-8').strip()
+                    # Provide a more helpful error if 'df' is not found
+                    if "not found" in stderr_output or "no such" in stderr_output.lower():
+                         raise FileNotFoundError(f"The 'df' command was not found on the remote server. Cannot check disk space.")
                     raise Exception(f"'df' command failed with exit code {exit_status}. Stderr: {stderr_output}")
 
                 output = stdout.read().decode('utf-8').strip().splitlines()
                 if len(output) < 2:
+                    # Handle cases where `df` returns only the header (e.g., path doesn't exist)
+                    stderr_output = stderr.read().decode('utf-8').strip()
+                    if "no such file or directory" in stderr_output.lower():
+                        raise FileNotFoundError(f"The remote path '{dest_path}' does not exist.")
                     raise ValueError(f"Could not parse 'df' output. Raw output: '{' '.join(output)}'")
 
-                # Get the 'Available' column (4th column, 1-K blocks) from the second line
-                available_kb = int(output[1].split()[3])
+                # Correctly parse the output: e.g., 'Filesystem 1K-blocks Used Available Use% Mounted on'
+                # The 'Available' space is the 4th column (index 3).
+                parts = output[1].split()
+                if len(parts) < 4:
+                    raise ValueError(f"Unexpected 'df' output format. Line: '{output[1]}'")
+                available_kb = int(parts[3])
                 available_space = available_kb * 1024
             finally:
-                disconnect_sftp(sftp, ssh)
+                if ssh: ssh.close()
         else:
             stats = os.statvfs(dest_path)
             available_space = stats.f_bavail * stats.f_frsize
@@ -1419,6 +1436,65 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.warning(f"Torrent {torrent_hash[:10]} not found on destination when trying to categorize.")
     except Exception as e:
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
+
+
+def change_ownership(path_to_change, user, group, remote_config=None, dry_run=False):
+    """
+    Changes the ownership of a file or directory, either locally or remotely.
+    """
+    if not user and not group:
+        return
+
+    owner_spec = ""
+    if user and group:
+        owner_spec = f"{user}:{group}"
+    elif user:
+        owner_spec = user
+    elif group:
+        owner_spec = f":{group}"
+
+    if dry_run:
+        logging.info(f"[DRY RUN] Would change ownership of '{path_to_change}' to '{owner_spec}'.")
+        return
+
+    if remote_config:
+        logging.info(f"Attempting to change remote ownership of '{path_to_change}' to '{owner_spec}'...")
+        ssh = None
+        try:
+            # Reusing connect_sftp to establish the base SSH connection
+            _sftp, ssh = connect_sftp(remote_config)
+            if _sftp: _sftp.close()  # We don't need the sftp channel
+
+            escaped_path = path_to_change.replace("'", "'\\''")
+            remote_command = f"chown -R -- '{owner_spec}' '{escaped_path}'"
+            logging.debug(f"Executing remote command: {remote_command}")
+            stdin, stdout, stderr = ssh.exec_command(remote_command, timeout=120)
+            exit_status = stdout.channel.recv_exit_status()
+
+            if exit_status == 0:
+                logging.info("Remote ownership changed successfully.")
+            else:
+                stderr_output = stderr.read().decode('utf-8').strip()
+                logging.error(f"Failed to change remote ownership for '{path_to_change}'. Exit code: {exit_status}, Stderr: {stderr_output}")
+        except Exception as e:
+            logging.error(f"An exception occurred during remote chown: {e}", exc_info=True)
+        finally:
+            if ssh: ssh.close()
+    else:  # Local execution
+        logging.info(f"Attempting to change local ownership of '{path_to_change}' to '{owner_spec}'...")
+        try:
+            if shutil.which("chown") is None:
+                logging.warning("'chown' command not found locally. Skipping ownership change.")
+                return
+
+            command = ["chown", "-R", owner_spec, path_to_change]
+            process = subprocess.run(command, capture_output=True, text=True, check=False)
+            if process.returncode == 0:
+                logging.info("Local ownership changed successfully.")
+            else:
+                logging.error(f"Failed to change local ownership for '{path_to_change}'. Exit code: {process.returncode}, Stderr: {process.stderr.strip()}")
+        except Exception as e:
+            logging.error(f"An exception occurred during local chown: {e}", exc_info=True)
 
 
 def analyze_torrent(torrent, sftp_config, transfer_mode, live_console, semaphore=None):
@@ -1544,6 +1620,13 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                 logging.info(f"Starting SFTP download for '{name}'")
                 transfer_content(source_sftp_config, source_sftp, source_content_path, dest_content_path, job_progress, parent_task_id, overall_progress, overall_task_id, count_lock, file_task_map, max_concurrent_transfers, dry_run, ssh_semaphore=source_ssh_semaphore)
                 logging.info(f"SFTP download completed successfully for '{name}'.")
+
+        # --- Change Ownership ---
+        chown_user = config['SETTINGS'].get('chown_user', '').strip()
+        chown_group = config['SETTINGS'].get('chown_group', '').strip()
+        if chown_user or chown_group:
+            remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' else None
+            change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run)
 
         destination_save_path = destination_save_path.replace("\\", "/")
 
