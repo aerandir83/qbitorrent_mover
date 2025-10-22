@@ -531,6 +531,7 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
                     if not chunk: break
                     dest_f.write(chunk)
                     increment = len(chunk)
+                    logging.debug(f"DIAGNOSTIC (upload_from_cache): advancing {increment} bytes for {file_name}")
                     ui.update_torrent_byte_progress(torrent_hash, increment)
                     ui.advance_overall_progress(increment)
 
@@ -624,6 +625,7 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
                         if not chunk: break
                         dest_f.write(chunk)
                         increment = len(chunk)
+                        logging.debug(f"DIAGNOSTIC (sftp_upload): advancing {increment} bytes for {file_name}")
                         ui.update_torrent_byte_progress(torrent_hash, increment)
                         ui.advance_overall_progress(increment)
 
@@ -723,6 +725,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, torrent_hash, ui, 
                         if not chunk: break
                         local_f.write(chunk)
                         increment = len(chunk)
+                        logging.debug(f"DIAGNOSTIC (sftp_download): advancing {increment} bytes for {file_name}")
                         ui.update_torrent_byte_progress(torrent_hash, increment)
                         ui.advance_overall_progress(increment)
 
@@ -828,6 +831,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, torrent_hash, u
                             total_transferred = int(total_transferred_str)
                             advance = total_transferred - last_total_transferred
                             if advance > 0:
+                                logging.debug(f"DIAGNOSTIC (rsync): advancing {advance} bytes for {os.path.basename(remote_path)}")
                                 ui.update_torrent_byte_progress(torrent_hash, advance)
                                 ui.advance_overall_progress(advance)
                                 last_total_transferred = total_transferred
