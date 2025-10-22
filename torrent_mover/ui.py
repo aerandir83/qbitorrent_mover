@@ -23,7 +23,7 @@ class UIManager:
 
     def __init__(self):
         self.console = Console()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._live = None
         self._torrents_data = OrderedDict()
         self._job_progress_tasks = {}
