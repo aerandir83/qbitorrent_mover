@@ -136,7 +136,7 @@ class UIManager:
             if torrent_hash in self._torrents_data:
                 # A single, unified progress bar that contains all the necessary columns
                 unified_progress = Progress(
-                    TextColumn("[bold blue]Transferring[/bold blue]"),
+                    TextColumn("[bold blue]{task.description}[/bold blue]"),
                     BarColumn(bar_width=None),
                     TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
                     "•",
@@ -150,7 +150,7 @@ class UIManager:
                 )
                 # Add a single task for byte progress, and store file counts in its fields
                 task_id = unified_progress.add_task(
-                    "bytes",
+                    "Transferring",
                     total=total_size,
                     files=f"0/{total_files} Files" # Initial value for our custom column
                 )
@@ -164,6 +164,13 @@ class UIManager:
                     "file_task_id": None,      # Ensure old attribute is cleared
                 })
                 self._update_torrents_table()
+
+    def update_torrent_progress_description(self, torrent_hash, description):
+        """Updates the description of the progress bar for a specific torrent."""
+        with self._lock:
+            if torrent_hash in self._torrents_data and self._torrents_data[torrent_hash].get("progress_obj"):
+                data = self._torrents_data[torrent_hash]
+                data["progress_obj"].update(data["byte_task_id"], description=description)
 
     def update_torrent_byte_progress(self, torrent_hash, advance):
         """Updates the byte progress bar for a specific torrent."""
