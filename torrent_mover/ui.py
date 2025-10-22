@@ -30,7 +30,7 @@ class UIManager:
 
         # 1. Header
         self.header_text = Text("Initializing...", justify="center")
-        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.5.0[/bold magenta]", border_style="magenta")
+        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.5.1[/bold magenta]", border_style="magenta")
 
         # 2. Run Progress (counts and overall size)
         self.analysis_progress = Progress(TextColumn("[cyan]Analyzed"), BarColumn(), MofNCompleteColumn())
@@ -62,12 +62,10 @@ class UIManager:
     def _build_torrents_table(self):
         """Builds a new, empty torrents table with the correct columns."""
         table = Table(show_header=True, header_style="bold cyan", border_style="dim", expand=True)
-        table.add_column("Torrent Name", style="cyan", no_wrap=True, max_width=60)
+        table.add_column("Torrent Name", style="cyan", no_wrap=True, min_width=20)
         table.add_column("Size", style="magenta", width=12, justify="right")
-        table.add_column("Progress", width=40)
+        table.add_column("Progress", width=60)
         table.add_column("Files", width=15, justify="center")
-        table.add_column("Speed", style="green", width=15, justify="right")
-        table.add_column("ETA", style="yellow", width=10, justify="right")
         return table
 
     def __enter__(self):
@@ -77,12 +75,9 @@ class UIManager:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._live:
-            # Stop all progress bars to prevent them from animating after exit
             for data in self._torrents_data.values():
                 if isinstance(data.get("progress_obj"), Progress): data["progress_obj"].stop()
                 if isinstance(data.get("file_progress_obj"), Progress): data["file_progress_obj"].stop()
-                if isinstance(data.get("speed_progress_obj"), Progress): data["speed_progress_obj"].stop()
-                if isinstance(data.get("eta_progress_obj"), Progress): data["eta_progress_obj"].stop()
             self._live.stop()
 
     def log(self, message):
@@ -122,8 +117,6 @@ class UIManager:
                 "status_text": "[dim]Queued[/dim]",
                 "progress_obj": None,
                 "file_progress_obj": None,
-                "speed_progress_obj": None,
-                "eta_progress_obj": None,
             }
             self._update_torrents_table()
 
@@ -135,8 +128,6 @@ class UIManager:
                     "status_text": f"[{color}]{status}[/{color}]",
                     "progress_obj": None,
                     "file_progress_obj": None,
-                    "speed_progress_obj": None,
-                    "eta_progress_obj": None,
                 })
                 self._update_torrents_table()
 
@@ -144,32 +135,28 @@ class UIManager:
         """Creates and assigns a Rich Progress object for a specific torrent transfer."""
         with self._lock:
             if torrent_hash in self._torrents_data:
+                # This is the unified progress bar that contains all the necessary columns
                 byte_progress = Progress(
-                    BarColumn(bar_width=None, finished_style="green"),
+                    TextColumn("[bold blue]Transferring[/bold blue]"),
+                    BarColumn(bar_width=None),
                     TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                    "•",
+                    TransferSpeedColumn(),
+                    "•",
+                    TimeRemainingColumn(),
                     expand=True
                 )
                 byte_task_id = byte_progress.add_task("bytes", total=total_size)
 
-                file_progress = Progress(MofNCompleteColumn(), expand=True)
+                # A separate, simpler progress bar just for the M-of-N file count
+                file_progress = Progress(MofNCompleteColumn())
                 file_task_id = file_progress.add_task("files", total=total_files)
 
-                speed_progress = Progress(TransferSpeedColumn())
-                speed_task_id = speed_progress.add_task("speed", total=total_size)
-
-                eta_progress = Progress(TimeRemainingColumn())
-                eta_task_id = eta_progress.add_task("eta", total=total_size)
-
                 self._torrents_data[torrent_hash].update({
-                    "status_text": "[bold blue]Transferring[/bold blue]",
                     "progress_obj": byte_progress,
                     "byte_task_id": byte_task_id,
                     "file_progress_obj": file_progress,
                     "file_task_id": file_task_id,
-                    "speed_progress_obj": speed_progress,
-                    "speed_task_id": speed_task_id,
-                    "eta_progress_obj": eta_progress,
-                    "eta_task_id": eta_task_id,
                 })
                 self._update_torrents_table()
 
@@ -179,8 +166,6 @@ class UIManager:
             if torrent_hash in self._torrents_data and self._torrents_data[torrent_hash].get("progress_obj"):
                 data = self._torrents_data[torrent_hash]
                 data["progress_obj"].update(data["byte_task_id"], advance=advance)
-                data["speed_progress_obj"].update(data["speed_task_id"], advance=advance)
-                data["eta_progress_obj"].update(data["eta_task_id"], advance=advance)
 
     def advance_torrent_file_progress(self, torrent_hash):
         """Advances the file count for a specific torrent."""
@@ -198,9 +183,8 @@ class UIManager:
                     task = data["progress_obj"].tasks[data["byte_task_id"]]
                     data["progress_obj"].update(data["byte_task_id"], completed=task.total)
                     data["progress_obj"].stop()
-                if data.get("file_progress_obj"): data["file_progress_obj"].stop()
-                if data.get("speed_progress_obj"): data["speed_progress_obj"].stop()
-                if data.get("eta_progress_obj"): data["eta_progress_obj"].stop()
+                if data.get("file_progress_obj"):
+                    data["file_progress_obj"].stop()
 
                 if success:
                     self.update_torrent_status_text(torrent_hash, "Completed", color="green")
@@ -214,22 +198,16 @@ class UIManager:
         for data in self._torrents_data.values():
             progress_renderable = data.get("status_text", "")
             files_renderable = ""
-            speed_renderable = ""
-            eta_renderable = ""
 
             if data.get("progress_obj"):
                 progress_renderable = data["progress_obj"]
                 files_renderable = data["file_progress_obj"]
-                speed_renderable = data["speed_progress_obj"]
-                eta_renderable = data["eta_progress_obj"]
 
             new_table.add_row(
                 Text(data["name"], overflow="ellipsis"),
                 data["size"],
                 progress_renderable,
                 files_renderable,
-                speed_renderable,
-                eta_renderable,
             )
 
         self.torrents_table_panel.renderable = new_table
