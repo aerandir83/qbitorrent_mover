@@ -9,7 +9,6 @@ from rich.progress import (
     BarColumn,
     TransferSpeedColumn,
     TimeRemainingColumn,
-    FileSizeColumn,
     TotalFileSizeColumn,
     MofNCompleteColumn,
 )
@@ -26,13 +25,12 @@ class UIManager:
         self._lock = threading.RLock()
         self._live = None
         self._torrents_data = OrderedDict()
-        self._job_progress_tasks = {}
 
         # --- UI Components ---
 
         # 1. Header
         self.header_text = Text("Initializing...", justify="center")
-        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.4.0[/bold magenta]", border_style="magenta")
+        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.5.1[/bold magenta]", border_style="magenta")
 
         # 2. Run Progress (counts and overall size)
         self.analysis_progress = Progress(TextColumn("[cyan]Analyzed"), BarColumn(), MofNCompleteColumn())
@@ -48,24 +46,9 @@ class UIManager:
         self.run_progress_panel = Panel(run_progress_group, title="[bold]Run Progress[/bold]", border_style="green")
 
         # 3. Torrents Table
-        self.torrents_table = Table(show_header=True, header_style="bold cyan", border_style="dim", expand=True)
-        self.torrents_table.add_column("Torrent Name", style="cyan", no_wrap=True)
-        self.torrents_table.add_column("Size", style="magenta", width=12, justify="right")
-        self.torrents_table.add_column("Status", style="yellow", width=25)
-        self.torrents_table_panel = Panel(self.torrents_table, title="[bold]Transfer Queue[/bold]", border_style="cyan")
+        self.torrents_table_panel = Panel(self._build_torrents_table(), title="[bold]Transfer Queue[/bold]", border_style="cyan")
 
-        # 4. Active Transfers Panel
-        self.job_progress = Progress(
-            TextColumn("  {task.description}", justify="left"),
-            BarColumn(finished_style="green"),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            FileSizeColumn(),
-            TransferSpeedColumn(),
-            TimeRemainingColumn()
-        )
-        self.active_transfers_panel = Panel(self.job_progress, title="[bold]Active Transfers[/bold]", border_style="yellow", height=8)
-
-        # 5. Footer
+        # 4. Footer
         self.footer_text = Text("Waiting to start...", justify="center")
         self.footer_panel = Panel(self.footer_text, border_style="dim")
 
@@ -74,17 +57,27 @@ class UIManager:
         self.layout.add_row(self.header_panel)
         self.layout.add_row(self.run_progress_panel)
         self.layout.add_row(self.torrents_table_panel)
-        self.layout.add_row(self.active_transfers_panel)
         self.layout.add_row(self.footer_panel)
 
+    def _build_torrents_table(self):
+        """Builds a new, empty torrents table with the correct columns."""
+        table = Table(show_header=True, header_style="bold cyan", border_style="dim", expand=True)
+        table.add_column("Torrent Name", style="cyan", no_wrap=True, min_width=20)
+        table.add_column("Size", style="magenta", width=12, justify="right")
+        table.add_column("Progress", width=60)
+        table.add_column("Files", width=15, justify="center")
+        return table
 
     def __enter__(self):
-        self._live = Live(self.layout, console=self.console, screen=True, redirect_stderr=False, refresh_per_second=5)
+        self._live = Live(self.layout, console=self.console, screen=True, redirect_stderr=False, refresh_per_second=10)
         self._live.start()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._live:
+            for data in self._torrents_data.values():
+                if isinstance(data.get("progress_obj"), Progress): data["progress_obj"].stop()
+                if isinstance(data.get("file_progress_obj"), Progress): data["file_progress_obj"].stop()
             self._live.stop()
 
     def log(self, message):
@@ -121,65 +114,100 @@ class UIManager:
             self._torrents_data[torrent_hash] = {
                 "name": torrent_name,
                 "size": size_str,
-                "status": "[dim]Queued[/dim]",
+                "status_text": "[dim]Queued[/dim]",
+                "progress_obj": None,
+                "file_progress_obj": None,
             }
             self._update_torrents_table()
 
-    def update_torrent_status(self, torrent_hash, status, color="yellow"):
-        """Updates the status text of a specific torrent."""
+    def update_torrent_status_text(self, torrent_hash, status, color="yellow"):
+        """Updates the status text of a specific torrent, used for non-transfer states."""
         with self._lock:
             if torrent_hash in self._torrents_data:
-                self._torrents_data[torrent_hash]["status"] = f"[{color}]{status}[/{color}]"
+                self._torrents_data[torrent_hash].update({
+                    "status_text": f"[{color}]{status}[/{color}]",
+                    "progress_obj": None,
+                    "file_progress_obj": None,
+                })
                 self._update_torrents_table()
 
-    def start_torrent_transfer(self, torrent_hash, total_size):
-        """Adds a torrent to the 'Active Transfers' panel."""
+    def start_torrent_transfer(self, torrent_hash, total_size, total_files):
+        """Creates and assigns a Rich Progress object for a specific torrent transfer."""
         with self._lock:
-            if torrent_hash in self._torrents_data and torrent_hash not in self._job_progress_tasks:
-                name = self._torrents_data[torrent_hash]["name"]
-                task_id = self.job_progress.add_task(name, total=total_size)
-                self._job_progress_tasks[torrent_hash] = task_id
-                self.update_torrent_status(torrent_hash, "Transferring", color="bold blue")
+            if torrent_hash in self._torrents_data:
+                # This is the unified progress bar that contains all the necessary columns
+                byte_progress = Progress(
+                    TextColumn("[bold blue]Transferring[/bold blue]"),
+                    BarColumn(bar_width=None),
+                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                    "•",
+                    TransferSpeedColumn(),
+                    "•",
+                    TimeRemainingColumn(),
+                    expand=True
+                )
+                byte_task_id = byte_progress.add_task("bytes", total=total_size)
 
-    def update_torrent_progress(self, torrent_hash, advance):
-        """Updates the progress bar for a specific torrent in the active panel."""
+                # A separate, simpler progress bar just for the M-of-N file count
+                file_progress = Progress(MofNCompleteColumn())
+                file_task_id = file_progress.add_task("files", total=total_files)
+
+                self._torrents_data[torrent_hash].update({
+                    "progress_obj": byte_progress,
+                    "byte_task_id": byte_task_id,
+                    "file_progress_obj": file_progress,
+                    "file_task_id": file_task_id,
+                })
+                self._update_torrents_table()
+
+    def update_torrent_byte_progress(self, torrent_hash, advance):
+        """Updates the byte progress bar for a specific torrent."""
         with self._lock:
-            if torrent_hash in self._job_progress_tasks:
-                task_id = self._job_progress_tasks[torrent_hash]
-                self.job_progress.update(task_id, advance=advance)
+            if torrent_hash in self._torrents_data and self._torrents_data[torrent_hash].get("progress_obj"):
+                data = self._torrents_data[torrent_hash]
+                data["progress_obj"].update(data["byte_task_id"], advance=advance)
+
+    def advance_torrent_file_progress(self, torrent_hash):
+        """Advances the file count for a specific torrent."""
+        with self._lock:
+            if torrent_hash in self._torrents_data and self._torrents_data[torrent_hash].get("file_progress_obj"):
+                data = self._torrents_data[torrent_hash]
+                data["file_progress_obj"].update(data["file_task_id"], advance=1)
 
     def stop_torrent_transfer(self, torrent_hash, success=True):
-        """Removes a torrent from the 'Active Transfers' panel."""
+        """Stops the progress bar for a torrent and sets its final status."""
         with self._lock:
-            if torrent_hash in self._job_progress_tasks:
-                task_id = self._job_progress_tasks.pop(torrent_hash)
-                # Mark as complete and stop the task to remove speed/ETA
-                self.job_progress.update(task_id, completed=self.job_progress.tasks[task_id].total)
-                self.job_progress.stop_task(task_id)
-                # Hide it after a short delay so it doesn't disappear instantly
-                self.job_progress.update(task_id, visible=False)
+            if torrent_hash in self._torrents_data:
+                data = self._torrents_data[torrent_hash]
+                if data.get("progress_obj"):
+                    task = data["progress_obj"].tasks[data["byte_task_id"]]
+                    data["progress_obj"].update(data["byte_task_id"], completed=task.total)
+                    data["progress_obj"].stop()
+                if data.get("file_progress_obj"):
+                    data["file_progress_obj"].stop()
 
                 if success:
-                    self.update_torrent_status(torrent_hash, "Completed", color="green")
+                    self.update_torrent_status_text(torrent_hash, "Completed", color="green")
                 else:
-                    self.update_torrent_status(torrent_hash, "Failed", color="bold red")
+                    self.update_torrent_status_text(torrent_hash, "Failed", color="bold red")
 
     def _update_torrents_table(self):
-        """Rebuilds the torrents table from scratch and swaps it into the panel."""
+        """Rebuilds the torrents table from scratch to reflect the current state."""
+        new_table = self._build_torrents_table()
 
-        # Create a new table with the same structure
-        new_table = Table(show_header=True, header_style="bold cyan", border_style="dim", expand=True)
-        new_table.add_column("Torrent Name", style="cyan", no_wrap=True)
-        new_table.add_column("Size", style="magenta", width=12, justify="right")
-        new_table.add_column("Status", style="yellow", width=25)
-
-        # Populate the new table with the current data
         for data in self._torrents_data.values():
+            progress_renderable = data.get("status_text", "")
+            files_renderable = ""
+
+            if data.get("progress_obj"):
+                progress_renderable = data["progress_obj"]
+                files_renderable = data["file_progress_obj"]
+
             new_table.add_row(
                 Text(data["name"], overflow="ellipsis"),
                 data["size"],
-                data["status"],
+                progress_renderable,
+                files_renderable,
             )
 
-        # Atomically update the panel's renderable
         self.torrents_table_panel.renderable = new_table

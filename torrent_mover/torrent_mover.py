@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 import configparser
 import sys
@@ -497,6 +497,7 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
 
     if not local_cache_path.is_file():
         logging.warning(f"Cannot upload '{file_name}' from cache: File does not exist in the cache directory.")
+        ui.advance_torrent_file_progress(torrent_hash) # Still advance to not stall the UI
         return
 
     try:
@@ -511,12 +512,12 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
 
         if dest_size >= total_size:
             logging.info(f"Skipping upload (exists and size matches): {file_name}")
-            ui.update_torrent_progress(torrent_hash, total_size)
-            ui.advance_overall_progress(total_size)
+            ui.update_torrent_byte_progress(torrent_hash, total_size - dest_size)
+            ui.advance_overall_progress(total_size - dest_size)
             return
 
         if dest_size > 0:
-            ui.update_torrent_progress(torrent_hash, dest_size)
+            ui.update_torrent_byte_progress(torrent_hash, dest_size)
             ui.advance_overall_progress(dest_size)
 
         dest_dir = os.path.dirname(dest_file_path)
@@ -530,7 +531,7 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
                     if not chunk: break
                     dest_f.write(chunk)
                     increment = len(chunk)
-                    ui.update_torrent_progress(torrent_hash, increment)
+                    ui.update_torrent_byte_progress(torrent_hash, increment)
                     ui.advance_overall_progress(increment)
 
         if sftp.stat(dest_file_path).st_size == total_size:
@@ -550,6 +551,7 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
         logging.error(f"Upload from cache failed for {file_name}: {e}")
         raise
     finally:
+        ui.advance_torrent_file_progress(torrent_hash)
         disconnect_sftp(sftp, ssh, semaphore=ssh_semaphore)
 
 def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, dest_file_path, torrent_hash, ui, dry_run=False, source_ssh_semaphore=None, dest_ssh_semaphore=None):
@@ -585,8 +587,8 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
             dest_size = dest_stat.st_size
             if dest_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
-                ui.update_torrent_progress(torrent_hash, total_size)
-                ui.advance_overall_progress(total_size)
+                ui.update_torrent_byte_progress(torrent_hash, total_size - dest_size)
+                ui.advance_overall_progress(total_size - dest_size)
                 return
             elif dest_size > total_size:
                 logging.warning(f"Destination file '{file_name}' is larger than source ({dest_size} > {total_size}). Re-uploading.")
@@ -597,13 +599,13 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
             pass # File doesn't exist on destination, start new upload
 
         if dest_size > 0:
-            ui.update_torrent_progress(torrent_hash, dest_size)
+            ui.update_torrent_byte_progress(torrent_hash, dest_size)
             ui.advance_overall_progress(dest_size)
 
         if dry_run:
             logging.info(f"[DRY RUN] Would upload: {source_file_path} -> {dest_file_path}")
             remaining_size = total_size - dest_size
-            ui.update_torrent_progress(torrent_hash, remaining_size)
+            ui.update_torrent_byte_progress(torrent_hash, remaining_size)
             ui.advance_overall_progress(remaining_size)
             return
 
@@ -622,7 +624,7 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
                         if not chunk: break
                         dest_f.write(chunk)
                         increment = len(chunk)
-                        ui.update_torrent_progress(torrent_hash, increment)
+                        ui.update_torrent_byte_progress(torrent_hash, increment)
                         ui.advance_overall_progress(increment)
 
             final_dest_size = dest_sftp.stat(dest_file_path).st_size
@@ -648,6 +650,7 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
             raise
 
     finally:
+        ui.advance_torrent_file_progress(torrent_hash)
         disconnect_sftp(source_sftp, source_ssh, semaphore=source_ssh_semaphore)
         disconnect_sftp(dest_sftp, dest_ssh, semaphore=dest_ssh_semaphore)
 
@@ -680,8 +683,8 @@ def _sftp_download_file(sftp_config, remote_file, local_file, torrent_hash, ui, 
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
                 logging.debug(f"SFTP SKIP: Local: {local_size}, Remote: {total_size}. Skipping file '{file_name}'.")
-                ui.update_torrent_progress(torrent_hash, total_size)
-                ui.advance_overall_progress(total_size)
+                ui.update_torrent_byte_progress(torrent_hash, total_size - local_size)
+                ui.advance_overall_progress(total_size - local_size)
                 return
             elif local_size > total_size:
                 logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
@@ -694,13 +697,13 @@ def _sftp_download_file(sftp_config, remote_file, local_file, torrent_hash, ui, 
             logging.debug(f"SFTP NEW: Local file '{local_file}' does not exist. Starting new download.")
 
         if local_size > 0:
-            ui.update_torrent_progress(torrent_hash, local_size)
+            ui.update_torrent_byte_progress(torrent_hash, local_size)
             ui.advance_overall_progress(local_size)
 
         if dry_run:
             logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
             remaining_size = total_size - local_size
-            ui.update_torrent_progress(torrent_hash, remaining_size)
+            ui.update_torrent_byte_progress(torrent_hash, remaining_size)
             ui.advance_overall_progress(remaining_size)
             return
 
@@ -720,7 +723,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, torrent_hash, ui, 
                         if not chunk: break
                         local_f.write(chunk)
                         increment = len(chunk)
-                        ui.update_torrent_progress(torrent_hash, increment)
+                        ui.update_torrent_byte_progress(torrent_hash, increment)
                         ui.advance_overall_progress(increment)
 
             # Final check
@@ -748,6 +751,7 @@ def _sftp_download_file(sftp_config, remote_file, local_file, torrent_hash, ui, 
             raise
 
     finally:
+        ui.advance_torrent_file_progress(torrent_hash)
         disconnect_sftp(sftp, ssh_client, semaphore=ssh_semaphore)
 
 def transfer_content_rsync(sftp_config, remote_path, local_path, torrent_hash, ui, dry_run=False):
@@ -780,9 +784,8 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, torrent_hash, u
     if dry_run:
         logging.info(f"[DRY RUN] Would execute rsync for: {os.path.basename(remote_path)}")
         logging.debug(f"[DRY RUN] Command: {' '.join(safe_rsync_cmd)}")
-        task = ui.job_progress.tasks[ui._job_progress_tasks[torrent_hash]]
-        ui.update_torrent_progress(torrent_hash, task.total)
-        ui.advance_overall_progress(task.total)
+        ui.update_torrent_byte_progress(torrent_hash, ui._torrents_data[torrent_hash]["progress_obj"].tasks[0].total)
+        ui.advance_overall_progress(ui._torrents_data[torrent_hash]["progress_obj"].tasks[0].total)
         return
 
     if Path(local_path).exists():
@@ -825,7 +828,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, torrent_hash, u
                             total_transferred = int(total_transferred_str)
                             advance = total_transferred - last_total_transferred
                             if advance > 0:
-                                ui.update_torrent_progress(torrent_hash, advance)
+                                ui.update_torrent_byte_progress(torrent_hash, advance)
                                 ui.advance_overall_progress(advance)
                                 last_total_transferred = total_transferred
                         except (ValueError, IndexError):
@@ -842,7 +845,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, torrent_hash, u
                     logging.warning(f"Rsync finished with code 24 (some source files vanished) for '{os.path.basename(remote_path)}'.")
 
                 duration = end_time - start_time
-                task = ui.job_progress.tasks[ui._job_progress_tasks[torrent_hash]]
+                task = ui._torrents_data[torrent_hash]["progress_obj"].tasks[0]
                 total_size_bytes = task.total
                 if duration > 0:
                     speed_mbps = (total_size_bytes * 8) / (duration * 1024 * 1024)
@@ -854,10 +857,12 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, torrent_hash, u
                 if task.completed < task.total:
                     remaining = task.total - task.completed
                     if remaining > 0:
-                        ui.update_torrent_progress(torrent_hash, remaining)
+                        ui.update_torrent_byte_progress(torrent_hash, remaining)
                         ui.advance_overall_progress(remaining)
 
                 logging.info(f"Rsync transfer completed successfully for '{os.path.basename(remote_path)}'.")
+                # For rsync, since it's a single operation, we mark all files as "transferred" at the end.
+                ui.advance_torrent_file_progress(torrent_hash)
                 return
 
             elif process.returncode == 30:
@@ -921,15 +926,16 @@ def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sf
         if local_cache_sftp_upload:
             if dry_run:
                 logging.info(f"[DRY RUN] Would download {len(all_files)} files to cache and then upload.")
-                task = ui.job_progress.tasks[ui._job_progress_tasks[torrent_hash]]
-                ui.update_torrent_progress(torrent_hash, task.total)
-                ui.advance_overall_progress(task.total)
+                # Mark progress as complete for dry run
+                ui.update_torrent_byte_progress(torrent_hash, ui._torrents_data[torrent_hash]["progress_obj"].tasks[0].total)
+                ui.advance_overall_progress(ui._torrents_data[torrent_hash]["progress_obj"].tasks[0].total)
                 return
 
             temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{torrent_hash}"
             temp_dir.mkdir(exist_ok=True)
             transfer_successful = False
             try:
+                # 1. Download all files to local cache
                 with ThreadPoolExecutor(thread_name_prefix='CacheDownloader') as download_executor:
                     download_futures = {
                         download_executor.submit(_sftp_download_to_cache, source_sftp_config, source_f, temp_dir / os.path.basename(source_f), ssh_semaphore=source_ssh_semaphore): (source_f, dest_f)
@@ -938,6 +944,7 @@ def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sf
                     for future in as_completed(download_futures):
                         future.result() # Propagate exceptions
 
+                # 2. Upload all files from local cache
                 with ThreadPoolExecutor(max_workers=max_concurrent_transfers, thread_name_prefix='CacheUploader') as upload_executor:
                     upload_futures = [
                         upload_executor.submit(_sftp_upload_from_cache, dest_sftp_config, temp_dir / os.path.basename(source_f), dest_f, torrent_hash, ui, ssh_semaphore=dest_ssh_semaphore)
@@ -1354,13 +1361,13 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, ui, semaphore=None):
                 disconnect_sftp(temp_sftp, temp_ssh, semaphore=semaphore)
 
         if total_size is not None and total_size > 0:
-            ui.update_torrent_status(hash, "Analyzed", color="green")
+            ui.update_torrent_status_text(hash, "Analyzed", color="green")
         elif total_size == 0:
-            ui.update_torrent_status(hash, "Skipped (zero size)", color="dim")
+            ui.update_torrent_status_text(hash, "Skipped (zero size)", color="dim")
 
     except Exception as e:
         ui.log(f"[bold red]Error calculating size for '{name}': {e}[/]")
-        ui.update_torrent_status(hash, "Analysis Failed", color="bold red")
+        ui.update_torrent_status_text(hash, "Analysis Failed", color="bold red")
         return torrent, None
     finally:
         ui.advance_analysis_progress()
@@ -1376,32 +1383,53 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
     source_sftp, source_ssh = None, None
     source_paused = False
     success = False
+    all_files = [] # This list will be populated for multi-file torrents
     try:
-        ui.start_torrent_transfer(hash, total_size)
+        # --- Pre-transfer setup and file listing ---
+        source_sftp_config = config['SOURCE_SERVER']
+        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+        source_content_path = torrent.content_path.rstrip('/\\')
+        dest_base_path = config['DESTINATION_PATHS']['destination_path']
+        content_name = os.path.basename(source_content_path)
+        dest_content_path = os.path.join(dest_base_path, content_name)
+
+        if transfer_mode != 'rsync':
+            # For SFTP modes, we need to get a list of all files to be transferred
+            # to know the total file count for the UI.
+            try:
+                source_sftp, source_ssh = connect_sftp(source_sftp_config)
+                source_stat = source_sftp.stat(source_content_path)
+                if source_stat.st_mode & 0o40000:  # S_ISDIR
+                    _get_all_files_recursive(source_sftp, source_content_path, dest_content_path, all_files)
+                else: # It's a single file
+                    all_files.append((source_content_path, dest_content_path))
+            finally:
+                if source_sftp: source_sftp.close()
+                if source_ssh: source_ssh.close()
+        else:
+             # For rsync, we treat it as a single file operation for progress tracking
+            all_files.append((source_content_path, dest_content_path))
+
+        ui.start_torrent_transfer(hash, total_size, len(all_files))
+
         if dry_run:
             logging.info(f"[DRY RUN] Simulating transfer for '{name}'.")
             # Instantly complete the progress bars
-            ui.update_torrent_progress(hash, total_size)
+            ui.update_torrent_byte_progress(hash, total_size)
             ui.advance_overall_progress(total_size)
             success = True
             return True
 
-        dest_base_path = config['DESTINATION_PATHS']['destination_path']
+        # --- Execute Transfer ---
         remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
-        source_sftp_config = config['SOURCE_SERVER']
-        source_content_path = torrent.content_path.rstrip('/\\')
-
         source_ssh_semaphore = ssh_semaphores.get('SOURCE_SERVER')
-
-        content_name = os.path.basename(source_content_path)
-        dest_content_path = os.path.join(dest_base_path, content_name)
         destination_save_path = remote_dest_base_path
-        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
         if transfer_mode == 'rsync':
             transfer_content_rsync(source_sftp_config, source_content_path, dest_content_path, hash, ui, dry_run)
             logging.info(f"TRANSFER: Rsync transfer completed for '{name}'.")
         else:
+            # Re-establish connection for the actual transfer
             source_sftp, source_ssh = connect_sftp(source_sftp_config)
             max_concurrent_transfers = config['SETTINGS'].getint('max_concurrent_file_transfers', 5)
 
@@ -1417,6 +1445,8 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                 transfer_content(source_sftp_config, source_sftp, source_content_path, dest_content_path, hash, ui, max_concurrent_transfers, dry_run, ssh_semaphore=source_ssh_semaphore)
                 logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
 
+
+        # --- Post-transfer actions ---
         chown_user = config['SETTINGS'].get('chown_user', '').strip()
         chown_group = config['SETTINGS'].get('chown_group', '').strip()
         if chown_user or chown_group:
@@ -1964,7 +1994,7 @@ def main():
                                 processed_count += 1
                         except Exception as e:
                             logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
-                            ui.update_torrent_status(torrent.hash, "Failed", color="bold red")
+                            ui.update_torrent_status_text(torrent.hash, "Failed", color="bold red")
                         finally:
                             ui.advance_transfer_progress()
             except KeyboardInterrupt:
