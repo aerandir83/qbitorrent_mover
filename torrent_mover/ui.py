@@ -64,8 +64,7 @@ class UIManager:
         table = Table(show_header=True, header_style="bold cyan", border_style="dim", expand=True)
         table.add_column("Torrent Name", style="cyan", no_wrap=True, min_width=20)
         table.add_column("Size", style="magenta", width=12, justify="right")
-        table.add_column("Progress", width=60)
-        table.add_column("Files", width=15, justify="center")
+        table.add_column("Progress", width=75) # Widen for the unified progress bar
         return table
 
     def __enter__(self):
@@ -137,7 +136,7 @@ class UIManager:
             if torrent_hash in self._torrents_data:
                 # A single, unified progress bar that contains all the necessary columns
                 unified_progress = Progress(
-                    TextColumn("[bold blue]{task.description}[/bold blue]"),
+                    TextColumn("[bold blue]Transferring[/bold blue]"),
                     BarColumn(bar_width=None),
                     TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
                     "•",
@@ -145,19 +144,24 @@ class UIManager:
                     "•",
                     TimeRemainingColumn(),
                     "•",
-                    MofNCompleteColumn(),
+                    # Custom text column to show file count from the task's 'fields'
+                    TextColumn("[cyan]{task.fields[files]}[/cyan]"),
                     expand=True,
                 )
-                # Add a task for byte progress
-                byte_task_id = unified_progress.add_task("Transferring", total=total_size)
-                # Add a task for file progress
-                file_task_id = unified_progress.add_task("Files", total=total_files)
+                # Add a single task for byte progress, and store file counts in its fields
+                task_id = unified_progress.add_task(
+                    "bytes",
+                    total=total_size,
+                    files=f"0/{total_files} Files" # Initial value for our custom column
+                )
 
                 self._torrents_data[torrent_hash].update({
                     "progress_obj": unified_progress,
-                    "byte_task_id": byte_task_id,
-                    "file_task_id": file_task_id,
+                    "byte_task_id": task_id,
+                    "total_files": total_files,
+                    "files_completed": 0,
                     "file_progress_obj": None, # Ensure old attribute is cleared
+                    "file_task_id": None,      # Ensure old attribute is cleared
                 })
                 self._update_torrents_table()
 
@@ -173,7 +177,10 @@ class UIManager:
         with self._lock:
             if torrent_hash in self._torrents_data and self._torrents_data[torrent_hash].get("progress_obj"):
                 data = self._torrents_data[torrent_hash]
-                data["progress_obj"].update(data["file_task_id"], advance=1)
+                data["files_completed"] += 1
+                # Update the custom 'files' field in the task
+                new_files_text = f"{data['files_completed']}/{data['total_files']} Files"
+                data["progress_obj"].update(data["byte_task_id"], files=new_files_text)
 
     def stop_torrent_transfer(self, torrent_hash, success=True):
         """Stops the progress bar for a torrent and sets its final status."""
@@ -181,11 +188,8 @@ class UIManager:
             if torrent_hash in self._torrents_data:
                 data = self._torrents_data[torrent_hash]
                 if data.get("progress_obj"):
-                    # Mark both tasks as complete
-                    byte_task = data["progress_obj"].tasks[data["byte_task_id"]]
-                    file_task = data["progress_obj"].tasks[data["file_task_id"]]
-                    data["progress_obj"].update(data["byte_task_id"], completed=byte_task.total)
-                    data["progress_obj"].update(data["file_task_id"], completed=file_task.total)
+                    task = data["progress_obj"].tasks[data["byte_task_id"]]
+                    data["progress_obj"].update(data["byte_task_id"], completed=task.total)
                     data["progress_obj"].stop()
 
                 if success:
@@ -199,7 +203,6 @@ class UIManager:
 
         for data in self._torrents_data.values():
             progress_renderable = data.get("status_text", "")
-            files_renderable = "" # This column is no longer used with the unified bar
 
             if data.get("progress_obj"):
                 progress_renderable = data["progress_obj"]
@@ -208,7 +211,6 @@ class UIManager:
                 Text(data["name"], overflow="ellipsis"),
                 data["size"],
                 progress_renderable,
-                files_renderable, # Remains empty
             )
 
         self.torrents_table_panel.renderable = new_table
