@@ -79,8 +79,10 @@ class UIManager:
         if self._live:
             # Stop all progress bars to prevent them from animating after exit
             for data in self._torrents_data.values():
-                if "progress_obj" in data and isinstance(data["progress_obj"], Progress):
+                if "progress_obj" in data and isinstance(data.get("progress_obj"), Progress):
                     data["progress_obj"].stop()
+                if "speed_progress_obj" in data and isinstance(data.get("speed_progress_obj"), Progress):
+                    data["speed_progress_obj"].stop()
             self._live.stop()
 
     def log(self, message):
@@ -118,9 +120,9 @@ class UIManager:
                 "name": torrent_name,
                 "size": size_str,
                 "status_text": "[dim]Queued[/dim]",
-                "progress_obj": None, # Will hold the Progress() object during transfer
-                "byte_task_id": None,
-                "file_task_id": None,
+                "progress_obj": None,
+                "file_progress_obj": None,
+                "speed_progress_obj": None,
             }
             self._update_torrents_table()
 
@@ -129,39 +131,38 @@ class UIManager:
         with self._lock:
             if torrent_hash in self._torrents_data:
                 self._torrents_data[torrent_hash]["status_text"] = f"[{color}]{status}[/{color}]"
-                self._torrents_data[torrent_hash]["progress_obj"] = None # Clear any progress bar
+                self._torrents_data[torrent_hash]["progress_obj"] = None
+                self._torrents_data[torrent_hash]["file_progress_obj"] = None
+                self._torrents_data[torrent_hash]["speed_progress_obj"] = None
                 self._update_torrents_table()
 
     def start_torrent_transfer(self, torrent_hash, total_size, total_files):
         """Creates and assigns a Rich Progress object for a specific torrent transfer."""
         with self._lock:
             if torrent_hash in self._torrents_data:
-                progress = Progress(
+                byte_progress = Progress(
                     BarColumn(bar_width=None, finished_style="green"),
                     TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
                     expand=True
                 )
-                byte_task_id = progress.add_task("bytes", total=total_size)
+                byte_task_id = byte_progress.add_task("bytes", total=total_size)
 
                 file_progress = Progress(MofNCompleteColumn(), expand=True)
                 file_task_id = file_progress.add_task("files", total=total_files)
 
-                # Use a single, shared progress object for speed/ETA calculation
-                shared_progress = Progress(TransferSpeedColumn(), TimeRemainingColumn())
-                shared_task_id = shared_progress.add_task("shared", total=total_size)
-
+                speed_progress = Progress(TransferSpeedColumn(), TimeRemainingColumn())
+                speed_task_id = speed_progress.add_task("speed", total=total_size)
 
                 self._torrents_data[torrent_hash].update({
                     "status_text": "[bold blue]Transferring[/bold blue]",
-                    "progress_obj": progress,
+                    "progress_obj": byte_progress,
                     "byte_task_id": byte_task_id,
                     "file_progress_obj": file_progress,
                     "file_task_id": file_task_id,
-                    "shared_progress_obj": shared_progress,
-                    "shared_task_id": shared_task_id
+                    "speed_progress_obj": speed_progress,
+                    "speed_task_id": speed_task_id,
                 })
                 self._update_torrents_table()
-
 
     def update_torrent_byte_progress(self, torrent_hash, advance):
         """Updates the byte progress bar for a specific torrent."""
@@ -169,8 +170,7 @@ class UIManager:
             if torrent_hash in self._torrents_data and self._torrents_data[torrent_hash]["progress_obj"]:
                 data = self._torrents_data[torrent_hash]
                 data["progress_obj"].update(data["byte_task_id"], advance=advance)
-                data["shared_progress_obj"].update(data["shared_task_id"], advance=advance)
-
+                data["speed_progress_obj"].update(data["speed_task_id"], advance=advance)
 
     def advance_torrent_file_progress(self, torrent_hash):
         """Advances the file count for a specific torrent."""
@@ -184,13 +184,14 @@ class UIManager:
         with self._lock:
             if torrent_hash in self._torrents_data:
                 data = self._torrents_data[torrent_hash]
-                if data["progress_obj"]:
-                    # Mark as complete and stop to lock it in place
-                    data["progress_obj"].update(data["byte_task_id"], completed=data["progress_obj"].tasks[data["byte_task_id"]].total)
+                if data.get("progress_obj"):
+                    task = data["progress_obj"].tasks[data["byte_task_id"]]
+                    data["progress_obj"].update(data["byte_task_id"], completed=task.total)
                     data["progress_obj"].stop()
+                if data.get("file_progress_obj"):
                     data["file_progress_obj"].stop()
-                    data["shared_progress_obj"].stop()
-
+                if data.get("speed_progress_obj"):
+                    data["speed_progress_obj"].stop()
 
                 if success:
                     self.update_torrent_status_text(torrent_hash, "Completed", color="green")
@@ -210,11 +211,14 @@ class UIManager:
             if data["progress_obj"]:
                 progress_renderable = data["progress_obj"]
                 files_renderable = data["file_progress_obj"]
-                # The shared progress object is a container for the speed/eta columns
-                shared_renderable = data["shared_progress_obj"]
-                # Extract the columns to render them separately
-                speed_renderable = shared_renderable.columns[0] # TransferSpeedColumn
-                eta_renderable = shared_renderable.columns[1]   # TimeRemainingColumn
+                speed_renderable = data["speed_progress_obj"].columns[0]
+                eta_renderable = data["speed_progress_obj"].columns[1]
+
+            # This is a workaround for a Rich bug where a finished task in a column
+            # might not render correctly. We render the whole Progress object instead.
+            if data.get("speed_progress_obj") and data["speed_progress_obj"].finished:
+                 speed_renderable = ""
+                 eta_renderable = ""
 
 
             new_table.add_row(
@@ -222,8 +226,11 @@ class UIManager:
                 data["size"],
                 progress_renderable,
                 files_renderable,
-                speed_renderable,
-                eta_renderable
+                Group(data["speed_progress_obj"]) if data.get("speed_progress_obj") else "",
             )
+            # The speed and ETA are now in a group in the 'Speed' column. The 'ETA' column is no longer needed.
+            new_table.columns[4].header = "Speed / ETA"
+            new_table.columns[5].visible = False
+
 
         self.torrents_table_panel.renderable = new_table
