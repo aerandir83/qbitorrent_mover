@@ -1378,6 +1378,14 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
     success = False
     try:
         ui.start_torrent_transfer(hash, total_size)
+        if dry_run:
+            logging.info(f"[DRY RUN] Simulating transfer for '{name}'.")
+            # Instantly complete the progress bars
+            ui.update_torrent_progress(hash, total_size)
+            ui.advance_overall_progress(total_size)
+            success = True
+            return True
+
         dest_base_path = config['DESTINATION_PATHS']['destination_path']
         remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
         source_sftp_config = config['SOURCE_SERVER']
@@ -1631,7 +1639,7 @@ def setup_logging(script_dir, dry_run, test_run, debug):
 
     # The RichHandler is now used for non-interactive output.
     # The UIManager will handle the live display.
-    rich_handler = RichHandler(show_path=False, rich_tracebacks=True, markup=True, console=Console(stderr=True))
+    rich_handler = RichHandler(level=log_level, show_path=False, rich_tracebacks=True, markup=True, console=Console(stderr=True))
     rich_formatter = logging.Formatter('%(message)s')
     rich_handler.setFormatter(rich_formatter)
     logger.addHandler(rich_handler)
@@ -1742,7 +1750,6 @@ def main():
     mode_group.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
     mode_group.add_argument('--test-run', action='store_true', help='Run the full process but do not delete the source torrent.')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging to file.')
-    parser.add_argument('--no-ui', action='store_true', help='Disable the rich UI. Log messages will be printed to the console directly.')
     parser.add_argument('--parallel-jobs', type=int, default=4, metavar='N', help='Number of torrents to process in parallel.')
     parser.add_argument('-l', '--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
     parser.add_argument('-a', '--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
@@ -1876,9 +1883,6 @@ def main():
             logging.info("No torrents to move at this time.")
             return 0
 
-        total_count = len(eligible_torrents)
-        processed_count = 0
-
         ssh_semaphores = {}
         server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
         for section_name in server_sections:
@@ -1886,13 +1890,94 @@ def main():
             ssh_semaphores[section_name] = threading.Semaphore(max_sessions)
             logging.info(f"Initialized SSH session limit for '{section_name}' to {max_sessions}.")
 
-        if args.no_ui:
-            main_no_ui(eligible_torrents, config, source_qbit, destination_qbit, tracker_rules, ssh_semaphores, args)
-        else:
-            main_with_ui(eligible_torrents, config, source_qbit, destination_qbit, tracker_rules, ssh_semaphores, args)
+        # This is the main UI-driven execution block.
+        total_count = len(eligible_torrents)
+        processed_count = 0
+        with UIManager() as ui:
+            ui.set_analysis_total(total_count)
+            ui.update_header(f"Found {total_count} torrents to process. Analyzing...")
+
+            sftp_config = config['SOURCE_SERVER']
+            transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+            analysis_workers = max(10, args.parallel_jobs * 2)
+            analyzed_torrents = []
+            total_transfer_size = 0
+
+            logging.info("STATE: Starting analysis phase...")
+            try:
+                for t in eligible_torrents:
+                    ui.add_torrent_to_plan(t.name, t.hash, "[dim]Calculating...[/dim]")
+
+                with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as executor:
+                    source_server_section = 'SOURCE_SERVER'
+                    source_ssh_semaphore = ssh_semaphores.get(source_server_section)
+                    if not source_ssh_semaphore:
+                        ui.log(f"[bold red]Error: SSH semaphore for server section '{source_server_section}' not found. Check config.[/]")
+                        return 1
+
+                    future_to_torrent = {executor.submit(analyze_torrent, t, sftp_config, transfer_mode, ui, semaphore=source_ssh_semaphore): t for t in eligible_torrents}
+                    for future in as_completed(future_to_torrent):
+                        _analyzed_torrent, size = future.result()
+                        if size is not None and size > 0:
+                            analyzed_torrents.append((_analyzed_torrent, size))
+                            total_transfer_size += size
+                            size_gb = size / (1024**3)
+                            ui._torrents_data[_analyzed_torrent.hash]["size"] = f"{size_gb:.2f} GB"
+                            ui._update_torrents_table() # Redraw table to show size
+            except Exception as e:
+                ui.log(f"[bold red]A critical error occurred during the analysis phase: {e}[/]")
+                return 1
+
+            logging.info("STATE: Analysis complete.")
+            ui.update_header("Analysis complete. Verifying destination...")
+
+            if not analyzed_torrents:
+                ui.update_footer("No valid, non-zero size torrents to transfer.")
+                logging.info("No valid, non-zero size torrents to transfer.")
+                time.sleep(2) # Give user time to see the message
+                return 0
+
+            ui.set_overall_total(total_transfer_size)
+            if not args.dry_run and not destination_health_check(config, total_transfer_size):
+                ui.update_header("[bold red]Destination health check failed. Aborting transfer process.[/]")
+                logging.error("FATAL: Destination health check failed.")
+                time.sleep(5)
+                return 1
+
+            logging.info("STATE: Starting transfer phase...")
+            ui.update_header(f"Transferring {len(analyzed_torrents)} torrents...")
+            ui.update_footer("Executing transfers...")
+
+            try:
+                with ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as executor:
+                    transfer_futures = {
+                        executor.submit(
+                            transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
+                            ui, ssh_semaphores, args.dry_run, args.test_run
+                        ): t for t, size in analyzed_torrents
+                    }
+
+                    for future in as_completed(transfer_futures):
+                        torrent = transfer_futures[future]
+                        try:
+                            if future.result():
+                                processed_count += 1
+                        except Exception as e:
+                            logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
+                            ui.update_torrent_status(torrent.hash, "Failed", color="bold red")
+                        finally:
+                            ui.advance_transfer_progress()
+            except KeyboardInterrupt:
+                ui.update_header("[bold yellow]Process interrupted by user. Transfers cancelled.[/]")
+                ui.update_footer("Shutdown requested.")
+                raise
+
+            ui.update_header(f"Processing complete. Moved {processed_count}/{total_count} torrent(s).")
+            ui.update_footer("All tasks finished.")
+            logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
 
     except KeyboardInterrupt:
-        logging.warning("\nProcess interrupted by user. Shutting down.")
+        logging.warning("Process interrupted by user. Shutting down.")
     except KeyError as e:
         logging.error(f"Configuration key missing: {e}. Please check your config.ini.")
         return 1
@@ -1911,104 +1996,5 @@ def main():
                 logging.error(f"Could not read or verify lock file before removing: {e}")
         logging.info("--- Torrent Mover script finished ---")
     return 0
-
-def main_no_ui(eligible_torrents, config, source_qbit, destination_qbit, tracker_rules, ssh_semaphores, args):
-    """ Main logic loop without the Rich UI. """
-    logging.info(f"Found {len(eligible_torrents)} torrents to process.")
-    # Implement the main logic here, calling the transfer functions directly
-    # and logging progress to the console. This part is left as an exercise if needed.
-    # For now, we will just state that this mode is not fully implemented.
-    logging.warning("The --no-ui mode is for logging only. Full processing is not implemented in this mode yet.")
-
-
-def main_with_ui(eligible_torrents, config, source_qbit, destination_qbit, tracker_rules, ssh_semaphores, args):
-    """ Main logic loop with the Rich UI. """
-    total_count = len(eligible_torrents)
-    processed_count = 0
-
-    with UIManager() as ui:
-        ui.set_analysis_total(total_count)
-        ui.update_header(f"Found {total_count} torrents to process. Analyzing...")
-
-        sftp_config = config['SOURCE_SERVER']
-        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-        analysis_workers = max(10, args.parallel_jobs * 2)
-        analyzed_torrents = []
-        total_transfer_size = 0
-
-        logging.info("STATE: Starting analysis phase...")
-        try:
-            for t in eligible_torrents:
-                ui.add_torrent_to_plan(t.name, t.hash, "[dim]Calculating...[/dim]")
-
-            with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as executor:
-                source_server_section = 'SOURCE_SERVER'
-                source_ssh_semaphore = ssh_semaphores.get(source_server_section)
-                if not source_ssh_semaphore:
-                    ui.log(f"[bold red]Error: SSH semaphore for server section '{source_server_section}' not found. Check config.[/]")
-                    return 1
-
-                future_to_torrent = {executor.submit(analyze_torrent, t, sftp_config, transfer_mode, ui, semaphore=source_ssh_semaphore): t for t in eligible_torrents}
-                for future in as_completed(future_to_torrent):
-                    _analyzed_torrent, size = future.result()
-                    if size is not None and size > 0:
-                        analyzed_torrents.append((_analyzed_torrent, size))
-                        total_transfer_size += size
-                        size_gb = size / (1024**3)
-                        ui._torrents_data[_analyzed_torrent.hash]["size"] = f"{size_gb:.2f} GB"
-                        ui._update_torrents_table() # Redraw table to show size
-        except Exception as e:
-            ui.log(f"[bold red]A critical error occurred during the analysis phase: {e}[/]")
-            return 1
-
-        logging.info("STATE: Analysis complete.")
-        ui.update_header("Analysis complete. Verifying destination...")
-
-        if not analyzed_torrents:
-            ui.update_footer("No valid, non-zero size torrents to transfer.")
-            logging.info("No valid, non-zero size torrents to transfer.")
-            time.sleep(2) # Give user time to see the message
-            return 0
-
-        ui.set_overall_total(total_transfer_size)
-        if not args.dry_run and not destination_health_check(config, total_transfer_size):
-            ui.update_header("[bold red]Destination health check failed. Aborting transfer process.[/]")
-            logging.error("FATAL: Destination health check failed.")
-            time.sleep(5)
-            return 1
-
-        logging.info("STATE: Starting transfer phase...")
-        ui.update_header(f"Transferring {len(analyzed_torrents)} torrents...")
-        ui.update_footer("Executing transfers...")
-
-        try:
-            with ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as executor:
-                transfer_futures = {
-                    executor.submit(
-                        transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
-                        ui, ssh_semaphores, args.dry_run, args.test_run
-                    ): t for t, size in analyzed_torrents
-                }
-
-                for future in as_completed(transfer_futures):
-                    torrent = transfer_futures[future]
-                    try:
-                        if future.result():
-                            processed_count += 1
-                    except Exception as e:
-                        logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
-                        ui.update_torrent_status(torrent.hash, "Failed", color="bold red")
-                    finally:
-                        ui.advance_transfer_progress()
-        except KeyboardInterrupt:
-            ui.update_header("[bold yellow]Process interrupted by user. Transfers cancelled.[/]")
-            ui.update_footer("Shutdown requested.")
-            raise
-
-        ui.update_header(f"Processing complete. Moved {processed_count}/{total_count} torrent(s).")
-        ui.update_footer("All tasks finished.")
-        logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")
-
-
 if __name__ == "__main__":
     sys.exit(main())
