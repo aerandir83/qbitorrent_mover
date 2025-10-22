@@ -165,11 +165,21 @@ class UIManager:
                     self.update_torrent_status(torrent_hash, "Failed", color="bold red")
 
     def _update_torrents_table(self):
-        """Clears and rebuilds the torrents table from current data."""
-        self.torrents_table.rows.clear()
+        """Rebuilds the torrents table from scratch and swaps it into the panel."""
+
+        # Create a new table with the same structure
+        new_table = Table(show_header=True, header_style="bold cyan", border_style="dim", expand=True)
+        new_table.add_column("Torrent Name", style="cyan", no_wrap=True)
+        new_table.add_column("Size", style="magenta", width=12, justify="right")
+        new_table.add_column("Status", style="yellow", width=25)
+
+        # Populate the new table with the current data
         for data in self._torrents_data.values():
-            self.torrents_table.add_row(
+            new_table.add_row(
                 Text(data["name"], overflow="ellipsis"),
                 data["size"],
                 data["status"],
             )
+
+        # Atomically update the panel's renderable
+        self.torrents_table_panel.renderable = new_table
