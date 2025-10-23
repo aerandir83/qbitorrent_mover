@@ -453,9 +453,11 @@ def _sftp_download_to_cache(source_sftp_config, source_file_path, local_cache_pa
     sftp, ssh = None, None
     try:
         sftp, ssh = connect_sftp(source_sftp_config, semaphore=ssh_semaphore)
-
         remote_stat = sftp.stat(source_file_path)
         total_size = remote_stat.st_size
+
+        ui.start_file_transfer(torrent_hash, source_file_path, total_size)
+        ui.update_file_status(torrent_hash, source_file_path, "Downloading")
 
         local_size = 0
         if local_cache_path.exists():
@@ -463,18 +465,17 @@ def _sftp_download_to_cache(source_sftp_config, source_file_path, local_cache_pa
 
         if local_size >= total_size:
             logging.info(f"Cache hit, skipping download: {os.path.basename(source_file_path)}")
-            # Ensure progress bar is advanced by the full size of the file if it's already cached.
-            # This handles cases where a transfer was interrupted after download but before upload.
             ui.update_torrent_byte_progress(torrent_hash, total_size)
             ui.advance_overall_progress(total_size)
+            ui.update_file_progress(torrent_hash, source_file_path, total_size)
             return
 
         if local_size > 0:
             logging.info(f"Resuming download to cache: {os.path.basename(source_file_path)}")
             mode = 'ab'
-            # Update progress for the already-downloaded part
             ui.update_torrent_byte_progress(torrent_hash, local_size)
             ui.advance_overall_progress(local_size)
+            ui.update_file_progress(torrent_hash, source_file_path, local_size)
         else:
             logging.info(f"Downloading to cache: {os.path.basename(source_file_path)}")
             mode = 'wb'
@@ -490,6 +491,7 @@ def _sftp_download_to_cache(source_sftp_config, source_file_path, local_cache_pa
                     increment = len(chunk)
                     ui.update_torrent_byte_progress(torrent_hash, increment)
                     ui.advance_overall_progress(increment)
+                    ui.update_file_progress(torrent_hash, source_file_path, increment)
 
     except Exception as e:
         logging.error(f"Failed to download to cache for {source_file_path}: {e}")
@@ -498,7 +500,7 @@ def _sftp_download_to_cache(source_sftp_config, source_file_path, local_cache_pa
         disconnect_sftp(sftp, ssh, semaphore=ssh_semaphore)
 
 @retry(tries=2, delay=5)
-def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, torrent_hash, ui, ssh_semaphore=None):
+def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, source_file_path, dest_file_path, torrent_hash, ui, ssh_semaphore=None):
     """
     Uploads a file from a local cache path to the destination SFTP server.
     """
@@ -506,14 +508,17 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
     file_name = local_cache_path.name
 
     if not local_cache_path.is_file():
-        logging.warning(f"Cannot upload '{file_name}' from cache: File does not exist in the cache directory.")
-        ui.advance_torrent_file_progress(torrent_hash) # Still advance to not stall the UI
+        logging.warning(f"Cannot upload '{file_name}' from cache: File does not exist.")
+        ui.update_file_status(torrent_hash, source_file_path, "[red]Cache file missing[/red]")
+        ui.advance_torrent_file_progress(torrent_hash)
         return
 
     try:
-        sftp, ssh = connect_sftp(dest_sftp_config, semaphore=ssh_semaphore)
-        start_time = time.time()
         total_size = local_cache_path.stat().st_size
+        ui.start_file_transfer(torrent_hash, source_file_path, total_size)
+        ui.update_file_status(torrent_hash, source_file_path, "Uploading")
+
+        sftp, ssh = connect_sftp(dest_sftp_config, semaphore=ssh_semaphore)
         dest_size = 0
         try:
             dest_size = sftp.stat(dest_file_path).st_size
@@ -522,13 +527,16 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
 
         if dest_size >= total_size:
             logging.info(f"Skipping upload (exists and size matches): {file_name}")
-            ui.update_torrent_byte_progress(torrent_hash, total_size - dest_size)
-            ui.advance_overall_progress(total_size - dest_size)
+            ui.update_torrent_byte_progress(torrent_hash, total_size)
+            ui.advance_overall_progress(total_size)
+            ui.update_file_progress(torrent_hash, source_file_path, total_size)
             return
 
         if dest_size > 0:
             ui.update_torrent_byte_progress(torrent_hash, dest_size)
             ui.advance_overall_progress(dest_size)
+            ui.update_file_progress(torrent_hash, source_file_path, dest_size)
+
 
         dest_dir = os.path.dirname(dest_file_path)
         sftp_mkdir_p(sftp, dest_dir)
@@ -543,21 +551,15 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, dest_file_path, 
                     increment = len(chunk)
                     ui.update_torrent_byte_progress(torrent_hash, increment)
                     ui.advance_overall_progress(increment)
+                    ui.update_file_progress(torrent_hash, source_file_path, increment)
 
-        if sftp.stat(dest_file_path).st_size == total_size:
-            end_time = time.time()
-            duration = end_time - start_time
-            logging.debug(f"Upload from cache of '{file_name}' completed.")
-            if duration > 0:
-                speed_mbps = (total_size * 8) / (duration * 1024 * 1024)
-                logging.debug(f"PERF: (cache) '{file_name}' ({total_size / 1024**2:.2f} MiB) took {duration:.2f} seconds.")
-                logging.debug(f"PERF: Average speed: {speed_mbps:.2f} Mbps.")
-            else:
-                logging.debug(f"PERF: (cache) '{file_name}' completed in < 1 second.")
-        else:
+        if sftp.stat(dest_file_path).st_size != total_size:
             raise Exception("Final size mismatch during cached upload.")
 
+        ui.update_file_status(torrent_hash, source_file_path, "[green]Completed[/green]")
+
     except Exception as e:
+        ui.update_file_status(torrent_hash, source_file_path, "[red]Upload Failed[/red]")
         logging.error(f"Upload from cache failed for {file_name}: {e}")
         raise
     finally:
@@ -904,7 +906,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, torrent_hash, u
     raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {max_retries} attempts.")
 
 
-def transfer_content(sftp_config, sftp, remote_path, local_path, torrent_hash, ui, max_concurrent_transfers, dry_run=False, ssh_semaphore=None):
+def transfer_content(sftp_config, sftp, remote_path, local_path, torrent_hash, ui, max_concurrent_downloads, dry_run=False, ssh_semaphore=None):
     """
     Transfers a remote file or directory to a local path, preserving structure.
     """
@@ -913,7 +915,7 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, torrent_hash, u
         all_files = []
         _get_all_files_recursive(sftp, remote_path, local_path, all_files)
 
-        with ThreadPoolExecutor(max_workers=max_concurrent_transfers) as file_executor:
+        with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as file_executor:
             futures = [
                 file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, torrent_hash, ui, dry_run, ssh_semaphore=ssh_semaphore)
                 for remote_f, local_f in all_files
@@ -924,76 +926,79 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, torrent_hash, u
     else: # It's a single file
         _sftp_download_file(sftp_config, remote_path, local_path, torrent_hash, ui, dry_run, ssh_semaphore=ssh_semaphore)
 
-def transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_path, dest_path, torrent_hash, ui, max_concurrent_transfers, dry_run=False, local_cache_sftp_upload=False, source_ssh_semaphore=None, dest_ssh_semaphore=None):
+def transfer_content_sftp_upload(
+    source_sftp_config, dest_sftp_config, source_sftp, source_path, dest_path, torrent_hash, ui,
+    max_concurrent_downloads, max_concurrent_uploads, dry_run=False, local_cache_sftp_upload=False,
+    source_ssh_semaphore=None, dest_ssh_semaphore=None
+):
     """
     Transfers a remote file or directory from a source SFTP to a destination SFTP server.
     """
     source_stat = source_sftp.stat(source_path)
-    if source_stat.st_mode & 0o40000:  # S_ISDIR
-        all_files = []
+    all_files = []
+    is_dir = source_stat.st_mode & 0o40000
+    if is_dir:
         _get_all_files_recursive(source_sftp, source_path, dest_path, all_files)
+    else: # It's a single file
+        all_files.append((source_path, dest_path))
 
-        if local_cache_sftp_upload:
-            if dry_run:
-                logging.info(f"[DRY RUN] Would download {len(all_files)} files to cache and then upload.")
-                # Mark progress as complete for dry run
-                ui.update_torrent_byte_progress(torrent_hash, ui._torrents_data[torrent_hash]["progress_obj"].tasks[0].total)
-                ui.advance_overall_progress(ui._torrents_data[torrent_hash]["progress_obj"].tasks[0].total)
-                return
+    if local_cache_sftp_upload:
+        if dry_run:
+            logging.info(f"[DRY RUN] Would download {len(all_files)} files to cache and then upload.")
+            ui.update_torrent_byte_progress(torrent_hash, ui._torrents_data[torrent_hash]["progress_obj"].tasks[0].total)
+            ui.advance_overall_progress(ui._torrents_data[torrent_hash]["progress_obj"].tasks[0].total)
+            return
 
-            temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{torrent_hash}"
-            temp_dir.mkdir(exist_ok=True)
-            transfer_successful = False
-            try:
-                # 1. Download all files to local cache
-                ui.update_torrent_progress_description(torrent_hash, "Downloading")
-                with ThreadPoolExecutor(thread_name_prefix='CacheDownloader') as download_executor:
-                    download_futures = {
-                        download_executor.submit(_sftp_download_to_cache, source_sftp_config, source_f, temp_dir / os.path.basename(source_f), torrent_hash, ui, ssh_semaphore=source_ssh_semaphore): (source_f, dest_f)
-                        for source_f, dest_f in all_files
-                    }
-                    for future in as_completed(download_futures):
-                        future.result() # Propagate exceptions
+        temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{torrent_hash}"
+        temp_dir.mkdir(exist_ok=True)
+        transfer_successful = False
+        try:
+            with ThreadPoolExecutor(max_workers=max_concurrent_downloads, thread_name_prefix='CacheDownloader') as download_executor, \
+                 ThreadPoolExecutor(max_workers=max_concurrent_uploads, thread_name_prefix='CacheUploader') as upload_executor:
 
-                # 2. Upload all files from local cache
-                ui.update_torrent_progress_description(torrent_hash, "Uploading")
-                with ThreadPoolExecutor(max_workers=max_concurrent_transfers, thread_name_prefix='CacheUploader') as upload_executor:
-                    upload_futures = [
-                        upload_executor.submit(_sftp_upload_from_cache, dest_sftp_config, temp_dir / os.path.basename(source_f), dest_f, torrent_hash, ui, ssh_semaphore=dest_ssh_semaphore)
-                        for source_f, dest_f in all_files
-                    ]
-                    for future in as_completed(upload_futures):
-                        future.result()
-                transfer_successful = True
-            finally:
-                if transfer_successful:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-
-        else: # Streaming mode
-            with ThreadPoolExecutor(max_workers=max_concurrent_transfers) as file_executor:
-                futures = [
-                    file_executor.submit(_sftp_upload_file, source_sftp_config, dest_sftp_config, source_f, dest_f, torrent_hash, ui, dry_run, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore)
+                download_futures = {
+                    download_executor.submit(
+                        _sftp_download_to_cache, source_sftp_config, source_f,
+                        temp_dir / os.path.basename(source_f), torrent_hash, ui, ssh_semaphore=source_ssh_semaphore
+                    ): (source_f, dest_f)
                     for source_f, dest_f in all_files
-                ]
-                for future in as_completed(futures):
-                    future.result()
-    else:  # It's a single file
-        if local_cache_sftp_upload:
-            temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{torrent_hash}"
-            temp_dir.mkdir(exist_ok=True)
-            transfer_successful = False
-            try:
-                local_path = temp_dir / os.path.basename(source_path)
-                ui.update_torrent_progress_description(torrent_hash, "Downloading")
-                _sftp_download_to_cache(source_sftp_config, source_path, local_path, torrent_hash, ui, ssh_semaphore=source_ssh_semaphore)
-                ui.update_torrent_progress_description(torrent_hash, "Uploading")
-                _sftp_upload_from_cache(dest_sftp_config, local_path, dest_path, torrent_hash, ui, ssh_semaphore=dest_ssh_semaphore)
-                transfer_successful = True
-            finally:
-                if transfer_successful:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-        else:
-            _sftp_upload_file(source_sftp_config, dest_sftp_config, source_path, dest_path, torrent_hash, ui, dry_run, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore)
+                }
+                upload_futures = []
+
+                for download_future in as_completed(download_futures):
+                    source_f, dest_f = download_futures[download_future]
+                    try:
+                        download_future.result()
+                        local_cache_path = temp_dir / os.path.basename(source_f)
+                        upload_future = upload_executor.submit(
+                            _sftp_upload_from_cache, dest_sftp_config, local_cache_path,
+                            source_f, dest_f, torrent_hash, ui, ssh_semaphore=dest_ssh_semaphore
+                        )
+                        upload_futures.append(upload_future)
+                    except Exception as e:
+                        logging.error(f"Download of '{os.path.basename(source_f)}' failed, it will not be uploaded. Error: {e}")
+                        raise
+
+                for upload_future in as_completed(upload_futures):
+                    upload_future.result()
+
+            transfer_successful = True
+        finally:
+            if transfer_successful:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                logging.debug(f"Successfully removed cache directory: {temp_dir}")
+
+    else: # Streaming mode
+        with ThreadPoolExecutor(max_workers=max_concurrent_uploads) as file_executor:
+            futures = [
+                file_executor.submit(
+                    _sftp_upload_file, source_sftp_config, dest_sftp_config, source_f, dest_f,
+                    torrent_hash, ui, dry_run, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore
+                )
+                for source_f, dest_f in all_files
+            ]
+            for future in as_completed(futures):
+                future.result()
 
 # --- Torrent Processing Logic ---
 
@@ -1424,7 +1429,10 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
              # For rsync, we treat it as a single file operation for progress tracking
             all_files.append((source_content_path, dest_content_path))
 
-        ui.start_torrent_transfer(hash, total_size, len(all_files))
+        # Pass the list of file paths (source_f) to the UI manager
+        local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
+        transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
+        ui.start_torrent_transfer(hash, total_size, [source_f for source_f, dest_f in all_files], transfer_multiplier)
 
         if dry_run:
             logging.info(f"[DRY RUN] Simulating transfer for '{name}'.")
@@ -1445,18 +1453,23 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         else:
             # Re-establish connection for the actual transfer
             source_sftp, source_ssh = connect_sftp(source_sftp_config)
-            max_concurrent_transfers = config['SETTINGS'].getint('max_concurrent_file_transfers', 5)
+            max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)
+            max_concurrent_uploads = config['SETTINGS'].getint('max_concurrent_uploads', 4)
 
             if transfer_mode == 'sftp_upload':
                 logging.info(f"TRANSFER: Starting SFTP-to-SFTP upload for '{name}'...")
                 dest_sftp_config = config['DESTINATION_SERVER']
                 local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
                 dest_ssh_semaphore = ssh_semaphores.get('DESTINATION_SERVER')
-                transfer_content_sftp_upload(source_sftp_config, dest_sftp_config, source_sftp, source_content_path, dest_content_path, hash, ui, max_concurrent_transfers, dry_run, local_cache_sftp_upload, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore)
+                transfer_content_sftp_upload(
+                    source_sftp_config, dest_sftp_config, source_sftp, source_content_path, dest_content_path,
+                    hash, ui, max_concurrent_downloads, max_concurrent_uploads, dry_run,
+                    local_cache_sftp_upload, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore
+                )
                 logging.info(f"TRANSFER: SFTP-to-SFTP upload completed for '{name}'.")
             else: # Default 'sftp' download
                 logging.info(f"TRANSFER: Starting SFTP download for '{name}'...")
-                transfer_content(source_sftp_config, source_sftp, source_content_path, dest_content_path, hash, ui, max_concurrent_transfers, dry_run, ssh_semaphore=source_ssh_semaphore)
+                transfer_content(source_sftp_config, source_sftp, source_content_path, dest_content_path, hash, ui, max_concurrent_downloads, dry_run, ssh_semaphore=source_ssh_semaphore)
                 logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
 
 
