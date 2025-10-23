@@ -73,8 +73,10 @@ class UIManager:
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._live:
             for data in self._torrents_data.values():
-                if isinstance(data.get("progress_obj"), Progress):
-                    data["progress_obj"].stop()
+                if isinstance(data.get("byte_progress_obj"), Progress):
+                    data["byte_progress_obj"].stop()
+                if isinstance(data.get("file_progress_obj"), Progress):
+                    data["file_progress_obj"].stop()
                 if "files" in data:
                     for file_data in data["files"].values():
                         if isinstance(file_data.get("progress_obj"), Progress):
@@ -136,18 +138,28 @@ class UIManager:
             if torrent_hash not in self._torrents_data:
                 return
 
-            torrent_progress = Progress(
-                TextColumn("[bold blue]Overall Progress[/bold blue]"),
+            byte_progress = Progress(
+                TextColumn("[bold blue]Bytes[/bold blue]"),
                 BarColumn(),
                 TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
                 "•",
+                TotalFileSizeColumn(),
+            )
+            byte_task = byte_progress.add_task("Bytes", total=total_size * transfer_multiplier)
+
+            file_progress = Progress(
+                TextColumn("[bold blue]Files[/bold blue]"),
+                BarColumn(),
                 MofNCompleteColumn(),
             )
-            byte_task = torrent_progress.add_task("Bytes", total=total_size * transfer_multiplier)
-            file_task = torrent_progress.add_task("Files", total=len(files_to_transfer))
+            file_task = file_progress.add_task("Files", total=len(files_to_transfer))
+
+            progress_group = Group(byte_progress, file_progress)
 
             self._torrents_data[torrent_hash].update({
-                "progress_obj": torrent_progress,
+                "progress_obj": progress_group,
+                "byte_progress_obj": byte_progress,
+                "file_progress_obj": file_progress,
                 "byte_task_id": byte_task,
                 "file_task_id": file_task,
                 "status_text": None,
@@ -158,14 +170,14 @@ class UIManager:
     def update_torrent_byte_progress(self, torrent_hash, advance):
         with self._lock:
             data = self._torrents_data.get(torrent_hash)
-            if data and data.get("progress_obj"):
-                data["progress_obj"].update(data["byte_task_id"], advance=advance)
+            if data and data.get("byte_progress_obj"):
+                data["byte_progress_obj"].update(data["byte_task_id"], advance=advance)
 
     def advance_torrent_file_progress(self, torrent_hash):
         with self._lock:
             data = self._torrents_data.get(torrent_hash)
-            if data and data.get("progress_obj"):
-                data["progress_obj"].update(data["file_task_id"], advance=1)
+            if data and data.get("file_progress_obj"):
+                data["file_progress_obj"].update(data["file_task_id"], advance=1)
 
     def start_file_transfer(self, torrent_hash, file_path, file_size):
         with self._lock:
@@ -205,8 +217,10 @@ class UIManager:
         with self._lock:
             if torrent_hash in self._torrents_data:
                 data = self._torrents_data[torrent_hash]
-                if data.get("progress_obj"):
-                    data["progress_obj"].stop()
+                if data.get("byte_progress_obj"):
+                    data["byte_progress_obj"].stop()
+                if data.get("file_progress_obj"):
+                    data["file_progress_obj"].stop()
 
                 for file_data in data["files"].values():
                     if isinstance(file_data.get("progress_obj"), Progress):
