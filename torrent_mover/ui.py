@@ -163,7 +163,7 @@ class UIManager:
                 "byte_task_id": byte_task,
                 "file_task_id": file_task,
                 "status_text": None,
-                "files": OrderedDict((f, {"status": "[dim]Queued[/dim]", "progress_obj": None}) for f in files_to_transfer),
+                "files": OrderedDict((f, {"status": "", "progress_obj": None}) for f in files_to_transfer),
             })
             self._update_torrents_table()
 
