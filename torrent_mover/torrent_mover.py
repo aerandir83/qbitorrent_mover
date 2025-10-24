@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.8.0"
+__version__ = "1.8.1"
 
 import configparser
 import sys
@@ -1139,6 +1139,54 @@ def _execute_transfer(torrent: qbittorrentapi.TorrentDictionary, total_size: int
             transfer_content(source_pool, all_files, hash_, ui, max_concurrent_downloads, dry_run, download_limit_bytes, sftp_chunk_size)
             logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
 
+def _delete_destination_content(dest_content_path: str, config: configparser.ConfigParser, ssh_connection_pools: Dict[str, SSHConnectionPool]) -> None:
+    """Deletes the content from the destination path, either locally or remotely."""
+    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+    is_remote = (transfer_mode == 'sftp_upload')
+
+    logging.warning(f"Attempting to delete destination content: {dest_content_path}")
+    try:
+        if is_remote:
+            # Remote deletion
+            dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
+            if not dest_pool:
+                logging.error("Cannot delete remote content: Destination SSH pool not found.")
+                return
+
+            with dest_pool.get_connection() as (sftp, ssh):
+                # Check if it's a directory or file
+                try:
+                    stat = sftp.stat(dest_content_path)
+                    if stat.st_mode & 0o40000: # S_ISDIR
+                        logging.debug("Destination is a directory. Using 'rm -rf'.")
+                        command = f"rm -rf {shlex.quote(dest_content_path)}"
+                        stdin, stdout, stderr = ssh.exec_command(command, timeout=120)
+                        exit_status = stdout.channel.recv_exit_status()
+                        if exit_status != 0:
+                            logging.error(f"Failed to delete remote directory: {stderr.read().decode()}")
+                    else:
+                        logging.debug("Destination is a file. Using 'sftp.remove'.")
+                        sftp.remove(dest_content_path)
+                except FileNotFoundError:
+                    logging.warning(f"Destination content not found (already deleted?): {dest_content_path}")
+        else:
+            # Local deletion
+            p = Path(dest_content_path)
+            if p.is_dir():
+                logging.debug("Destination is a directory. Using 'shutil.rmtree'.")
+                shutil.rmtree(p)
+            elif p.is_file():
+                logging.debug("Destination is a file. Using 'os.remove'.")
+                p.unlink()
+            else:
+                logging.warning(f"Destination content not found (already deleted?): {dest_content_path}")
+
+        logging.info(f"Successfully deleted destination content: {dest_content_path}")
+
+    except Exception as e:
+        logging.error(f"An error occurred while deleting destination content: {e}", exc_info=True)
+
+
 def _post_transfer_actions(torrent: qbittorrentapi.TorrentDictionary, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ssh_connection_pools: Dict[str, SSHConnectionPool], dest_content_path: str, destination_save_path: str, dry_run: bool, test_run: bool) -> bool:
     """Handles all actions after a successful transfer."""
     name, hash_ = torrent.name, torrent.hash
@@ -1169,7 +1217,12 @@ def _post_transfer_actions(torrent: qbittorrentapi.TorrentDictionary, source_qbi
     else:
         logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
     if not wait_for_recheck_completion(destination_qbit, hash_, dry_run=dry_run):
-        logging.error(f"Failed to verify recheck for {name}. Leaving on Source for next run.")
+        logging.error(f"Failed to verify recheck for {name}. Assuming destination data is corrupt.")
+        if not dry_run:
+            logging.warning(f"Deleting destination data to force re-transfer on next run: {dest_content_path}")
+            _delete_destination_content(dest_content_path, config, ssh_connection_pools)
+        else:
+            logging.info(f"[DRY RUN] Would delete destination data: {dest_content_path}")
         return False
     if not dry_run:
         logging.info(f"CLIENT: Starting torrent on Destination: {name}")
