@@ -185,3 +185,81 @@ def retry(tries=2, delay=5, backoff=1):
                     _delay *= backoff
         return f_retry
     return deco_retry
+
+@retry(tries=2, delay=5)
+def _get_remote_size_du_core(ssh_client, remote_path):
+    """
+    Core logic for getting remote size using 'du -sb'. Does not handle concurrency.
+    This function is retried on failure.
+    """
+    # Escape single quotes in the path to prevent command injection issues.
+    escaped_path = remote_path.replace("'", "'\\''")
+    command = f"du -sb '{escaped_path}'"
+
+    try:
+        stdin, stdout, stderr = ssh_client.exec_command(command, timeout=60)
+        exit_status = stdout.channel.recv_exit_status()  # Wait for command to finish
+
+        if exit_status != 0:
+            stderr_output = stderr.read().decode('utf-8').strip()
+            if "No such file or directory" in stderr_output:
+                logging.warning(f"'du' command failed for path '{remote_path}': File not found.")
+                return 0
+            raise Exception(f"'du' command failed with exit code {exit_status}. Stderr: {stderr_output}")
+
+        output = stdout.read().decode('utf-8').strip()
+        # The output is like "12345\t/path/to/dir". We only need the number.
+        size_str = output.split()[0]
+        if size_str.isdigit():
+            return int(size_str)
+        else:
+            raise ValueError(f"Could not parse 'du' output. Raw output: '{output}'")
+
+    except Exception as e:
+        logging.error(f"An error occurred executing 'du' command for '{remote_path}': {e}")
+        # Re-raise to be handled by the retry decorator or the calling function
+        raise
+
+def batch_get_remote_sizes(ssh_client, paths, batch_size=10):
+    """
+    Get sizes for multiple paths in a single SSH session.
+    Uses a single command with multiple du calls.
+    """
+    results = {}
+    # Process in batches to avoid command length limits
+    for i in range(0, len(paths), batch_size):
+        batch = paths[i:i + batch_size]
+        # Build command that gets all sizes in one go
+        # Using printf to get parseable output
+        cmd_parts = []
+        for path in batch:
+            escaped = path.replace("'", "'\\''")
+            # Output format: SIZE\tPATH
+            cmd_parts.append(f"du -sb '{escaped}' 2>/dev/null || echo '0\t{escaped}'")
+        # Join with semicolons
+        command = "; ".join(cmd_parts)
+        try:
+            stdin, stdout, stderr = ssh_client.exec_command(command, timeout=120)
+            exit_status = stdout.channel.recv_exit_status()
+            output = stdout.read().decode('utf-8').strip()
+            # Parse output
+            for line in output.split('\n'):
+                if not line:
+                    continue
+                parts = line.split('\t', 1)
+                if len(parts) == 2:
+                    try:
+                        size = int(parts[0])
+                        path = parts[1]
+                        results[path] = size
+                    except ValueError:
+                        logging.warning(f"Could not parse size from line: {line}")
+        except Exception as e:
+            logging.error(f"Batch size calculation failed: {e}")
+            # Fall back to individual queries
+            for path in batch:
+                try:
+                    results[path] = _get_remote_size_du_core(ssh_client, path)
+                except:
+                    results[path] = 0
+    return results
