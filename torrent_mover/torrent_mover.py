@@ -1145,12 +1145,7 @@ def save_tracker_rules(rules, script_dir, rules_filename="tracker_rules.json"):
 
 def get_tracker_domain(tracker_url):
     try:
-        netloc = urlparse(tracker_url).netloc
-        parts = netloc.split('.')
-        if len(parts) > 2:
-            if parts[0] in ['tracker', 'announce', 'www']:
-                return '.'.join(parts[1:])
-        return netloc
+        return urlparse(tracker_url).hostname
     except Exception:
         return None
 
