@@ -104,10 +104,10 @@ class UIManager:
         self.overall_progress.update(self.overall_task, advance=advance)
 
     def update_header(self, text):
-        self.header_text.plain = text
+        self.header_panel.renderable = Text(text, justify="center")
 
     def update_footer(self, text):
-        self.footer_text.plain = text
+        self.footer_panel.renderable = Text(text, justify="center")
 
     def add_torrent_to_plan(self, torrent_name, torrent_hash, size_str):
         """Adds a torrent to the UI table with 'Queued' status."""
@@ -249,7 +249,7 @@ class UIManager:
             if data.get("progress_obj"):
                 torrent_grid.add_row(data["progress_obj"])
             elif data.get("status_text"):
-                torrent_grid.add_row(Panel(Text(data['status_text'], justify="center"), style="dim"))
+                torrent_grid.add_row(Panel(Text.from_markup(data['status_text'], justify="center"), style="dim"))
 
             # Row 3: File details in a nested table
             if data["files"]:
