@@ -1885,7 +1885,6 @@ def main():
                             total_transfer_size += size
                             size_gb = size / (1024**3)
                             ui._torrents_data[_analyzed_torrent.hash]["size"] = f"{size_gb:.2f} GB"
-                            ui._update_torrents_table() # Redraw table to show size
             except Exception as e:
                 ui.log(f"[bold red]A critical error occurred during the analysis phase: {e}[/]")
                 return 1
