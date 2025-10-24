@@ -402,8 +402,8 @@ def _sftp_download_to_cache(source_pool, source_file_path, local_cache_path, tor
 
             if local_size >= total_size:
                 logging.info(f"Cache hit, skipping download: {os.path.basename(source_file_path)}")
-            ui.update_torrent_byte_progress(torrent_hash, total_size)
-            ui.advance_overall_progress(total_size)
+                ui.update_torrent_byte_progress(torrent_hash, total_size)
+                ui.advance_overall_progress(total_size)
             ui.update_file_progress(torrent_hash, source_file_path, total_size)
             return
 
@@ -463,8 +463,8 @@ def _sftp_upload_from_cache(dest_pool, local_cache_path, source_file_path, dest_
                 logging.info(f"Skipping upload (exists and size matches): {file_name}")
                 ui.update_torrent_byte_progress(torrent_hash, total_size)
                 ui.advance_overall_progress(total_size)
-            ui.update_file_progress(torrent_hash, source_file_path, total_size)
-            return
+                ui.update_file_progress(torrent_hash, source_file_path, total_size)
+                return
 
         if dest_size > 0:
             ui.update_torrent_byte_progress(torrent_hash, dest_size)
@@ -522,25 +522,25 @@ def _sftp_upload_file(source_pool, dest_pool, source_file_path, dest_file_path, 
 
             # Check destination file size for resuming
             dest_size = 0
-        try:
-            dest_stat = dest_sftp.stat(dest_file_path)
-            dest_size = dest_stat.st_size
-            if dest_size == total_size:
-                logging.info(f"Skipping (exists and size matches): {file_name}")
-                ui.update_torrent_byte_progress(torrent_hash, total_size - dest_size)
-                ui.advance_overall_progress(total_size - dest_size)
-                return
-            elif dest_size > total_size:
-                logging.warning(f"Destination file '{file_name}' is larger than source ({dest_size} > {total_size}). Re-uploading.")
-                dest_size = 0
-            else:
-                logging.info(f"Resuming upload for {file_name} from {dest_size / (1024*1024):.2f} MB.")
-        except FileNotFoundError:
-            pass # File doesn't exist on destination, start new upload
+            try:
+                dest_stat = dest_sftp.stat(dest_file_path)
+                dest_size = dest_stat.st_size
+                if dest_size == total_size:
+                    logging.info(f"Skipping (exists and size matches): {file_name}")
+                    ui.update_torrent_byte_progress(torrent_hash, total_size - dest_size)
+                    ui.advance_overall_progress(total_size - dest_size)
+                    return
+                elif dest_size > total_size:
+                    logging.warning(f"Destination file '{file_name}' is larger than source ({dest_size} > {total_size}). Re-uploading.")
+                    dest_size = 0
+                else:
+                    logging.info(f"Resuming upload for {file_name} from {dest_size / (1024*1024):.2f} MB.")
+            except FileNotFoundError:
+                pass # File doesn't exist on destination, start new upload
 
-        if dest_size > 0:
-            ui.update_torrent_byte_progress(torrent_hash, dest_size)
-            ui.advance_overall_progress(dest_size)
+            if dest_size > 0:
+                ui.update_torrent_byte_progress(torrent_hash, dest_size)
+                ui.advance_overall_progress(dest_size)
 
         if dry_run:
             logging.info(f"[DRY RUN] Would upload: {source_file_path} -> {dest_file_path}")
@@ -617,11 +617,11 @@ def _sftp_download_file(pool, remote_file, local_file, torrent_hash, ui, dry_run
                 local_size = local_path.stat().st_size
                 logging.debug(f"SFTP Check: Local file '{local_file}' exists with size: {local_size}")
                 if local_size == total_size:
-                logging.info(f"Skipping (exists and size matches): {file_name}")
-                logging.debug(f"SFTP SKIP: Local: {local_size}, Remote: {total_size}. Skipping file '{file_name}'.")
-                ui.update_torrent_byte_progress(torrent_hash, total_size - local_size)
-                ui.advance_overall_progress(total_size - local_size)
-                return
+                    logging.info(f"Skipping (exists and size matches): {file_name}")
+                    logging.debug(f"SFTP SKIP: Local: {local_size}, Remote: {total_size}. Skipping file '{file_name}'.")
+                    ui.update_torrent_byte_progress(torrent_hash, total_size - local_size)
+                    ui.advance_overall_progress(total_size - local_size)
+                    return
             elif local_size > total_size:
                 logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
                 logging.debug(f"SFTP OVERWRITE: Local: {local_size}, Remote: {total_size}. Overwriting file '{file_name}'.")
@@ -629,8 +629,6 @@ def _sftp_download_file(pool, remote_file, local_file, torrent_hash, ui, dry_run
             else:  # local_size < total_size
                 logging.info(f"Resuming download for {file_name} from {local_size / (1024*1024):.2f} MB.")
                 logging.debug(f"SFTP RESUME: Local: {local_size}, Remote: {total_size}. Resuming file '{file_name}'.")
-        else:
-            logging.debug(f"SFTP NEW: Local file '{local_file}' does not exist. Starting new download.")
 
         if local_size > 0:
             ui.update_torrent_byte_progress(torrent_hash, local_size)
@@ -1859,33 +1857,32 @@ def main():
         # This is the main UI-driven execution block.
         total_count = len(eligible_torrents)
         processed_count = 0
-        try:
-            with UIManager() as ui:
-                ui.set_analysis_total(total_count)
-                ui.update_header(f"Found {total_count} torrents to process. Analyzing...")
+        with UIManager() as ui:
+            ui.set_analysis_total(total_count)
+            ui.update_header(f"Found {total_count} torrents to process. Analyzing...")
 
-                sftp_config = config['SOURCE_SERVER']
-                transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-                analysis_workers = max(10, args.parallel_jobs * 2)
-                analyzed_torrents = []
-                total_transfer_size = 0
+            sftp_config = config['SOURCE_SERVER']
+            transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+            analysis_workers = max(10, args.parallel_jobs * 2)
+            analyzed_torrents = []
+            total_transfer_size = 0
 
-                logging.info("STATE: Starting analysis phase...")
-                try:
-                    for t in eligible_torrents:
-                        ui.add_torrent_to_plan(t.name, t.hash, "[dim]Calculating...[/dim]")
+            logging.info("STATE: Starting analysis phase...")
+            try:
+                for t in eligible_torrents:
+                    ui.add_torrent_to_plan(t.name, t.hash, "[dim]Calculating...[/dim]")
 
-                    with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as executor:
-                        source_server_section = 'SOURCE_SERVER'
-                        source_pool = ssh_connection_pools.get(source_server_section)
-                        if not source_pool:
-                            ui.log(f"[bold red]Error: SSH connection pool for server section '{source_server_section}' not found. Check config.[/]")
-                            return 1
+                with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as executor:
+                    source_server_section = 'SOURCE_SERVER'
+                    source_pool = ssh_connection_pools.get(source_server_section)
+                    if not source_pool:
+                        ui.log(f"[bold red]Error: SSH connection pool for server section '{source_server_section}' not found. Check config.[/]")
+                        return 1
 
-                        future_to_torrent = {executor.submit(analyze_torrent, t, sftp_config, transfer_mode, ui, pool=source_pool): t for t in eligible_torrents}
-                        for future in as_completed(future_to_torrent):
-                            _analyzed_torrent, size = future.result()
-                            if size is not None and size > 0:
+                    future_to_torrent = {executor.submit(analyze_torrent, t, sftp_config, transfer_mode, ui, pool=source_pool): t for t in eligible_torrents}
+                    for future in as_completed(future_to_torrent):
+                        _analyzed_torrent, size = future.result()
+                        if size is not None and size > 0:
                             analyzed_torrents.append((_analyzed_torrent, size))
                             total_transfer_size += size
                             size_gb = size / (1024**3)
