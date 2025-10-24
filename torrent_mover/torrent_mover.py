@@ -1863,7 +1863,7 @@ def main():
                     ui.add_torrent_to_plan(t.name, t.hash, "[dim]Calculating...[/dim]")
 
                 with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as executor:
-                    source_server_section = 'SOURCE_SERVER'
+                    source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
                     source_pool = ssh_connection_pools.get(source_server_section)
                     if not source_pool:
                         ui.log(f"[bold red]Error: SSH connection pool for server section '{source_server_section}' not found. Check config.[/]")
