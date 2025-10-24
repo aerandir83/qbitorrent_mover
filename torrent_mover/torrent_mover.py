@@ -1507,6 +1507,225 @@ def test_path_permissions(path_to_test: str, remote_config: Optional[configparse
             logging.error(f"[bold red]FAILURE:[/] An unexpected error occurred during local permission test: {e}", exc_info=True)
             return False
 
+def _handle_utility_commands(args: argparse.Namespace, config: configparser.ConfigParser, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool]) -> bool:
+    """Handles all utility command-line arguments that exit after running."""
+    if not (args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions):
+        return False
+
+    logging.info("Executing utility command...")
+
+    if args.test_permissions:
+        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+        dest_path = config['DESTINATION_PATHS'].get('destination_path')
+        if not dest_path:
+            raise ValueError("FATAL: 'destination_path' is not defined in your config file.")
+        remote_config = None
+        if transfer_mode == 'sftp_upload':
+            if 'DESTINATION_SERVER' not in config:
+                raise ValueError("FATAL: 'transfer_mode' is 'sftp_upload' but [DESTINATION_SERVER] is not defined in config.")
+            remote_config = config['DESTINATION_SERVER']
+        test_path_permissions(dest_path, remote_config=remote_config, ssh_connection_pools=ssh_connection_pools)
+        return True
+
+    if args.list_rules:
+        if not tracker_rules:
+            logging.info("No rules found.")
+            return True
+        console = Console()
+        table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
+        table.add_column("Tracker Domain", style="dim", width=40)
+        table.add_column("Assigned Category")
+        sorted_rules = sorted(tracker_rules.items())
+        for domain, category in sorted_rules:
+            table.add_row(domain, f"[yellow]{category}[/yellow]" if category == "ignore" else f"[cyan]{category}[/cyan]")
+        console.print(table)
+        return True
+
+    if args.add_rule:
+        domain, category = args.add_rule
+        tracker_rules[domain] = category
+        if save_tracker_rules(tracker_rules, script_dir):
+            logging.info(f"Successfully added rule: '{domain}' -> '{category}'.")
+        return True
+
+    if args.delete_rule:
+        domain_to_delete = args.delete_rule
+        if domain_to_delete in tracker_rules:
+            del tracker_rules[domain_to_delete]
+            if save_tracker_rules(tracker_rules, script_dir):
+                logging.info(f"Successfully deleted rule for '{domain_to_delete}'.")
+        else:
+            logging.warning(f"No rule found for domain '{domain_to_delete}'. Nothing to delete.")
+        return True
+
+    if args.interactive_categorize:
+        try:
+            dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
+            destination_qbit = connect_qbit(config[dest_client_section], "Destination")
+            cat_to_scan = args.category or config['SETTINGS'].get('category_to_move') or ''
+            run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
+        except Exception as e:
+            logging.error(f"Failed to run interactive categorization: {e}", exc_info=True)
+        return True
+
+    return False # Should not be reached, but as a fallback.
+
+def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Namespace, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint) -> None:
+    """Connects to clients and runs the main transfer process."""
+    sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
+    try:
+        source_section_name = config['SETTINGS']['source_client_section']
+        dest_section_name = config['SETTINGS']['destination_client_section']
+        source_qbit = connect_qbit(config[source_section_name], "Source")
+        destination_qbit = connect_qbit(config[dest_section_name], "Destination")
+    except KeyError as e:
+        raise KeyError(f"Configuration Error: The client section '{e}' is defined in your [SETTINGS] but not found in the config file.") from e
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to qBittorrent client after multiple retries: {e}") from e
+
+    cleanup_orphaned_cache(destination_qbit)
+    recovered_torrents = recover_cached_torrents(source_qbit, destination_qbit)
+    category_to_move = config['SETTINGS']['category_to_move']
+    size_threshold_gb_str = config['SETTINGS'].get('size_threshold_gb')
+    size_threshold_gb = None
+    if size_threshold_gb_str and size_threshold_gb_str.strip():
+        try:
+            size_threshold_gb = float(size_threshold_gb_str)
+        except ValueError:
+            logging.error(f"Invalid value for 'size_threshold_gb': '{size_threshold_gb_str}'. It must be a number. Disabling threshold.")
+
+    eligible_torrents = get_eligible_torrents(source_qbit, category_to_move, size_threshold_gb)
+    if recovered_torrents:
+        eligible_hashes = {t.hash for t in eligible_torrents}
+        for torrent in recovered_torrents:
+            if torrent.hash not in eligible_hashes:
+                eligible_torrents.append(torrent)
+
+    if checkpoint.state["completed"]:
+        original_count = len(eligible_torrents)
+        eligible_torrents = [t for t in eligible_torrents if not checkpoint.is_completed(t.hash)]
+        skipped_count = original_count - len(eligible_torrents)
+        if skipped_count > 0:
+            logging.info(f"Skipped {skipped_count} torrent(s) that were already completed in a previous run.")
+
+    if not eligible_torrents:
+        logging.info("No torrents to move at this time.")
+        return
+
+    total_count = len(eligible_torrents)
+    stats: Dict[str, Any] = {
+        "total_bytes_transferred": 0, "successful_transfers": 0, "failed_transfers": 0,
+        "start_time": time.time(), "torrent_transfer_times": [], "total_transfer_time": 0
+    }
+
+    with UIManager(version=__version__) as ui:
+        ui.set_analysis_total(total_count)
+        ui.update_header(f"Found {total_count} torrents to process. Analyzing...")
+        sftp_config = config['SOURCE_SERVER']
+        analyzed_torrents: List[Tuple[qbittorrentapi.TorrentDictionary, int]] = []
+        total_transfer_size = 0
+        logging.info("STATE: Starting analysis phase...")
+        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+        try:
+            for t in eligible_torrents:
+                ui.add_torrent_to_plan(t.name, t.hash, "[dim]Calculating...[/dim]")
+            if transfer_mode == 'rsync':
+                for torrent in eligible_torrents:
+                    try:
+                        size = get_remote_size_rsync(sftp_config, torrent.content_path)
+                        if size > 0:
+                            analyzed_torrents.append((torrent, size))
+                            total_transfer_size += size
+                            ui._torrents_data[torrent.hash]["size"] = f"{size / GB_BYTES:.2f} GB"
+                            ui.update_torrent_status_text(torrent.hash, "Analyzed", color="green")
+                        else:
+                            ui.update_torrent_status_text(torrent.hash, "Skipped (zero size)", color="dim")
+                    except Exception as e:
+                        ui.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
+                        ui.update_torrent_status_text(torrent.hash, "Analysis Failed", color="bold red")
+                    finally:
+                        ui.advance_analysis_progress()
+            else:
+                source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
+                source_pool = ssh_connection_pools.get(source_server_section)
+                if not source_pool:
+                    raise ValueError(f"Error: SSH connection pool for server section '{source_server_section}' not found. Check config.")
+                with source_pool.get_connection() as (sftp, ssh):
+                    paths = [t.content_path for t in eligible_torrents]
+                    sizes = batch_get_remote_sizes(ssh, paths)
+                    for torrent in eligible_torrents:
+                        size = sizes.get(torrent.content_path)
+                        if size is not None and size > 0:
+                            analyzed_torrents.append((torrent, size))
+                            total_transfer_size += size
+                            ui._torrents_data[torrent.hash]["size"] = f"{size / GB_BYTES:.2f} GB"
+                            ui.update_torrent_status_text(torrent.hash, "Analyzed", color="green")
+                        elif size == 0:
+                            ui.update_torrent_status_text(torrent.hash, "Skipped (zero size)", color="dim")
+                        else:
+                            ui.update_torrent_status_text(torrent.hash, "Analysis Failed", color="bold red")
+                        ui.advance_analysis_progress()
+        except Exception as e:
+            raise RuntimeError(f"A critical error occurred during the analysis phase: {e}") from e
+
+        logging.info("STATE: Analysis complete.")
+        ui.update_header("Analysis complete. Verifying destination...")
+
+        if not analyzed_torrents:
+            ui.update_footer("No valid, non-zero size torrents to transfer.")
+            logging.info("No valid, non-zero size torrents to transfer.")
+            time.sleep(2)
+            return
+
+        ui.set_overall_total(total_transfer_size)
+        if not args.dry_run and not destination_health_check(config, total_transfer_size, ssh_connection_pools):
+            ui.update_header("[bold red]Destination health check failed. Aborting transfer process.[/]")
+            logging.error("FATAL: Destination health check failed.")
+            time.sleep(5)
+            raise RuntimeError("Destination health check failed.")
+
+        logging.info("STATE: Starting transfer phase...")
+        ui.update_header(f"Transferring {len(analyzed_torrents)} torrents...")
+        ui.update_footer("Executing transfers...")
+        try:
+            with ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as executor:
+                transfer_futures = {
+                    executor.submit(
+                        transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
+                        ui, ssh_connection_pools, args.dry_run, args.test_run, sftp_chunk_size
+                    ): (t, size) for t, size in analyzed_torrents
+                }
+                for future in as_completed(transfer_futures):
+                    torrent, size = transfer_futures[future]
+                    try:
+                        success, duration = future.result()
+                        if success:
+                            checkpoint.mark_completed(torrent.hash)
+                            stats["successful_transfers"] += 1
+                            stats["total_bytes_transferred"] += size
+                            stats["torrent_transfer_times"].append(duration)
+                            stats["total_transfer_time"] += duration
+                        else:
+                            stats["failed_transfers"] += 1
+                    except Exception as e:
+                        logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
+                        ui.update_torrent_status_text(torrent.hash, "Failed", color="bold red")
+                        stats["failed_transfers"] += 1
+                    finally:
+                        ui.advance_transfer_progress()
+        except KeyboardInterrupt:
+            ui.update_header("[bold yellow]Process interrupted by user. Transfers cancelled.[/]")
+            ui.update_footer("Shutdown requested.")
+            raise
+
+        stats["end_time"] = time.time()
+        stats["duration"] = stats["end_time"] - stats["start_time"]
+        ui.display_stats(stats)
+        ui.update_header(f"Processing complete. Moved {stats['successful_transfers']}/{total_count} torrent(s).")
+        ui.update_footer("All tasks finished.")
+        logging.info(f"Processing complete. Successfully moved {stats['successful_transfers']}/{total_count} torrent(s).")
+
+
 def main() -> int:
     """Main entry point for the script."""
     script_dir = Path(__file__).resolve().parent
@@ -1561,7 +1780,6 @@ def main() -> int:
         validator = ConfigValidator(config)
         if not validator.validate():
             return 1
-        sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
         server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
         for section_name in server_sections:
             max_sessions = config[section_name].getint('max_concurrent_ssh_sessions', 8)
@@ -1573,208 +1791,17 @@ def main() -> int:
                 max_size=max_sessions
             )
             logging.info(f"Initialized SSH connection pool for '{section_name}' with size {max_sessions}.")
-        if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions:
-            tracker_rules = load_tracker_rules(script_dir)
-            logging.info("Executing utility command...")
-            if args.test_permissions:
-                transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-                dest_path = config['DESTINATION_PATHS'].get('destination_path')
-                if not dest_path:
-                    logging.error("FATAL: 'destination_path' is not defined in your config file.")
-                    return 1
-                remote_config = None
-                if transfer_mode == 'sftp_upload':
-                    if 'DESTINATION_SERVER' not in config:
-                        logging.error("FATAL: 'transfer_mode' is 'sftp_upload' but [DESTINATION_SERVER] is not defined in config.")
-                        return 1
-                    remote_config = config['DESTINATION_SERVER']
-                test_path_permissions(dest_path, remote_config=remote_config, ssh_connection_pools=ssh_connection_pools)
-                return 0
-            if args.list_rules:
-                if not tracker_rules:
-                    logging.info("No rules found.")
-                    return 0
-                console = Console()
-                table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
-                table.add_column("Tracker Domain", style="dim", width=40)
-                table.add_column("Assigned Category")
-                sorted_rules = sorted(tracker_rules.items())
-                for domain, category in sorted_rules:
-                    table.add_row(domain, f"[yellow]{category}[/yellow]" if category == "ignore" else f"[cyan]{category}[/cyan]")
-                console.print(table)
-                return 0
-            if args.add_rule:
-                domain, category = args.add_rule
-                tracker_rules[domain] = category
-                if save_tracker_rules(tracker_rules, script_dir):
-                    logging.info(f"Successfully added rule: '{domain}' -> '{category}'.")
-                return 0
-            if args.delete_rule:
-                domain_to_delete = args.delete_rule
-                if domain_to_delete in tracker_rules:
-                    del tracker_rules[domain_to_delete]
-                    if save_tracker_rules(tracker_rules, script_dir):
-                        logging.info(f"Successfully deleted rule for '{domain_to_delete}'.")
-                else:
-                    logging.warning(f"No rule found for domain '{domain_to_delete}'. Nothing to delete.")
-                return 0
-            if args.interactive_categorize:
-                try:
-                    dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
-                    destination_qbit = connect_qbit(config[dest_client_section], "Destination")
-                    cat_to_scan = args.category or config['SETTINGS'].get('category_to_move') or ''
-                    run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
-                except Exception as e:
-                    logging.error(f"Failed to run interactive categorization: {e}", exc_info=True)
-                return 0
+
+        tracker_rules = load_tracker_rules(script_dir)
+        if _handle_utility_commands(args, config, tracker_rules, script_dir, ssh_connection_pools):
             return 0
+
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         if transfer_mode == 'rsync':
             check_sshpass_installed()
-        try:
-            source_section_name = config['SETTINGS']['source_client_section']
-            dest_section_name = config['SETTINGS']['destination_client_section']
-            source_qbit = connect_qbit(config[source_section_name], "Source")
-            destination_qbit = connect_qbit(config[dest_section_name], "Destination")
-        except KeyError as e:
-            logging.error(f"Configuration Error: The client section '{e}' is defined in your [SETTINGS] but not found in the config file.")
-            return 1
-        except Exception as e:
-            logging.error(f"Failed to connect to qBittorrent client after multiple retries: {e}", exc_info=True)
-            return 1
-        cleanup_orphaned_cache(destination_qbit)
-        recovered_torrents = recover_cached_torrents(source_qbit, destination_qbit)
-        tracker_rules = load_tracker_rules(script_dir)
-        category_to_move = config['SETTINGS']['category_to_move']
-        size_threshold_gb_str = config['SETTINGS'].get('size_threshold_gb')
-        size_threshold_gb = None
-        if size_threshold_gb_str and size_threshold_gb_str.strip():
-            try:
-                size_threshold_gb = float(size_threshold_gb_str)
-            except ValueError:
-                logging.error(f"Invalid value for 'size_threshold_gb': '{size_threshold_gb_str}'. It must be a number. Disabling threshold.")
-        eligible_torrents = get_eligible_torrents(source_qbit, category_to_move, size_threshold_gb)
-        if recovered_torrents:
-            eligible_hashes = {t.hash for t in eligible_torrents}
-            for torrent in recovered_torrents:
-                if torrent.hash not in eligible_hashes:
-                    eligible_torrents.append(torrent)
-        if checkpoint.state["completed"]:
-            original_count = len(eligible_torrents)
-            eligible_torrents = [t for t in eligible_torrents if not checkpoint.is_completed(t.hash)]
-            skipped_count = original_count - len(eligible_torrents)
-            if skipped_count > 0:
-                logging.info(f"Skipped {skipped_count} torrent(s) that were already completed in a previous run.")
-        if not eligible_torrents:
-            logging.info("No torrents to move at this time.")
-            return 0
-        total_count = len(eligible_torrents)
-        stats: Dict[str, Any] = {
-            "total_bytes_transferred": 0, "successful_transfers": 0, "failed_transfers": 0,
-            "start_time": time.time(), "torrent_transfer_times": [], "total_transfer_time": 0
-        }
-        with UIManager(version=__version__) as ui:
-            ui.set_analysis_total(total_count)
-            ui.update_header(f"Found {total_count} torrents to process. Analyzing...")
-            sftp_config = config['SOURCE_SERVER']
-            analyzed_torrents: List[Tuple[qbittorrentapi.TorrentDictionary, int]] = []
-            total_transfer_size = 0
-            logging.info("STATE: Starting analysis phase...")
-            try:
-                for t in eligible_torrents:
-                    ui.add_torrent_to_plan(t.name, t.hash, "[dim]Calculating...[/dim]")
-                if transfer_mode == 'rsync':
-                    for torrent in eligible_torrents:
-                        try:
-                            size = get_remote_size_rsync(sftp_config, torrent.content_path)
-                            if size > 0:
-                                analyzed_torrents.append((torrent, size))
-                                total_transfer_size += size
-                                ui._torrents_data[torrent.hash]["size"] = f"{size / GB_BYTES:.2f} GB"
-                                ui.update_torrent_status_text(torrent.hash, "Analyzed", color="green")
-                            else:
-                                ui.update_torrent_status_text(torrent.hash, "Skipped (zero size)", color="dim")
-                        except Exception as e:
-                            ui.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
-                            ui.update_torrent_status_text(torrent.hash, "Analysis Failed", color="bold red")
-                        finally:
-                            ui.advance_analysis_progress()
-                else:
-                    source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
-                    source_pool = ssh_connection_pools.get(source_server_section)
-                    if not source_pool:
-                        ui.log(f"[bold red]Error: SSH connection pool for server section '{source_server_section}' not found. Check config.[/]")
-                        return 1
-                    with source_pool.get_connection() as (sftp, ssh):
-                        paths = [t.content_path for t in eligible_torrents]
-                        sizes = batch_get_remote_sizes(ssh, paths)
-                        for torrent in eligible_torrents:
-                            size = sizes.get(torrent.content_path)
-                            if size is not None and size > 0:
-                                analyzed_torrents.append((torrent, size))
-                                total_transfer_size += size
-                                ui._torrents_data[torrent.hash]["size"] = f"{size / GB_BYTES:.2f} GB"
-                                ui.update_torrent_status_text(torrent.hash, "Analyzed", color="green")
-                            elif size == 0:
-                                ui.update_torrent_status_text(torrent.hash, "Skipped (zero size)", color="dim")
-                            else:
-                                ui.update_torrent_status_text(torrent.hash, "Analysis Failed", color="bold red")
-                            ui.advance_analysis_progress()
-            except Exception as e:
-                ui.log(f"[bold red]A critical error occurred during the analysis phase: {e}[/]")
-                return 1
-            logging.info("STATE: Analysis complete.")
-            ui.update_header("Analysis complete. Verifying destination...")
-            if not analyzed_torrents:
-                ui.update_footer("No valid, non-zero size torrents to transfer.")
-                logging.info("No valid, non-zero size torrents to transfer.")
-                time.sleep(2)
-                return 0
-            ui.set_overall_total(total_transfer_size)
-            if not args.dry_run and not destination_health_check(config, total_transfer_size, ssh_connection_pools):
-                ui.update_header("[bold red]Destination health check failed. Aborting transfer process.[/]")
-                logging.error("FATAL: Destination health check failed.")
-                time.sleep(5)
-                return 1
-            logging.info("STATE: Starting transfer phase...")
-            ui.update_header(f"Transferring {len(analyzed_torrents)} torrents...")
-            ui.update_footer("Executing transfers...")
-            try:
-                with ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as executor:
-                    transfer_futures = {
-                        executor.submit(
-                            transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
-                            ui, ssh_connection_pools, args.dry_run, args.test_run, sftp_chunk_size
-                        ): (t, size) for t, size in analyzed_torrents
-                    }
-                    for future in as_completed(transfer_futures):
-                        torrent, size = transfer_futures[future]
-                        try:
-                            success, duration = future.result()
-                            if success:
-                                checkpoint.mark_completed(torrent.hash)
-                                stats["successful_transfers"] += 1
-                                stats["total_bytes_transferred"] += size
-                                stats["torrent_transfer_times"].append(duration)
-                                stats["total_transfer_time"] += duration
-                            else:
-                                stats["failed_transfers"] += 1
-                        except Exception as e:
-                            logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
-                            ui.update_torrent_status_text(torrent.hash, "Failed", color="bold red")
-                            stats["failed_transfers"] += 1
-                        finally:
-                            ui.advance_transfer_progress()
-            except KeyboardInterrupt:
-                ui.update_header("[bold yellow]Process interrupted by user. Transfers cancelled.[/]")
-                ui.update_footer("Shutdown requested.")
-                raise
-            stats["end_time"] = time.time()
-            stats["duration"] = stats["end_time"] - stats["start_time"]
-            ui.display_stats(stats)
-            ui.update_header(f"Processing complete. Moved {stats['successful_transfers']}/{total_count} torrent(s).")
-            ui.update_footer("All tasks finished.")
-            logging.info(f"Processing complete. Successfully moved {stats['successful_transfers']}/{total_count} torrent(s).")
+
+        _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint)
+
     except KeyboardInterrupt:
         logging.warning("Process interrupted by user. Shutting down.")
     except KeyError as e:
