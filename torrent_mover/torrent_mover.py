@@ -404,31 +404,31 @@ def _sftp_download_to_cache(source_pool, source_file_path, local_cache_path, tor
                 logging.info(f"Cache hit, skipping download: {os.path.basename(source_file_path)}")
                 ui.update_torrent_byte_progress(torrent_hash, total_size)
                 ui.advance_overall_progress(total_size)
-            ui.update_file_progress(torrent_hash, source_file_path, total_size)
-            return
+                ui.update_file_progress(torrent_hash, source_file_path, total_size)
+                return
 
-        if local_size > 0:
-            logging.info(f"Resuming download to cache: {os.path.basename(source_file_path)}")
-            mode = 'ab'
-            ui.update_torrent_byte_progress(torrent_hash, local_size)
-            ui.advance_overall_progress(local_size)
-            ui.update_file_progress(torrent_hash, source_file_path, local_size)
-        else:
-            logging.info(f"Downloading to cache: {os.path.basename(source_file_path)}")
-            mode = 'wb'
+            if local_size > 0:
+                logging.info(f"Resuming download to cache: {os.path.basename(source_file_path)}")
+                mode = 'ab'
+                ui.update_torrent_byte_progress(torrent_hash, local_size)
+                ui.advance_overall_progress(local_size)
+                ui.update_file_progress(torrent_hash, source_file_path, local_size)
+            else:
+                logging.info(f"Downloading to cache: {os.path.basename(source_file_path)}")
+                mode = 'wb'
 
-        with sftp.open(source_file_path, 'rb') as remote_f:
-            remote_f.seek(local_size)
-            remote_f.prefetch()
-            with open(local_cache_path, mode) as local_f:
-                while True:
-                    chunk = remote_f.read(65536)
-                    if not chunk: break
-                    local_f.write(chunk)
-                    increment = len(chunk)
-                    ui.update_torrent_byte_progress(torrent_hash, increment)
-                    ui.advance_overall_progress(increment)
-                    ui.update_file_progress(torrent_hash, source_file_path, increment)
+            with sftp.open(source_file_path, 'rb') as remote_f:
+                remote_f.seek(local_size)
+                remote_f.prefetch()
+                with open(local_cache_path, mode) as local_f:
+                    while True:
+                        chunk = remote_f.read(65536)
+                        if not chunk: break
+                        local_f.write(chunk)
+                        increment = len(chunk)
+                        ui.update_torrent_byte_progress(torrent_hash, increment)
+                        ui.advance_overall_progress(increment)
+                        ui.update_file_progress(torrent_hash, source_file_path, increment)
 
     except Exception as e:
         logging.error(f"Failed to download to cache for {source_file_path}: {e}")
