@@ -1604,7 +1604,7 @@ def main() -> int:
             "total_bytes_transferred": 0, "successful_transfers": 0, "failed_transfers": 0,
             "start_time": time.time(), "torrent_transfer_times": [], "total_transfer_time": 0
         }
-        with UIManager() as ui:
+        with UIManager(version=__version__) as ui:
             ui.set_analysis_total(total_count)
             ui.update_header(f"Found {total_count} torrents to process. Analyzing...")
             sftp_config = config['SOURCE_SERVER']

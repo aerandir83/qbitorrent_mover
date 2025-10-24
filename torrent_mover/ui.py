@@ -64,14 +64,14 @@ class TorrentTableRenderable:
 class UIManager:
     """A class to manage the Rich UI for the torrent mover script."""
 
-    def __init__(self) -> None:
+    def __init__(self, version: str = "") -> None:
         self.console = Console()
         self._lock = threading.RLock()
         self._live: Optional[Live] = None
         self._torrents_data: OrderedDictType[str, Dict[str, Any]] = OrderedDict()
 
         self.header_text = Text("Initializing...", justify="center")
-        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.7.0[/bold magenta]", border_style="magenta")
+        self.header_panel = Panel(self.header_text, title=f"[bold magenta]Torrent Mover v{version}[/bold magenta]", border_style="magenta")
 
         self.analysis_progress = Progress(TextColumn("[cyan]Analyzed"), BarColumn(), MofNCompleteColumn())
         self.analysis_task: TaskID = self.analysis_progress.add_task("Torrents", total=0, visible=False)
