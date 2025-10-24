@@ -487,6 +487,14 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
                 logging.error(f"Permission denied on destination server for path: {dest_file_path}\n"
                               "Please check that the destination user has write access to that directory.")
                 raise
+            except FileNotFoundError as e:
+                logging.error(f"Source file not found: {source_file_path}")
+                logging.error("This can happen if the file was moved or deleted on the source before transfer.")
+                raise e
+            except (socket.timeout, TimeoutError) as e:
+                logging.error(f"Network timeout during upload of file: {file_name}")
+                logging.error("The script will retry, but check your network stability if this persists.")
+                raise e
             except Exception as e:
                 logging.error(f"Upload failed for {file_name}: {e}")
                 raise
@@ -560,6 +568,14 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
                               "Please check that the user running the script has write permissions for this directory.\n"
                               "If you intended to transfer to another remote server, use 'transfer_mode = sftp_upload' in your config.")
                 raise
+            except FileNotFoundError as e:
+                logging.error(f"Source file not found: {remote_file}")
+                logging.error("This can happen if the file was moved or deleted on the source before transfer.")
+                raise e
+            except (socket.timeout, TimeoutError) as e:
+                logging.error(f"Network timeout during download of file: {file_name}")
+                logging.error("The script will retry, but check your network stability if this persists.")
+                raise e
             except Exception as e:
                 logging.error(f"Download failed for {file_name}: {e}")
                 raise
