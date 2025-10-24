@@ -70,7 +70,7 @@ class UIManager:
         self._torrents_data: OrderedDictType[str, Dict[str, Any]] = OrderedDict()
 
         self.header_text = Text("Initializing...", justify="center")
-        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.6.0[/bold magenta]", border_style="magenta")
+        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.7.0[/bold magenta]", border_style="magenta")
 
         self.analysis_progress = Progress(TextColumn("[cyan]Analyzed"), BarColumn(), MofNCompleteColumn())
         self.analysis_task: TaskID = self.analysis_progress.add_task("Torrents", total=0, visible=False)

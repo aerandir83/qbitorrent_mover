@@ -10,11 +10,19 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.6.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **1.7.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 1.6.3 (Latest)
+### Version 1.7.0 (Latest)
+*   **Security**: Applied `shlex.quote()` to all shell command constructions to prevent command injection vulnerabilities.
+*   **Enhancement**: The `--version` output now includes the path to the configuration file being used.
+*   **Feature**: Added a `--check-config` flag to validate the configuration file without running a full transfer.
+*   **Logging**: The script now logs the path of the configuration file being used at startup.
+*   **UI**: Verified that the transfer speed is correctly displayed in the final summary.
+*   **Development**: Added a `requirements-dev.txt` file for testing tools.
+
+### Version 1.6.3
 *   **New Feature**: Introduced a Rich-based UI for real-time progress tracking of torrent analysis and transfers.
 *   **New Feature**: Implemented local caching for `sftp_upload` mode to improve reliability and performance.
 *   **Improvement**: Switched to using `du -sb` for remote size calculation, significantly speeding up the analysis phase.
