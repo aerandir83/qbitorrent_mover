@@ -21,7 +21,7 @@ import re
 import threading
 from collections import defaultdict
 import errno
-from .utils import retry
+from .utils import retry, SSHConnectionPool
 import tempfile
 import getpass
 import configupdater
@@ -200,56 +200,6 @@ def connect_qbit(config_section, client_name):
     logging.info(f"CLIENT: Successfully connected to {client_name}. Version: {client.app.version}")
     return client
 
-def disconnect_sftp(sftp, ssh_client, semaphore=None):
-    """Closes SFTP and SSH connections and releases the semaphore if provided."""
-    try:
-        if sftp:
-            sftp.close()
-        if ssh_client:
-            ssh_client.close()
-    finally:
-        if semaphore:
-            semaphore.release()
-            logging.debug(f"Released SSH semaphore.")
-
-
-@retry(tries=2, delay=5)
-def connect_sftp(config_section, semaphore=None):
-    """
-    Connects to a server via SFTP using SSHClient for better timeout control.
-    Acquires a semaphore to limit concurrent connections if provided.
-    Returns a connected SFTP client and the SSHClient object, or raises an exception on failure.
-    """
-    host = config_section['host']
-    port = config_section.getint('port')
-    username = config_section['username']
-    password = config_section['password']
-
-    logging.debug(f"Establishing SFTP connection to {host}...")
-    if semaphore:
-        semaphore.acquire()
-        logging.debug(f"Acquired SSH semaphore for {host}.")
-
-    ssh_client = paramiko.SSHClient()
-    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    try:
-        # The timeout parameter here is crucial for fast failure detection
-        ssh_client.connect(hostname=host, port=port, username=username, password=password, timeout=10)
-
-        # Enable keepalives on the underlying transport
-        transport = ssh_client.get_transport()
-        if transport:
-            transport.set_keepalive(30)
-
-        sftp = ssh_client.open_sftp()
-        logging.debug(f"Successfully established SFTP connection to {host}.")
-        return sftp, ssh_client
-    except Exception as e:
-        if semaphore:
-            semaphore.release() # Must release on failure
-        raise e
-
 # --- SFTP Transfer Logic with Progress Bar ---
 
 def sftp_mkdir_p(sftp, remote_path):
@@ -388,18 +338,6 @@ def _get_remote_size_du_core(ssh_client, remote_path):
         raise
 
 
-def get_remote_size_du(ssh_client, remote_path, semaphore):
-    """
-    Gets the total size of a remote file or directory using 'du -sb'.
-    This is a wrapper that handles semaphore acquisition before calling the retriable core logic.
-    """
-    semaphore.acquire()
-    try:
-        return _get_remote_size_du_core(ssh_client, remote_path)
-    finally:
-        semaphore.release()
-
-
 def is_remote_dir(ssh_client, path):
     """Checks if a remote path is a directory using 'test -d'."""
     try:
@@ -446,117 +384,112 @@ def _get_all_files_recursive(sftp, remote_path, base_dest_path, file_list):
             continue
 
 @retry(tries=2, delay=5)
-def _sftp_download_to_cache(source_sftp_config, source_file_path, local_cache_path, torrent_hash, ui, ssh_semaphore=None):
+def _sftp_download_to_cache(source_pool, source_file_path, local_cache_path, torrent_hash, ui):
     """
     Downloads a file from SFTP to a local cache path, with resume support and progress reporting.
     """
-    sftp, ssh = None, None
     try:
-        sftp, ssh = connect_sftp(source_sftp_config, semaphore=ssh_semaphore)
-        remote_stat = sftp.stat(source_file_path)
-        total_size = remote_stat.st_size
+        with source_pool.get_connection() as (sftp, ssh):
+            remote_stat = sftp.stat(source_file_path)
+            total_size = remote_stat.st_size
 
-        ui.start_file_transfer(torrent_hash, source_file_path, total_size)
-        ui.update_file_status(torrent_hash, source_file_path, "Downloading")
+            ui.start_file_transfer(torrent_hash, source_file_path, total_size)
+            ui.update_file_status(torrent_hash, source_file_path, "Downloading")
 
-        local_size = 0
-        if local_cache_path.exists():
-            local_size = local_cache_path.stat().st_size
+            local_size = 0
+            if local_cache_path.exists():
+                local_size = local_cache_path.stat().st_size
 
-        if local_size >= total_size:
-            logging.info(f"Cache hit, skipping download: {os.path.basename(source_file_path)}")
-            ui.update_torrent_byte_progress(torrent_hash, total_size)
-            ui.advance_overall_progress(total_size)
-            ui.update_file_progress(torrent_hash, source_file_path, total_size)
-            return
+            if local_size >= total_size:
+                logging.info(f"Cache hit, skipping download: {os.path.basename(source_file_path)}")
+                ui.update_torrent_byte_progress(torrent_hash, total_size)
+                ui.advance_overall_progress(total_size)
+                ui.update_file_progress(torrent_hash, source_file_path, total_size)
+                return
 
-        if local_size > 0:
-            logging.info(f"Resuming download to cache: {os.path.basename(source_file_path)}")
-            mode = 'ab'
-            ui.update_torrent_byte_progress(torrent_hash, local_size)
-            ui.advance_overall_progress(local_size)
-            ui.update_file_progress(torrent_hash, source_file_path, local_size)
-        else:
-            logging.info(f"Downloading to cache: {os.path.basename(source_file_path)}")
-            mode = 'wb'
+            if local_size > 0:
+                logging.info(f"Resuming download to cache: {os.path.basename(source_file_path)}")
+                mode = 'ab'
+                ui.update_torrent_byte_progress(torrent_hash, local_size)
+                ui.advance_overall_progress(local_size)
+                ui.update_file_progress(torrent_hash, source_file_path, local_size)
+            else:
+                logging.info(f"Downloading to cache: {os.path.basename(source_file_path)}")
+                mode = 'wb'
 
-        with sftp.open(source_file_path, 'rb') as remote_f:
-            remote_f.seek(local_size)
-            remote_f.prefetch()
-            with open(local_cache_path, mode) as local_f:
-                while True:
-                    chunk = remote_f.read(65536)
-                    if not chunk: break
-                    local_f.write(chunk)
-                    increment = len(chunk)
-                    ui.update_torrent_byte_progress(torrent_hash, increment)
-                    ui.advance_overall_progress(increment)
-                    ui.update_file_progress(torrent_hash, source_file_path, increment)
+            with sftp.open(source_file_path, 'rb') as remote_f:
+                remote_f.seek(local_size)
+                remote_f.prefetch()
+                with open(local_cache_path, mode) as local_f:
+                    while True:
+                        chunk = remote_f.read(65536)
+                        if not chunk: break
+                        local_f.write(chunk)
+                        increment = len(chunk)
+                        ui.update_torrent_byte_progress(torrent_hash, increment)
+                        ui.advance_overall_progress(increment)
+                        ui.update_file_progress(torrent_hash, source_file_path, increment)
 
     except Exception as e:
         logging.error(f"Failed to download to cache for {source_file_path}: {e}")
         raise
-    finally:
-        disconnect_sftp(sftp, ssh, semaphore=ssh_semaphore)
 
 @retry(tries=2, delay=5)
-def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, source_file_path, dest_file_path, torrent_hash, ui, ssh_semaphore=None):
+def _sftp_upload_from_cache(dest_pool, local_cache_path, source_file_path, dest_file_path, torrent_hash, ui):
     """
     Uploads a file from a local cache path to the destination SFTP server.
     """
-    sftp, ssh = None, None
     file_name = local_cache_path.name
 
     if not local_cache_path.is_file():
-        logging.warning(f"Cannot upload '{file_name}' from cache: File does not exist.")
+        logging.error(f"Cannot upload '{file_name}' from cache: File does not exist.")
         ui.update_file_status(torrent_hash, source_file_path, "[red]Cache file missing[/red]")
-        ui.advance_torrent_file_progress(torrent_hash)
-        return
+        raise FileNotFoundError(f"Local cache file not found: {local_cache_path}")
 
     try:
         total_size = local_cache_path.stat().st_size
         ui.start_file_transfer(torrent_hash, source_file_path, total_size)
         ui.update_file_status(torrent_hash, source_file_path, "Uploading")
 
-        sftp, ssh = connect_sftp(dest_sftp_config, semaphore=ssh_semaphore)
-        dest_size = 0
-        try:
-            dest_size = sftp.stat(dest_file_path).st_size
-        except FileNotFoundError:
-            pass
+        with dest_pool.get_connection() as (sftp, ssh):
+            dest_size = 0
+            try:
+                dest_size = sftp.stat(dest_file_path).st_size
+            except FileNotFoundError:
+                pass
 
-        if dest_size >= total_size:
-            logging.info(f"Skipping upload (exists and size matches): {file_name}")
-            ui.update_torrent_byte_progress(torrent_hash, total_size)
-            ui.advance_overall_progress(total_size)
-            ui.update_file_progress(torrent_hash, source_file_path, total_size)
-            return
+            if dest_size >= total_size:
+                logging.info(f"Skipping upload (exists and size matches): {file_name}")
+                ui.update_torrent_byte_progress(torrent_hash, total_size)
+                ui.advance_overall_progress(total_size)
+                ui.update_file_progress(torrent_hash, source_file_path, total_size)
+                return
 
-        if dest_size > 0:
-            ui.update_torrent_byte_progress(torrent_hash, dest_size)
-            ui.advance_overall_progress(dest_size)
-            ui.update_file_progress(torrent_hash, source_file_path, dest_size)
+            if dest_size > 0:
+                ui.update_torrent_byte_progress(torrent_hash, dest_size)
+                ui.advance_overall_progress(dest_size)
+                ui.update_file_progress(torrent_hash, source_file_path, dest_size)
 
 
-        dest_dir = os.path.dirname(dest_file_path)
-        sftp_mkdir_p(sftp, dest_dir)
+            dest_dir = os.path.dirname(dest_file_path)
+            sftp_mkdir_p(sftp, dest_dir)
 
-        with open(local_cache_path, 'rb') as source_f:
-            source_f.seek(dest_size)
-            with sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f:
-                while True:
-                    chunk = source_f.read(32768)
-                    if not chunk: break
-                    dest_f.write(chunk)
-                    increment = len(chunk)
-                    ui.update_torrent_byte_progress(torrent_hash, increment)
-                    ui.advance_overall_progress(increment)
-                    ui.update_file_progress(torrent_hash, source_file_path, increment)
+            with open(local_cache_path, 'rb') as source_f:
+                source_f.seek(dest_size)
+                with sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f:
+                    while True:
+                        chunk = source_f.read(32768)
+                        if not chunk: break
+                        dest_f.write(chunk)
+                        increment = len(chunk)
+                        ui.update_torrent_byte_progress(torrent_hash, increment)
+                        ui.advance_overall_progress(increment)
+                        ui.update_file_progress(torrent_hash, source_file_path, increment)
 
-        if sftp.stat(dest_file_path).st_size != total_size:
-            raise Exception("Final size mismatch during cached upload.")
+            if sftp.stat(dest_file_path).st_size != total_size:
+                raise Exception("Final size mismatch during cached upload.")
 
-        ui.update_file_status(torrent_hash, source_file_path, "[green]Completed[/green]")
+            ui.update_file_status(torrent_hash, source_file_path, "[green]Completed[/green]")
 
     except Exception as e:
         ui.update_file_status(torrent_hash, source_file_path, "[red]Upload Failed[/red]")
@@ -564,55 +497,49 @@ def _sftp_upload_from_cache(dest_sftp_config, local_cache_path, source_file_path
         raise
     finally:
         ui.advance_torrent_file_progress(torrent_hash)
-        disconnect_sftp(sftp, ssh, semaphore=ssh_semaphore)
 
-def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, dest_file_path, torrent_hash, ui, dry_run=False, source_ssh_semaphore=None, dest_ssh_semaphore=None):
+def _sftp_upload_file(source_pool, dest_pool, source_file_path, dest_file_path, torrent_hash, ui, dry_run=False):
     """
     Streams a single file from a source SFTP server to a destination SFTP server with a progress bar.
     Establishes its own SFTP sessions for thread safety. Supports resuming.
     """
     file_name = os.path.basename(source_file_path)
-    source_sftp, source_ssh = None, None
-    dest_sftp, dest_ssh = None, None
-
     try:
-        # Connect to both servers
-        source_sftp, source_ssh = connect_sftp(source_sftp_config, semaphore=source_ssh_semaphore)
-        dest_sftp, dest_ssh = connect_sftp(dest_sftp_config, semaphore=dest_ssh_semaphore)
-        start_time = time.time()
-        # Get source file size
-        try:
-            source_stat = source_sftp.stat(source_file_path)
-            total_size = source_stat.st_size
-        except FileNotFoundError:
-            logging.warning(f"Source file not found, skipping: {source_file_path}")
-            return
-
-        if total_size == 0:
-            logging.warning(f"Skipping zero-byte source file: {file_name}")
-            return
-
-        # Check destination file size for resuming
-        dest_size = 0
-        try:
-            dest_stat = dest_sftp.stat(dest_file_path)
-            dest_size = dest_stat.st_size
-            if dest_size == total_size:
-                logging.info(f"Skipping (exists and size matches): {file_name}")
-                ui.update_torrent_byte_progress(torrent_hash, total_size - dest_size)
-                ui.advance_overall_progress(total_size - dest_size)
+        with source_pool.get_connection() as (source_sftp, source_ssh), dest_pool.get_connection() as (dest_sftp, dest_ssh):
+            start_time = time.time()
+            # Get source file size
+            try:
+                source_stat = source_sftp.stat(source_file_path)
+                total_size = source_stat.st_size
+            except FileNotFoundError:
+                logging.warning(f"Source file not found, skipping: {source_file_path}")
                 return
-            elif dest_size > total_size:
-                logging.warning(f"Destination file '{file_name}' is larger than source ({dest_size} > {total_size}). Re-uploading.")
-                dest_size = 0
-            else:
-                logging.info(f"Resuming upload for {file_name} from {dest_size / (1024*1024):.2f} MB.")
-        except FileNotFoundError:
-            pass # File doesn't exist on destination, start new upload
 
-        if dest_size > 0:
-            ui.update_torrent_byte_progress(torrent_hash, dest_size)
-            ui.advance_overall_progress(dest_size)
+            if total_size == 0:
+                logging.warning(f"Skipping zero-byte source file: {file_name}")
+                return
+
+            # Check destination file size for resuming
+            dest_size = 0
+            try:
+                dest_stat = dest_sftp.stat(dest_file_path)
+                dest_size = dest_stat.st_size
+                if dest_size == total_size:
+                    logging.info(f"Skipping (exists and size matches): {file_name}")
+                    ui.update_torrent_byte_progress(torrent_hash, total_size - dest_size)
+                    ui.advance_overall_progress(total_size - dest_size)
+                    return
+                elif dest_size > total_size:
+                    logging.warning(f"Destination file '{file_name}' is larger than source ({dest_size} > {total_size}). Re-uploading.")
+                    dest_size = 0
+                else:
+                    logging.info(f"Resuming upload for {file_name} from {dest_size / (1024*1024):.2f} MB.")
+            except FileNotFoundError:
+                pass # File doesn't exist on destination, start new upload
+
+            if dest_size > 0:
+                ui.update_torrent_byte_progress(torrent_hash, dest_size)
+                ui.advance_overall_progress(dest_size)
 
         if dry_run:
             logging.info(f"[DRY RUN] Would upload: {source_file_path} -> {dest_file_path}")
@@ -660,14 +587,12 @@ def _sftp_upload_file(source_sftp_config, dest_sftp_config, source_file_path, de
         except Exception as e:
             logging.error(f"Upload failed for {file_name}: {e}")
             raise
-
     finally:
         ui.advance_torrent_file_progress(torrent_hash)
-        disconnect_sftp(source_sftp, source_ssh, semaphore=source_ssh_semaphore)
-        disconnect_sftp(dest_sftp, dest_ssh, semaphore=dest_ssh_semaphore)
+
 
 @retry(tries=2, delay=5)
-def _sftp_download_file(sftp_config, remote_file, local_file, torrent_hash, ui, dry_run=False, ssh_semaphore=None):
+def _sftp_download_file(pool, remote_file, local_file, torrent_hash, ui, dry_run=False):
     """
     Downloads a single file with a progress bar, with retries. Establishes its own SFTP session
     to ensure thread safety when called from a ThreadPoolExecutor.
@@ -675,29 +600,27 @@ def _sftp_download_file(sftp_config, remote_file, local_file, torrent_hash, ui, 
     local_path = Path(local_file)
     file_name = os.path.basename(remote_file)
 
-    sftp = None
-    ssh_client = None
     try:
-        sftp, ssh_client = connect_sftp(sftp_config, semaphore=ssh_semaphore)
-        start_time = time.time()
-        remote_stat = sftp.stat(remote_file)
-        total_size = remote_stat.st_size
-        logging.debug(f"SFTP Check: Remote file '{remote_file}' size: {total_size}")
+        with pool.get_connection() as (sftp, ssh_client):
+            start_time = time.time()
+            remote_stat = sftp.stat(remote_file)
+            total_size = remote_stat.st_size
+            logging.debug(f"SFTP Check: Remote file '{remote_file}' size: {total_size}")
 
-        if total_size == 0:
-            logging.warning(f"Skipping zero-byte file: {file_name}")
-            return
-
-        local_size = 0
-        if local_path.exists():
-            local_size = local_path.stat().st_size
-            logging.debug(f"SFTP Check: Local file '{local_file}' exists with size: {local_size}")
-            if local_size == total_size:
-                logging.info(f"Skipping (exists and size matches): {file_name}")
-                logging.debug(f"SFTP SKIP: Local: {local_size}, Remote: {total_size}. Skipping file '{file_name}'.")
-                ui.update_torrent_byte_progress(torrent_hash, total_size - local_size)
-                ui.advance_overall_progress(total_size - local_size)
+            if total_size == 0:
+                logging.warning(f"Skipping zero-byte file: {file_name}")
                 return
+
+            local_size = 0
+            if local_path.exists():
+                local_size = local_path.stat().st_size
+                logging.debug(f"SFTP Check: Local file '{local_file}' exists with size: {local_size}")
+                if local_size == total_size:
+                    logging.info(f"Skipping (exists and size matches): {file_name}")
+                    logging.debug(f"SFTP SKIP: Local: {local_size}, Remote: {total_size}. Skipping file '{file_name}'.")
+                    ui.update_torrent_byte_progress(torrent_hash, total_size - local_size)
+                    ui.advance_overall_progress(total_size - local_size)
+                    return
             elif local_size > total_size:
                 logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
                 logging.debug(f"SFTP OVERWRITE: Local: {local_size}, Remote: {total_size}. Overwriting file '{file_name}'.")
@@ -705,8 +628,6 @@ def _sftp_download_file(sftp_config, remote_file, local_file, torrent_hash, ui, 
             else:  # local_size < total_size
                 logging.info(f"Resuming download for {file_name} from {local_size / (1024*1024):.2f} MB.")
                 logging.debug(f"SFTP RESUME: Local: {local_size}, Remote: {total_size}. Resuming file '{file_name}'.")
-        else:
-            logging.debug(f"SFTP NEW: Local file '{local_file}' does not exist. Starting new download.")
 
         if local_size > 0:
             ui.update_torrent_byte_progress(torrent_hash, local_size)
@@ -761,10 +682,9 @@ def _sftp_download_file(sftp_config, remote_file, local_file, torrent_hash, ui, 
         except Exception as e:
             logging.error(f"Download failed for {file_name}: {e}")
             raise
-
     finally:
         ui.advance_torrent_file_progress(torrent_hash)
-        disconnect_sftp(sftp, ssh_client, semaphore=ssh_semaphore)
+
 
 def transfer_content_rsync(sftp_config, remote_path, local_path, torrent_hash, ui, dry_run=False):
     """
@@ -906,7 +826,7 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, torrent_hash, u
     raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {max_retries} attempts.")
 
 
-def transfer_content(sftp_config, sftp, remote_path, local_path, torrent_hash, ui, max_concurrent_downloads, dry_run=False, ssh_semaphore=None):
+def transfer_content(pool, sftp, remote_path, local_path, torrent_hash, ui, max_concurrent_downloads, dry_run=False):
     """
     Transfers a remote file or directory to a local path, preserving structure.
     """
@@ -917,19 +837,18 @@ def transfer_content(sftp_config, sftp, remote_path, local_path, torrent_hash, u
 
         with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as file_executor:
             futures = [
-                file_executor.submit(_sftp_download_file, sftp_config, remote_f, local_f, torrent_hash, ui, dry_run, ssh_semaphore=ssh_semaphore)
+                file_executor.submit(_sftp_download_file, pool, remote_f, local_f, torrent_hash, ui, dry_run)
                 for remote_f, local_f in all_files
             ]
             for future in as_completed(futures):
                 future.result()
 
     else: # It's a single file
-        _sftp_download_file(sftp_config, remote_path, local_path, torrent_hash, ui, dry_run, ssh_semaphore=ssh_semaphore)
+        _sftp_download_file(pool, remote_path, local_path, torrent_hash, ui, dry_run)
 
 def transfer_content_sftp_upload(
-    source_sftp_config, dest_sftp_config, source_sftp, source_path, dest_path, torrent_hash, ui,
-    max_concurrent_downloads, max_concurrent_uploads, dry_run=False, local_cache_sftp_upload=False,
-    source_ssh_semaphore=None, dest_ssh_semaphore=None
+    source_pool, dest_pool, source_sftp, source_path, dest_path, torrent_hash, ui,
+    max_concurrent_downloads, max_concurrent_uploads, dry_run=False, local_cache_sftp_upload=False
 ):
     """
     Transfers a remote file or directory from a source SFTP to a destination SFTP server.
@@ -958,8 +877,8 @@ def transfer_content_sftp_upload(
 
                 download_futures = {
                     download_executor.submit(
-                        _sftp_download_to_cache, source_sftp_config, source_f,
-                        temp_dir / os.path.basename(source_f), torrent_hash, ui, ssh_semaphore=source_ssh_semaphore
+                        _sftp_download_to_cache, source_pool, source_f,
+                        temp_dir / os.path.basename(source_f), torrent_hash, ui
                     ): (source_f, dest_f)
                     for source_f, dest_f in all_files
                 }
@@ -971,15 +890,17 @@ def transfer_content_sftp_upload(
                         download_future.result()
                         local_cache_path = temp_dir / os.path.basename(source_f)
                         upload_future = upload_executor.submit(
-                            _sftp_upload_from_cache, dest_sftp_config, local_cache_path,
-                            source_f, dest_f, torrent_hash, ui, ssh_semaphore=dest_ssh_semaphore
+                            _sftp_upload_from_cache, dest_pool, local_cache_path,
+                            source_f, dest_f, torrent_hash, ui
                         )
                         upload_futures.append(upload_future)
                     except Exception as e:
                         logging.error(f"Download of '{os.path.basename(source_f)}' failed, it will not be uploaded. Error: {e}")
+                        # Re-raise the exception to be caught by the main transfer_torrent function
                         raise
 
                 for upload_future in as_completed(upload_futures):
+                    # This will re-raise any exception caught during the upload process
                     upload_future.result()
 
             transfer_successful = True
@@ -992,8 +913,8 @@ def transfer_content_sftp_upload(
         with ThreadPoolExecutor(max_workers=max_concurrent_uploads) as file_executor:
             futures = [
                 file_executor.submit(
-                    _sftp_upload_file, source_sftp_config, dest_sftp_config, source_f, dest_f,
-                    torrent_hash, ui, dry_run, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore
+                    _sftp_upload_file, source_pool, dest_pool, source_f, dest_f,
+                    torrent_hash, ui, dry_run
                 )
                 for source_f, dest_f in all_files
             ]
@@ -1156,7 +1077,7 @@ def recover_cached_torrents(source_qbit, destination_qbit):
     return recovered_torrents
 
 
-def destination_health_check(config, total_transfer_size_bytes):
+def destination_health_check(config, total_transfer_size_bytes, ssh_connection_pools):
     """
     Performs checks on the destination (local or remote) to ensure it's ready.
     """
@@ -1164,14 +1085,12 @@ def destination_health_check(config, total_transfer_size_bytes):
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
     dest_path = config['DESTINATION_PATHS'].get('destination_path')
     remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' and 'DESTINATION_SERVER' in config else None
+    dest_pool = ssh_connection_pools.get('DESTINATION_SERVER') if remote_config else None
 
     available_space = -1
     try:
         if remote_config:
-            ssh = None
-            try:
-                _sftp, ssh = connect_sftp(remote_config)
-                if _sftp: _sftp.close()
+            with dest_pool.get_connection() as (sftp, ssh):
                 escaped_path = dest_path.replace("'", "'\\''")
                 command = f"df -kP '{escaped_path}'"
                 stdin, stdout, stderr = ssh.exec_command(command, timeout=30)
@@ -1195,8 +1114,6 @@ def destination_health_check(config, total_transfer_size_bytes):
                     raise ValueError(f"Unexpected 'df' output format. Line: '{output[1]}'")
                 available_kb = int(parts[3])
                 available_space = available_kb * 1024
-            finally:
-                if ssh: ssh.close()
         else:
             stats = os.statvfs(dest_path)
             available_space = stats.f_bavail * stats.f_frsize
@@ -1223,7 +1140,7 @@ def destination_health_check(config, total_transfer_size_bytes):
         logging.error(f"An error occurred during disk space check: {e}", exc_info=True)
         return False
 
-    if not test_path_permissions(dest_path, remote_config=remote_config):
+    if not test_path_permissions(dest_path, remote_config=remote_config, ssh_connection_pools=ssh_connection_pools):
         logging.error("FATAL: Destination permission check failed.")
         return False
 
@@ -1308,7 +1225,7 @@ def set_category_based_on_tracker(client, torrent_hash, tracker_rules, dry_run=F
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 
-def change_ownership(path_to_change, user, group, remote_config=None, dry_run=False):
+def change_ownership(path_to_change, user, group, remote_config=None, dry_run=False, ssh_connection_pools=None):
     """
     Changes the ownership of a file or directory, either locally or remotely.
     """
@@ -1323,25 +1240,22 @@ def change_ownership(path_to_change, user, group, remote_config=None, dry_run=Fa
 
     if remote_config:
         logging.info(f"Attempting to change remote ownership of '{path_to_change}' to '{owner_spec}'...")
-        ssh = None
+        pool = ssh_connection_pools.get('DESTINATION_SERVER')
         try:
-            _sftp, ssh = connect_sftp(remote_config)
-            if _sftp: _sftp.close()
-            escaped_path = path_to_change.replace("'", "'\\''")
-            remote_command = f"chown -R -- '{owner_spec}' '{escaped_path}'"
-            logging.debug(f"Executing remote command: {remote_command}")
-            stdin, stdout, stderr = ssh.exec_command(remote_command, timeout=120)
-            exit_status = stdout.channel.recv_exit_status()
+            with pool.get_connection() as (sftp, ssh):
+                escaped_path = path_to_change.replace("'", "'\\''")
+                remote_command = f"chown -R -- '{owner_spec}' '{escaped_path}'"
+                logging.debug(f"Executing remote command: {remote_command}")
+                stdin, stdout, stderr = ssh.exec_command(remote_command, timeout=120)
+                exit_status = stdout.channel.recv_exit_status()
 
-            if exit_status == 0:
-                logging.info("Remote ownership changed successfully.")
-            else:
-                stderr_output = stderr.read().decode('utf-8').strip()
-                logging.error(f"Failed to change remote ownership for '{path_to_change}'. Exit code: {exit_status}, Stderr: {stderr_output}")
+                if exit_status == 0:
+                    logging.info("Remote ownership changed successfully.")
+                else:
+                    stderr_output = stderr.read().decode('utf-8').strip()
+                    logging.error(f"Failed to change remote ownership for '{path_to_change}'. Exit code: {exit_status}, Stderr: {stderr_output}")
         except Exception as e:
             logging.error(f"An exception occurred during remote chown: {e}", exc_info=True)
-        finally:
-            if ssh: ssh.close()
     else:
         logging.info(f"Attempting to change local ownership of '{path_to_change}' to '{owner_spec}'...")
         try:
@@ -1359,7 +1273,7 @@ def change_ownership(path_to_change, user, group, remote_config=None, dry_run=Fa
             logging.error(f"An exception occurred during local chown: {e}", exc_info=True)
 
 
-def analyze_torrent(torrent, sftp_config, transfer_mode, ui, semaphore=None):
+def analyze_torrent(torrent, sftp_config, transfer_mode, ui, pool=None):
     """
     Analyzes a single torrent to determine its size.
     """
@@ -1372,12 +1286,8 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, ui, semaphore=None):
         if transfer_mode == 'rsync':
             total_size = get_remote_size_rsync(sftp_config, remote_content_path)
         else:
-            temp_sftp, temp_ssh = None, None
-            try:
-                temp_sftp, temp_ssh = connect_sftp(sftp_config, semaphore=semaphore)
-                total_size = _get_remote_size_du_core(temp_ssh, remote_content_path)
-            finally:
-                disconnect_sftp(temp_sftp, temp_ssh, semaphore=semaphore)
+            with pool.get_connection() as (sftp, ssh):
+                total_size = _get_remote_size_du_core(ssh, remote_content_path)
 
         if total_size is not None and total_size > 0:
             ui.update_torrent_status_text(hash, "Analyzed", color="green")
@@ -1394,7 +1304,7 @@ def analyze_torrent(torrent, sftp_config, transfer_mode, ui, semaphore=None):
     return torrent, total_size
 
 
-def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config, tracker_rules, ui, ssh_semaphores, dry_run=False, test_run=False):
+def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config, tracker_rules, ui, ssh_connection_pools, dry_run=False, test_run=False):
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
@@ -1405,7 +1315,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
     all_files = [] # This list will be populated for multi-file torrents
     try:
         # --- Pre-transfer setup and file listing ---
-        source_sftp_config = config['SOURCE_SERVER']
+        source_pool = ssh_connection_pools.get('SOURCE_SERVER')
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         source_content_path = torrent.content_path.rstrip('/\\')
         dest_base_path = config['DESTINATION_PATHS']['destination_path']
@@ -1415,16 +1325,12 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         if transfer_mode != 'rsync':
             # For SFTP modes, we need to get a list of all files to be transferred
             # to know the total file count for the UI.
-            try:
-                source_sftp, source_ssh = connect_sftp(source_sftp_config)
-                source_stat = source_sftp.stat(source_content_path)
+            with source_pool.get_connection() as (sftp, ssh):
+                source_stat = sftp.stat(source_content_path)
                 if source_stat.st_mode & 0o40000:  # S_ISDIR
-                    _get_all_files_recursive(source_sftp, source_content_path, dest_content_path, all_files)
+                    _get_all_files_recursive(sftp, source_content_path, dest_content_path, all_files)
                 else: # It's a single file
                     all_files.append((source_content_path, dest_content_path))
-            finally:
-                if source_sftp: source_sftp.close()
-                if source_ssh: source_ssh.close()
         else:
              # For rsync, we treat it as a single file operation for progress tracking
             all_files.append((source_content_path, dest_content_path))
@@ -1444,32 +1350,31 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
 
         # --- Execute Transfer ---
         remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
-        source_ssh_semaphore = ssh_semaphores.get('SOURCE_SERVER')
         destination_save_path = remote_dest_base_path
 
         if transfer_mode == 'rsync':
-            transfer_content_rsync(source_sftp_config, source_content_path, dest_content_path, hash, ui, dry_run)
+            transfer_content_rsync(config['SOURCE_SERVER'], source_content_path, dest_content_path, hash, ui, dry_run)
             logging.info(f"TRANSFER: Rsync transfer completed for '{name}'.")
         else:
-            # Re-establish connection for the actual transfer
-            source_sftp, source_ssh = connect_sftp(source_sftp_config)
             max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)
             max_concurrent_uploads = config['SETTINGS'].getint('max_concurrent_uploads', 4)
+            source_pool = ssh_connection_pools.get('SOURCE_SERVER')
 
             if transfer_mode == 'sftp_upload':
                 logging.info(f"TRANSFER: Starting SFTP-to-SFTP upload for '{name}'...")
-                dest_sftp_config = config['DESTINATION_SERVER']
+                dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
                 local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
-                dest_ssh_semaphore = ssh_semaphores.get('DESTINATION_SERVER')
-                transfer_content_sftp_upload(
-                    source_sftp_config, dest_sftp_config, source_sftp, source_content_path, dest_content_path,
-                    hash, ui, max_concurrent_downloads, max_concurrent_uploads, dry_run,
-                    local_cache_sftp_upload, source_ssh_semaphore=source_ssh_semaphore, dest_ssh_semaphore=dest_ssh_semaphore
-                )
+                with source_pool.get_connection() as (sftp, ssh):
+                    transfer_content_sftp_upload(
+                        source_pool, dest_pool, sftp, source_content_path, dest_content_path,
+                        hash, ui, max_concurrent_downloads, max_concurrent_uploads, dry_run,
+                        local_cache_sftp_upload
+                    )
                 logging.info(f"TRANSFER: SFTP-to-SFTP upload completed for '{name}'.")
             else: # Default 'sftp' download
                 logging.info(f"TRANSFER: Starting SFTP download for '{name}'...")
-                transfer_content(source_sftp_config, source_sftp, source_content_path, dest_content_path, hash, ui, max_concurrent_downloads, dry_run, ssh_semaphore=source_ssh_semaphore)
+                with source_pool.get_connection() as (sftp, ssh):
+                    transfer_content(source_pool, sftp, source_content_path, dest_content_path, hash, ui, max_concurrent_downloads, dry_run)
                 logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
 
 
@@ -1478,7 +1383,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         chown_group = config['SETTINGS'].get('chown_group', '').strip()
         if chown_user or chown_group:
             remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' else None
-            change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run)
+            change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
 
         destination_save_path = destination_save_path.replace("\\", "/")
 
@@ -1722,23 +1627,23 @@ def pid_exists(pid):
     else:
         return True
 
-def test_path_permissions(path_to_test, remote_config=None):
+def test_path_permissions(path_to_test, remote_config=None, ssh_connection_pools=None):
     """
     Tests write permissions for a given path by creating and deleting a temporary file.
     """
     if remote_config:
         logging.info(f"--- Running REMOTE Permission Test on: {path_to_test} ---")
-        sftp, ssh = None, None
+        pool = ssh_connection_pools.get('DESTINATION_SERVER')
         try:
-            sftp, ssh = connect_sftp(remote_config)
-            path_to_test = path_to_test.replace('\\', '/')
-            test_file_path = f"{path_to_test.rstrip('/')}/permission_test_{os.getpid()}.tmp"
+            with pool.get_connection() as (sftp, ssh):
+                path_to_test = path_to_test.replace('\\', '/')
+                test_file_path = f"{path_to_test.rstrip('/')}/permission_test_{os.getpid()}.tmp"
 
-            logging.info(f"Attempting to create a remote test file: {test_file_path}")
-            with sftp.open(test_file_path, 'w') as f:
-                f.write('test')
-            logging.info("Remote test file created successfully.")
-            sftp.remove(test_file_path)
+                logging.info(f"Attempting to create a remote test file: {test_file_path}")
+                with sftp.open(test_file_path, 'w') as f:
+                    f.write('test')
+                logging.info("Remote test file created successfully.")
+                sftp.remove(test_file_path)
             logging.info("Remote test file removed successfully.")
             logging.info(f"[bold green]SUCCESS:[/] Remote write permissions are correctly configured for '{remote_config['username']}' on path '{path_to_test}'")
             return True
@@ -1749,9 +1654,6 @@ def test_path_permissions(path_to_test, remote_config=None):
         except Exception as e:
             logging.error(f"[bold red]FAILURE:[/] An unexpected error occurred during remote permission test: {e}", exc_info=True)
             return False
-        finally:
-            if sftp: sftp.close()
-            if ssh: ssh.close()
     else:
         p = Path(path_to_test)
         logging.info(f"--- Running LOCAL Permission Test on: {p} ---")
@@ -1824,82 +1726,96 @@ def main():
     config_template_path = script_dir / 'config.ini.template'
     update_config(args.config, str(config_template_path))
 
-    if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions:
-        config = load_config(args.config)
-        tracker_rules = load_tracker_rules(script_dir)
-        logging.info("Executing utility command...")
-
-        if args.test_permissions:
-            transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-            dest_path = config['DESTINATION_PATHS'].get('destination_path')
-            if not dest_path:
-                logging.error("FATAL: 'destination_path' is not defined in your config file.")
-                return 1
-            remote_config = None
-            if transfer_mode == 'sftp_upload':
-                if 'DESTINATION_SERVER' not in config:
-                    logging.error("FATAL: 'transfer_mode' is 'sftp_upload' but [DESTINATION_SERVER] is not defined in config.")
-                    return 1
-                remote_config = config['DESTINATION_SERVER']
-            test_path_permissions(dest_path, remote_config=remote_config)
-            return 0
-
-        if args.list_rules:
-            if not tracker_rules:
-                logging.info("No rules found.")
-                return 0
-            console = Console()
-            table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
-            table.add_column("Tracker Domain", style="dim", width=40)
-            table.add_column("Assigned Category")
-            sorted_rules = sorted(tracker_rules.items())
-            for domain, category in sorted_rules:
-                table.add_row(domain, f"[yellow]{category}[/yellow]" if category == "ignore" else f"[cyan]{category}[/cyan]")
-            console.print(table)
-            return 0
-
-        if args.add_rule:
-            domain, category = args.add_rule
-            tracker_rules[domain] = category
-            if save_tracker_rules(tracker_rules, script_dir):
-                logging.info(f"Successfully added rule: '{domain}' -> '{category}'.")
-            return 0
-
-        if args.delete_rule:
-            domain_to_delete = args.delete_rule
-            if domain_to_delete in tracker_rules:
-                del tracker_rules[domain_to_delete]
-                if save_tracker_rules(tracker_rules, script_dir):
-                    logging.info(f"Successfully deleted rule for '{domain_to_delete}'.")
-            else:
-                logging.warning(f"No rule found for domain '{domain_to_delete}'. Nothing to delete.")
-            return 0
-
-        if args.interactive_categorize:
-            try:
-                dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
-                destination_qbit = connect_qbit(config[dest_client_section], "Destination")
-                if args.category:
-                    cat_to_scan = args.category
-                    logging.info(f"Using category from command line: '{cat_to_scan}'")
-                else:
-                    cat_to_scan = config['SETTINGS'].get('category_to_move')
-                    if cat_to_scan:
-                        logging.info(f"Using 'category_to_move' from config: '{cat_to_scan}'")
-                    else:
-                        logging.warning("No category specified via --category or in config. Defaulting to 'uncategorized'.")
-                        cat_to_scan = ''
-                run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
-            except Exception as e:
-                logging.error(f"Failed to run interactive categorization: {e}", exc_info=True)
-            return 0
-        return 0
-
+    ssh_connection_pools = {}
     try:
+        config = load_config(args.config)
+        # Initialize pools now as they might be needed by utility commands
+        server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
+        for section_name in server_sections:
+            max_sessions = config[section_name].getint('max_concurrent_ssh_sessions', 8)
+            ssh_connection_pools[section_name] = SSHConnectionPool(
+                host=config[section_name]['host'],
+                port=config[section_name].getint('port'),
+                username=config[section_name]['username'],
+                password=config[section_name]['password'],
+                max_size=max_sessions
+            )
+            logging.info(f"Initialized SSH connection pool for '{section_name}' with size {max_sessions}.")
+
+        if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions:
+            tracker_rules = load_tracker_rules(script_dir)
+            logging.info("Executing utility command...")
+
+            if args.test_permissions:
+                transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+                dest_path = config['DESTINATION_PATHS'].get('destination_path')
+                if not dest_path:
+                    logging.error("FATAL: 'destination_path' is not defined in your config file.")
+                    return 1
+                remote_config = None
+                if transfer_mode == 'sftp_upload':
+                    if 'DESTINATION_SERVER' not in config:
+                        logging.error("FATAL: 'transfer_mode' is 'sftp_upload' but [DESTINATION_SERVER] is not defined in config.")
+                        return 1
+                    remote_config = config['DESTINATION_SERVER']
+                test_path_permissions(dest_path, remote_config=remote_config, ssh_connection_pools=ssh_connection_pools)
+                return 0
+
+            if args.list_rules:
+                if not tracker_rules:
+                    logging.info("No rules found.")
+                    return 0
+                console = Console()
+                table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
+                table.add_column("Tracker Domain", style="dim", width=40)
+                table.add_column("Assigned Category")
+                sorted_rules = sorted(tracker_rules.items())
+                for domain, category in sorted_rules:
+                    table.add_row(domain, f"[yellow]{category}[/yellow]" if category == "ignore" else f"[cyan]{category}[/cyan]")
+                console.print(table)
+                return 0
+
+            if args.add_rule:
+                domain, category = args.add_rule
+                tracker_rules[domain] = category
+                if save_tracker_rules(tracker_rules, script_dir):
+                    logging.info(f"Successfully added rule: '{domain}' -> '{category}'.")
+                return 0
+
+            if args.delete_rule:
+                domain_to_delete = args.delete_rule
+                if domain_to_delete in tracker_rules:
+                    del tracker_rules[domain_to_delete]
+                    if save_tracker_rules(tracker_rules, script_dir):
+                        logging.info(f"Successfully deleted rule for '{domain_to_delete}'.")
+                else:
+                    logging.warning(f"No rule found for domain '{domain_to_delete}'. Nothing to delete.")
+                return 0
+
+            if args.interactive_categorize:
+                try:
+                    dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
+                    destination_qbit = connect_qbit(config[dest_client_section], "Destination")
+                    if args.category:
+                        cat_to_scan = args.category
+                        logging.info(f"Using category from command line: '{cat_to_scan}'")
+                    else:
+                        cat_to_scan = config['SETTINGS'].get('category_to_move')
+                        if cat_to_scan:
+                            logging.info(f"Using 'category_to_move' from config: '{cat_to_scan}'")
+                        else:
+                            logging.warning("No category specified via --category or in config. Defaulting to 'uncategorized'.")
+                            cat_to_scan = ''
+                    run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
+                except Exception as e:
+                    logging.error(f"Failed to run interactive categorization: {e}", exc_info=True)
+                return 0
+            return 0
+
+        # --- Main execution block ---
         with open(lock_file_path, 'w') as f:
             f.write(str(os.getpid()))
 
-        config = load_config(args.config)
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         if transfer_mode == 'rsync':
             check_sshpass_installed()
@@ -1940,13 +1856,6 @@ def main():
             logging.info("No torrents to move at this time.")
             return 0
 
-        ssh_semaphores = {}
-        server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
-        for section_name in server_sections:
-            max_sessions = config[section_name].getint('max_concurrent_ssh_sessions', 8)
-            ssh_semaphores[section_name] = threading.Semaphore(max_sessions)
-            logging.info(f"Initialized SSH session limit for '{section_name}' to {max_sessions}.")
-
         # This is the main UI-driven execution block.
         total_count = len(eligible_torrents)
         processed_count = 0
@@ -1967,12 +1876,12 @@ def main():
 
                 with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as executor:
                     source_server_section = 'SOURCE_SERVER'
-                    source_ssh_semaphore = ssh_semaphores.get(source_server_section)
-                    if not source_ssh_semaphore:
-                        ui.log(f"[bold red]Error: SSH semaphore for server section '{source_server_section}' not found. Check config.[/]")
+                    source_pool = ssh_connection_pools.get(source_server_section)
+                    if not source_pool:
+                        ui.log(f"[bold red]Error: SSH connection pool for server section '{source_server_section}' not found. Check config.[/]")
                         return 1
 
-                    future_to_torrent = {executor.submit(analyze_torrent, t, sftp_config, transfer_mode, ui, semaphore=source_ssh_semaphore): t for t in eligible_torrents}
+                    future_to_torrent = {executor.submit(analyze_torrent, t, sftp_config, transfer_mode, ui, pool=source_pool): t for t in eligible_torrents}
                     for future in as_completed(future_to_torrent):
                         _analyzed_torrent, size = future.result()
                         if size is not None and size > 0:
@@ -1995,7 +1904,7 @@ def main():
                 return 0
 
             ui.set_overall_total(total_transfer_size)
-            if not args.dry_run and not destination_health_check(config, total_transfer_size):
+            if not args.dry_run and not destination_health_check(config, total_transfer_size, ssh_connection_pools):
                 ui.update_header("[bold red]Destination health check failed. Aborting transfer process.[/]")
                 logging.error("FATAL: Destination health check failed.")
                 time.sleep(5)
@@ -2010,7 +1919,7 @@ def main():
                     transfer_futures = {
                         executor.submit(
                             transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
-                            ui, ssh_semaphores, args.dry_run, args.test_run
+                            ui, ssh_connection_pools, args.dry_run, args.test_run
                         ): t for t, size in analyzed_torrents
                     }
 
@@ -2042,6 +1951,10 @@ def main():
         logging.error(f"An unexpected error occurred in main: {e}", exc_info=True)
         return 1
     finally:
+        if 'ssh_connection_pools' in locals():
+            for pool in ssh_connection_pools.values():
+                pool.close_all()
+            logging.info("All SSH connections have been closed.")
         if lock_file_path.exists():
             try:
                 with open(lock_file_path, 'r') as f:
