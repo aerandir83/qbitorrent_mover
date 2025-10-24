@@ -398,10 +398,10 @@ def _sftp_download_to_cache(source_pool, source_file_path, local_cache_path, tor
 
             local_size = 0
             if local_cache_path.exists():
-            local_size = local_cache_path.stat().st_size
+                local_size = local_cache_path.stat().st_size
 
-        if local_size >= total_size:
-            logging.info(f"Cache hit, skipping download: {os.path.basename(source_file_path)}")
+            if local_size >= total_size:
+                logging.info(f"Cache hit, skipping download: {os.path.basename(source_file_path)}")
             ui.update_torrent_byte_progress(torrent_hash, total_size)
             ui.advance_overall_progress(total_size)
             ui.update_file_progress(torrent_hash, source_file_path, total_size)
@@ -460,9 +460,9 @@ def _sftp_upload_from_cache(dest_pool, local_cache_path, source_file_path, dest_
                 pass
 
             if dest_size >= total_size:
-            logging.info(f"Skipping upload (exists and size matches): {file_name}")
-            ui.update_torrent_byte_progress(torrent_hash, total_size)
-            ui.advance_overall_progress(total_size)
+                logging.info(f"Skipping upload (exists and size matches): {file_name}")
+                ui.update_torrent_byte_progress(torrent_hash, total_size)
+                ui.advance_overall_progress(total_size)
             ui.update_file_progress(torrent_hash, source_file_path, total_size)
             return
 
@@ -517,11 +517,11 @@ def _sftp_upload_file(source_pool, dest_pool, source_file_path, dest_file_path, 
                 return
 
             if total_size == 0:
-            logging.warning(f"Skipping zero-byte source file: {file_name}")
-            return
+                logging.warning(f"Skipping zero-byte source file: {file_name}")
+                return
 
-        # Check destination file size for resuming
-        dest_size = 0
+            # Check destination file size for resuming
+            dest_size = 0
         try:
             dest_stat = dest_sftp.stat(dest_file_path)
             dest_size = dest_stat.st_size
@@ -614,9 +614,9 @@ def _sftp_download_file(pool, remote_file, local_file, torrent_hash, ui, dry_run
 
             local_size = 0
             if local_path.exists():
-            local_size = local_path.stat().st_size
-            logging.debug(f"SFTP Check: Local file '{local_file}' exists with size: {local_size}")
-            if local_size == total_size:
+                local_size = local_path.stat().st_size
+                logging.debug(f"SFTP Check: Local file '{local_file}' exists with size: {local_size}")
+                if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
                 logging.debug(f"SFTP SKIP: Local: {local_size}, Remote: {total_size}. Skipping file '{file_name}'.")
                 ui.update_torrent_byte_progress(torrent_hash, total_size - local_size)
@@ -1252,9 +1252,9 @@ def change_ownership(path_to_change, user, group, remote_config=None, dry_run=Fa
 
                 if exit_status == 0:
                     logging.info("Remote ownership changed successfully.")
-            else:
-                stderr_output = stderr.read().decode('utf-8').strip()
-                logging.error(f"Failed to change remote ownership for '{path_to_change}'. Exit code: {exit_status}, Stderr: {stderr_output}")
+                else:
+                    stderr_output = stderr.read().decode('utf-8').strip()
+                    logging.error(f"Failed to change remote ownership for '{path_to_change}'. Exit code: {exit_status}, Stderr: {stderr_output}")
         except Exception as e:
             logging.error(f"An exception occurred during remote chown: {e}", exc_info=True)
     else:
