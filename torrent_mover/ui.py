@@ -1,7 +1,8 @@
 # torrent_mover/ui.py
 
-from rich.console import Console, Group
+from rich.console import Console, Group, ConsoleOptions, RenderResult
 from rich.live import Live
+from rich.measure import Measurement
 from rich.panel import Panel
 from rich.progress import (
     Progress,
@@ -16,6 +17,54 @@ from rich.table import Table
 from rich.text import Text
 import threading
 from collections import OrderedDict
+
+
+class TorrentTableRenderable:
+    """A renderable to display the torrents table."""
+
+    def __init__(self, torrents_data, lock):
+        self._torrents_data = torrents_data
+        self._lock = lock
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        """Builds the torrents table renderable."""
+        with self._lock:
+            main_grid = Table.grid(expand=True)
+            main_grid.add_column("Details")
+
+            for torrent_hash, data in self._torrents_data.items():
+                # Main container for a single torrent's display
+                torrent_grid = Table.grid(expand=True)
+                # Row 1: Torrent Name and Size
+                header_table = Table(show_header=False, box=None, padding=0, expand=True)
+                header_table.add_column()
+                header_table.add_column(justify="right")
+                header_table.add_row(f"[bold cyan]{data['name']}[/bold cyan]", f"[magenta]{data['size']}[/magenta]")
+                torrent_grid.add_row(header_table)
+
+                # Row 2: Overall Torrent Progress Bar or Status Text
+                if data.get("progress_obj"):
+                    torrent_grid.add_row(data["progress_obj"])
+                elif data.get("status_text"):
+                    torrent_grid.add_row(Panel(Text.from_markup(data['status_text'], justify="center"), style="dim"))
+
+                # Row 3: File details in a nested table
+                if data["files"]:
+                    files_table = Table(show_header=True, header_style="bold blue", box=None, padding=(0, 1), expand=True)
+                    files_table.add_column("File", no_wrap=True)
+                    files_table.add_column("Progress", no_wrap=True)
+
+                    for file_path, file_data in data["files"].items():
+                        file_name = file_path.split('/')[-1]
+                        progress_renderable = file_data.get("progress_obj") or Text.from_markup(file_data["status"], justify="center")
+                        files_table.add_row(file_name, progress_renderable)
+
+                    torrent_grid.add_row(Panel(files_table, style="blue", border_style="dim"))
+
+                main_grid.add_row(Panel(torrent_grid, border_style="cyan" if data.get("progress_obj") else "dim"))
+
+            yield main_grid
+
 
 class UIManager:
     """A class to manage the Rich UI for the torrent mover script."""
@@ -46,7 +95,8 @@ class UIManager:
         self.run_progress_panel = Panel(run_progress_group, title="[bold]Run Progress[/bold]", border_style="green")
 
         # 3. Torrents Table
-        self.torrents_table_panel = Panel(self._build_torrents_table(), title="[bold]Transfer Queue[/bold]", border_style="cyan")
+        self.torrents_table_renderable = TorrentTableRenderable(self._torrents_data, self._lock)
+        self.torrents_table_panel = Panel(self.torrents_table_renderable, title="[bold]Transfer Queue[/bold]", border_style="cyan")
 
         # 4. Footer
         self.footer_text = Text("Waiting to start...", justify="center")
@@ -58,12 +108,6 @@ class UIManager:
         self.layout.add_row(self.run_progress_panel)
         self.layout.add_row(self.torrents_table_panel)
         self.layout.add_row(self.footer_panel)
-
-    def _build_torrents_table(self):
-        """Builds a new, empty torrents table with the correct columns."""
-        table = Table.grid(expand=True)
-        table.add_column("Details")
-        return table
 
     def __enter__(self):
         self._live = Live(self.layout, console=self.console, screen=True, redirect_stderr=False, refresh_per_second=10)
@@ -121,7 +165,6 @@ class UIManager:
                 "progress_obj": None,
                 "files": OrderedDict(),
             }
-            self._update_torrents_table()
 
     def update_torrent_status_text(self, torrent_hash, status, color="yellow"):
         """Updates the status text of a specific torrent, used for non-transfer states."""
@@ -131,7 +174,6 @@ class UIManager:
                     "status_text": f"[{color}]{status}[/{color}]",
                     "progress_obj": None,
                 })
-                self._update_torrents_table()
 
     def start_torrent_transfer(self, torrent_hash, total_size, files_to_transfer, transfer_multiplier=1):
         with self._lock:
@@ -165,7 +207,6 @@ class UIManager:
                 "status_text": None,
                 "files": OrderedDict((f, {"status": "", "progress_obj": None}) for f in files_to_transfer),
             })
-            self._update_torrents_table()
 
     def update_torrent_byte_progress(self, torrent_hash, advance):
         with self._lock:
