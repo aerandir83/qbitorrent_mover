@@ -10,11 +10,17 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.9.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.0.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 1.9.0 (Latest)
+### Version 2.0.0 (Latest)
+*   **Major Refactor**: Migrated all SFTP operations from the synchronous `paramiko` library to the high-performance `asyncssh` library. This change improves I/O throughput and reduces connection overhead.
+*   **Architectural Improvement**: The asynchronous transfer logic now runs in a dedicated event loop within a `ThreadPoolExecutor`, isolating it from the main synchronous application logic. `AsyncSSHConnectionPool` instances are now created on-demand within each worker thread to prevent `RuntimeError: bound to a different event loop` errors.
+*   **Fix**: Re-implemented utility commands (e.g., `--test-permissions`, `--check-config`) to be fully synchronous using a restored `paramiko`-based `SSHConnectionPool`. This resolves crashes caused by running synchronous utility functions within an async-first architecture.
+*   **Code Quality**: Refactored the main execution workflow into distinct, self-contained functions (`_run_analysis_phase`, `async_main`) to improve readability and maintainability.
+
+### Version 1.9.0
 *   **Feat**: Migrated all SFTP operations from the synchronous `paramiko` library to the high-performance `asyncssh` library. This is a major experimental refactor designed to improve I/O throughput and reduce connection overhead.
 *   **Fix**: Add robust handling for destination recheck failures. If a file transfer succeeds but the torrent fails the recheck on the destination, the script now assumes the data is corrupt and deletes it to force a full re-transfer on the next run.
 

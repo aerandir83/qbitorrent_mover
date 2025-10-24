@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.9.0"
+__version__ = "2.0.0"
 
 import configparser
 import sys
@@ -24,7 +24,10 @@ import errno
 import asyncio
 import aiofiles
 import asyncssh
-from .utils import ConfigValidator, retry, AsyncSSHConnectionPool, LockFile, _async_batch_get_remote_sizes, RateLimitedFile, TransferCheckpoint
+from .utils import (
+    ConfigValidator, retry, AsyncSSHConnectionPool, SSHConnectionPool,
+    LockFile, _async_batch_get_remote_sizes, RateLimitedFile, TransferCheckpoint
+)
 import tempfile
 import getpass
 import configupdater
@@ -819,29 +822,37 @@ def recover_cached_torrents(source_qbit: qbittorrentapi.Client, destination_qbit
         logging.error(f"An error occurred while trying to get torrent info from the source for recovery: {e}")
         return []
 
-async def async_destination_health_check(config: configparser.ConfigParser, total_transfer_size_bytes: int, ssh_connection_pools: Dict[str, AsyncSSHConnectionPool]) -> bool:
+def destination_health_check(config: configparser.ConfigParser, total_transfer_size_bytes: int) -> bool:
     """
-    Performs checks on the destination (local or remote) to ensure it's ready.
+    Performs checks on the destination (local or remote) to ensure it's ready. (Synchronous version)
     """
     logging.info("--- Running Destination Health Check ---")
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
     dest_path = config['DESTINATION_PATHS'].get('destination_path')
     remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' and 'DESTINATION_SERVER' in config else None
-    dest_pool = ssh_connection_pools.get('DESTINATION_SERVER') if remote_config else None
     available_space = -1
+    pool = None
     try:
-        if remote_config and dest_pool:
-            async with dest_pool.get_connection() as conn:
+        if remote_config:
+            pool = SSHConnectionPool(
+                host=remote_config['host'],
+                port=remote_config.getint('port'),
+                username=remote_config['username'],
+                password=remote_config['password'],
+                max_size=1
+            )
+            with pool.get_connection() as (_, ssh):
                 command = f"df -kP {shlex.quote(dest_path)}"
-                result = await conn.run(command, check=False)
-                if result.exit_status != 0:
-                    stderr_output = result.stderr.strip()
+                stdin, stdout, stderr = ssh.exec_command(command)
+                exit_status = stdout.channel.recv_exit_status()
+                if exit_status != 0:
+                    stderr_output = stderr.read().decode().strip()
                     if "not found" in stderr_output or "no such" in stderr_output.lower():
                         raise FileNotFoundError(f"The 'df' command was not found on the remote server. Cannot check disk space.")
-                    raise Exception(f"'df' command failed with exit code {result.exit_status}. Stderr: {stderr_output}")
-                output = result.stdout.strip().splitlines()
+                    raise Exception(f"'df' command failed with exit code {exit_status}. Stderr: {stderr_output}")
+                output = stdout.read().decode().strip().splitlines()
                 if len(output) < 2:
-                    stderr_output = result.stderr.strip()
+                    stderr_output = stderr.read().decode().strip()
                     if "no such file or directory" in stderr_output.lower():
                         raise FileNotFoundError(f"The remote path '{dest_path}' does not exist.")
                     raise ValueError(f"Could not parse 'df' output. Raw output: '{' '.join(output)}'")
@@ -872,7 +883,11 @@ async def async_destination_health_check(config: configparser.ConfigParser, tota
     except Exception as e:
         logging.error(f"An error occurred during disk space check: {e}", exc_info=True)
         return False
-    if not await async_test_path_permissions(dest_path, remote_config=remote_config, ssh_connection_pools=ssh_connection_pools):
+    finally:
+        if pool:
+            pool.close_all()
+
+    if not test_path_permissions(dest_path, remote_config=remote_config):
         logging.error("FATAL: Destination permission check failed.")
         return False
     logging.info("--- Destination Health Check Passed ---")
@@ -1156,11 +1171,22 @@ async def async_post_transfer_actions(torrent: qbittorrentapi.TorrentDictionary,
         logging.info(f"[DRY RUN] Would delete torrent and data from Source: {name}")
     return True
 
-async def _transfer_torrent_async(torrent: qbittorrentapi.TorrentDictionary, total_size: int, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, ssh_connection_pools: Dict[str, AsyncSSHConnectionPool], dry_run: bool = False, test_run: bool = False, sftp_chunk_size: int = 65536) -> Tuple[bool, float]:
+async def _transfer_torrent_async(torrent: qbittorrentapi.TorrentDictionary, total_size: int, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, dry_run: bool = False, test_run: bool = False, sftp_chunk_size: int = 65536) -> Tuple[bool, float]:
     name, hash_ = torrent.name, torrent.hash
     success = False
     start_time = time.time()
+    ssh_connection_pools: Dict[str, AsyncSSHConnectionPool] = {}
     try:
+        server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
+        for section_name in server_sections:
+            max_sessions = config[section_name].getint('max_concurrent_ssh_sessions', 8)
+            ssh_connection_pools[section_name] = AsyncSSHConnectionPool(
+                host=config[section_name]['host'],
+                port=config[section_name].getint('port'),
+                username=config[section_name]['username'],
+                password=config[section_name]['password'],
+                max_size=max_sessions
+            )
         all_files, source_content_path, dest_content_path, destination_save_path = await async_pre_transfer_setup(
             torrent, config, ssh_connection_pools
         )
@@ -1192,16 +1218,18 @@ async def _transfer_torrent_async(torrent: qbittorrentapi.TorrentDictionary, tot
         duration = time.time() - start_time
         return False, duration
     finally:
+        for pool in ssh_connection_pools.values():
+            await pool.close_all()
         ui.stop_torrent_transfer(hash_, success=success)
 
-def transfer_torrent(torrent: qbittorrentapi.TorrentDictionary, total_size: int, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, ssh_connection_pools: Dict[str, AsyncSSHConnectionPool], dry_run: bool = False, test_run: bool = False, sftp_chunk_size: int = 65536) -> Tuple[bool, float]:
+def transfer_torrent(torrent: qbittorrentapi.TorrentDictionary, total_size: int, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, dry_run: bool = False, test_run: bool = False, sftp_chunk_size: int = 65536) -> Tuple[bool, float]:
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
     try:
         result, duration = asyncio.run(_transfer_torrent_async(
             torrent, total_size, source_qbit, destination_qbit, config, tracker_rules,
-            ui, ssh_connection_pools, dry_run, test_run, sftp_chunk_size
+            ui, dry_run, test_run, sftp_chunk_size
         ))
         return result, duration
     except Exception as e:
@@ -1365,39 +1393,43 @@ def pid_exists(pid: int) -> bool:
     else:
         return True
 
-async def async_test_path_permissions(path_to_test: str, remote_config: Optional[configparser.SectionProxy] = None, ssh_connection_pools: Optional[Dict[str, AsyncSSHConnectionPool]] = None) -> bool:
+def test_path_permissions(path_to_test: str, remote_config: Optional[configparser.SectionProxy] = None) -> bool:
     """
-    Tests write permissions for a given path by creating and deleting a temporary file.
+    Tests write permissions for a given path by creating and deleting a temporary file. (Synchronous version)
     """
     if remote_config:
         logging.info(f"--- Running REMOTE Permission Test on: {path_to_test} ---")
-        if not ssh_connection_pools:
-            logging.error("SSH connection pools not available for remote permission test.")
-            return False
-        pool = ssh_connection_pools.get('DESTINATION_SERVER')
-        if not pool:
-            logging.error("Could not find SSH pool for DESTINATION_SERVER.")
-            return False
+        pool = None
         try:
-            async with pool.get_connection() as conn:
-                async with conn.start_sftp_client() as sftp:
-                    path_to_test = path_to_test.replace('\\', '/')
-                    test_file_path = f"{path_to_test.rstrip('/')}/permission_test_{os.getpid()}.tmp"
-                    logging.info(f"Attempting to create a remote test file: {test_file_path}")
-                    async with sftp.open(test_file_path, 'w') as f:
-                        await f.write('test')
-                    logging.info("Remote test file created successfully.")
-                    await sftp.remove(test_file_path)
-                logging.info("Remote test file removed successfully.")
-                logging.info(f"[bold green]SUCCESS:[/] Remote write permissions are correctly configured for '{remote_config['username']}' on path '{path_to_test}'")
-                return True
-        except (asyncssh.SFTPPermissionDenied, PermissionError):
+            pool = SSHConnectionPool(
+                host=remote_config['host'],
+                port=remote_config.getint('port'),
+                username=remote_config['username'],
+                password=remote_config['password'],
+                max_size=1
+            )
+            with pool.get_connection() as (sftp, _):
+                path_to_test = path_to_test.replace('\\', '/')
+                test_file_path = f"{path_to_test.rstrip('/')}/permission_test_{os.getpid()}.tmp"
+                logging.info(f"Attempting to create a remote test file: {test_file_path}")
+                with sftp.open(test_file_path, 'w') as f:
+                    f.write('test')
+                logging.info("Remote test file created successfully.")
+                sftp.remove(test_file_path)
+            logging.info("Remote test file removed successfully.")
+            logging.info(f"[bold green]SUCCESS:[/] Remote write permissions are correctly configured for '{remote_config['username']}' on path '{path_to_test}'")
+            return True
+        except (paramiko.ssh_exception.AuthenticationException, paramiko.sftp.SFTPError, PermissionError) as e:
+            # Paramiko raises SFTPError which can be a permission error
             logging.error(f"[bold red]FAILURE:[/] Permission denied on remote server when trying to write to '{path_to_test}'.\n"
-                          f"Please ensure the user '{remote_config['username']}' has write access to this path on the remote server.")
+                          f"Please ensure the user '{remote_config['username']}' has write access to this path on the remote server.", exc_info=True)
             return False
         except Exception as e:
             logging.error(f"[bold red]FAILURE:[/] An unexpected error occurred during remote permission test: {e}", exc_info=True)
             return False
+        finally:
+            if pool:
+                pool.close_all()
     else:
         p = Path(path_to_test)
         logging.info(f"--- Running LOCAL Permission Test on: {p} ---")
@@ -1410,8 +1442,8 @@ async def async_test_path_permissions(path_to_test: str, remote_config: Optional
         test_file_path = p / f"permission_test_{os.getpid()}.tmp"
         try:
             logging.info(f"Attempting to create a test file: {test_file_path}")
-            async with aiofiles.open(test_file_path, 'w') as f:
-                await f.write('test')
+            with open(test_file_path, 'w') as f:
+                f.write('test')
             logging.info("Test file created successfully.")
             os.remove(test_file_path)
             logging.info("Test file removed successfully.")
@@ -1425,7 +1457,7 @@ async def async_test_path_permissions(path_to_test: str, remote_config: Optional
             logging.error(f"[bold red]FAILURE:[/] An unexpected error occurred during local permission test: {e}", exc_info=True)
             return False
 
-async def async_handle_utility_commands(args: argparse.Namespace, config: configparser.ConfigParser, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, AsyncSSHConnectionPool]) -> bool:
+def handle_utility_commands(args: argparse.Namespace, config: configparser.ConfigParser, tracker_rules: Dict[str, str], script_dir: Path) -> bool:
     """Handles all utility command-line arguments that exit after running."""
     if not (args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions):
         return False
@@ -1442,7 +1474,7 @@ async def async_handle_utility_commands(args: argparse.Namespace, config: config
             if 'DESTINATION_SERVER' not in config:
                 raise ValueError("FATAL: 'transfer_mode' is 'sftp_upload' but [DESTINATION_SERVER] is not defined in config.")
             remote_config = config['DESTINATION_SERVER']
-        await async_test_path_permissions(dest_path, remote_config=remote_config, ssh_connection_pools=ssh_connection_pools)
+        test_path_permissions(dest_path, remote_config=remote_config)
         return True
 
     if args.list_rules:
@@ -1488,8 +1520,71 @@ async def async_handle_utility_commands(args: argparse.Namespace, config: config
 
     return False
 
-async def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Namespace, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, AsyncSSHConnectionPool], checkpoint: TransferCheckpoint) -> None:
-    """Connects to clients and runs the main transfer process."""
+async def _run_analysis_phase(
+    config: configparser.ConfigParser,
+    eligible_torrents: List[qbittorrentapi.TorrentDictionary],
+    ui: UIManager
+) -> Tuple[List[Tuple[qbittorrentapi.TorrentDictionary, int]], int]:
+    """Analyzes torrents to get their sizes, either via rsync or SFTP."""
+    analyzed_torrents: List[Tuple[qbittorrentapi.TorrentDictionary, int]] = []
+    total_transfer_size = 0
+    sftp_config = config['SOURCE_SERVER']
+    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+
+    logging.info("STATE: Starting analysis phase...")
+    for t in eligible_torrents:
+        ui.add_torrent_to_plan(t.name, t.hash, "[dim]Calculating...[/dim]")
+
+    if transfer_mode == 'rsync':
+        for torrent in eligible_torrents:
+            try:
+                size = get_remote_size_rsync(sftp_config, torrent.content_path)
+                if size > 0:
+                    analyzed_torrents.append((torrent, size))
+                    total_transfer_size += size
+                    ui._torrents_data[torrent.hash]["size"] = f"{size / GB_BYTES:.2f} GB"
+                    ui.update_torrent_status_text(torrent.hash, "Analyzed", color="green")
+                else:
+                    ui.update_torrent_status_text(torrent.hash, "Skipped (zero size)", color="dim")
+            except Exception as e:
+                ui.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
+                ui.update_torrent_status_text(torrent.hash, "Analysis Failed", color="bold red")
+            finally:
+                ui.advance_analysis_progress()
+    else:
+        source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
+        pool = None
+        try:
+            s_config = config[source_server_section]
+            pool = AsyncSSHConnectionPool(
+                host=s_config['host'], port=s_config.getint('port'),
+                username=s_config['username'], password=s_config['password'],
+                max_size=s_config.getint('max_concurrent_ssh_sessions', 8)
+            )
+            async with pool.get_connection() as conn:
+                paths = [t.content_path for t in eligible_torrents]
+                sizes = await _async_batch_get_remote_sizes(conn, paths)
+            for torrent in eligible_torrents:
+                size = sizes.get(torrent.content_path)
+                if size is not None and size > 0:
+                    analyzed_torrents.append((torrent, size))
+                    total_transfer_size += size
+                    ui._torrents_data[torrent.hash]["size"] = f"{size / GB_BYTES:.2f} GB"
+                    ui.update_torrent_status_text(torrent.hash, "Analyzed", color="green")
+                elif size == 0:
+                    ui.update_torrent_status_text(torrent.hash, "Skipped (zero size)", color="dim")
+                else:
+                    ui.update_torrent_status_text(torrent.hash, "Analysis Failed", color="bold red")
+                ui.advance_analysis_progress()
+        finally:
+            if pool:
+                await pool.close_all()
+
+    return analyzed_torrents, total_transfer_size
+
+
+async def async_main(args: argparse.Namespace, config: configparser.ConfigParser, tracker_rules: Dict[str, str], script_dir: Path, checkpoint: TransferCheckpoint) -> None:
+    """The main asynchronous execution block for transfer operations."""
     sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
     try:
         source_section_name = config['SETTINGS']['source_client_section']
@@ -1539,55 +1634,8 @@ async def _run_transfer_operation(config: configparser.ConfigParser, args: argpa
     with UIManager(version=__version__) as ui:
         ui.set_analysis_total(total_count)
         ui.update_header(f"Found {total_count} torrents to process. Analyzing...")
-        sftp_config = config['SOURCE_SERVER']
-        analyzed_torrents: List[Tuple[qbittorrentapi.TorrentDictionary, int]] = []
-        total_transfer_size = 0
-        logging.info("STATE: Starting analysis phase...")
-        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         try:
-            for t in eligible_torrents:
-                ui.add_torrent_to_plan(t.name, t.hash, "[dim]Calculating...[/dim]")
-            if transfer_mode == 'rsync':
-                for torrent in eligible_torrents:
-                    try:
-                        size = get_remote_size_rsync(sftp_config, torrent.content_path)
-                        if size > 0:
-                            analyzed_torrents.append((torrent, size))
-                            total_transfer_size += size
-                            ui._torrents_data[torrent.hash]["size"] = f"{size / GB_BYTES:.2f} GB"
-                            ui.update_torrent_status_text(torrent.hash, "Analyzed", color="green")
-                        else:
-                            ui.update_torrent_status_text(torrent.hash, "Skipped (zero size)", color="dim")
-                    except Exception as e:
-                        ui.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
-                        ui.update_torrent_status_text(torrent.hash, "Analysis Failed", color="bold red")
-                    finally:
-                        ui.advance_analysis_progress()
-            else:
-                source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
-                source_pool = ssh_connection_pools.get(source_server_section)
-                if not source_pool:
-                    raise ValueError(f"Error: SSH connection pool for server section '{source_server_section}' not found. Check config.")
-
-                async def _analyze_sftp_torrents():
-                    async with source_pool.get_connection() as conn:
-                        paths = [t.content_path for t in eligible_torrents]
-                        return await _async_batch_get_remote_sizes(conn, paths)
-
-                sizes = await _analyze_sftp_torrents()
-
-                for torrent in eligible_torrents:
-                    size = sizes.get(torrent.content_path)
-                    if size is not None and size > 0:
-                        analyzed_torrents.append((torrent, size))
-                        total_transfer_size += size
-                        ui._torrents_data[torrent.hash]["size"] = f"{size / GB_BYTES:.2f} GB"
-                        ui.update_torrent_status_text(torrent.hash, "Analyzed", color="green")
-                    elif size == 0:
-                        ui.update_torrent_status_text(torrent.hash, "Skipped (zero size)", color="dim")
-                    else:
-                        ui.update_torrent_status_text(torrent.hash, "Analysis Failed", color="bold red")
-                    ui.advance_analysis_progress()
+            analyzed_torrents, total_transfer_size = await _run_analysis_phase(config, eligible_torrents, ui)
         except Exception as e:
             raise RuntimeError(f"A critical error occurred during the analysis phase: {e}") from e
 
@@ -1601,7 +1649,7 @@ async def _run_transfer_operation(config: configparser.ConfigParser, args: argpa
             return
 
         ui.set_overall_total(total_transfer_size)
-        if not args.dry_run and not await async_destination_health_check(config, total_transfer_size, ssh_connection_pools):
+        if not args.dry_run and not destination_health_check(config, total_transfer_size):
             ui.update_header("[bold red]Destination health check failed. Aborting transfer process.[/]")
             logging.error("FATAL: Destination health check failed.")
             time.sleep(5)
@@ -1615,7 +1663,7 @@ async def _run_transfer_operation(config: configparser.ConfigParser, args: argpa
                 transfer_futures = {
                     executor.submit(
                         transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
-                        ui, ssh_connection_pools, args.dry_run, args.test_run, sftp_chunk_size
+                        ui, args.dry_run, args.test_run, sftp_chunk_size
                     ): (t, size) for t, size in analyzed_torrents
                 }
                 for future in as_completed(transfer_futures):
@@ -1648,8 +1696,8 @@ async def _run_transfer_operation(config: configparser.ConfigParser, args: argpa
         ui.update_footer("All tasks finished.")
         logging.info(f"Processing complete. Successfully moved {stats['successful_transfers']}/{total_count} torrent(s).")
 
-async def async_main() -> int:
-    """Async entry point for the script."""
+def main() -> int:
+    """Main synchronous entry point for the script."""
     script_dir = Path(__file__).resolve().parent
     lock = None
     try:
@@ -1696,33 +1744,19 @@ async def async_main() -> int:
     config_template_path = script_dir / 'config.ini.template'
     update_config(args.config, str(config_template_path))
     checkpoint = TransferCheckpoint(script_dir / 'transfer_checkpoint.json')
-    ssh_connection_pools: Dict[str, AsyncSSHConnectionPool] = {}
     try:
         config = load_config(args.config)
         validator = ConfigValidator(config)
         if not validator.validate():
             return 1
-        server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
-        for section_name in server_sections:
-            max_sessions = config[section_name].getint('max_concurrent_ssh_sessions', 8)
-            ssh_connection_pools[section_name] = AsyncSSHConnectionPool(
-                host=config[section_name]['host'],
-                port=config[section_name].getint('port'),
-                username=config[section_name]['username'],
-                password=config[section_name]['password'],
-                max_size=max_sessions
-            )
-            logging.info(f"Initialized SSH connection pool for '{section_name}' with size {max_sessions}.")
-
         tracker_rules = load_tracker_rules(script_dir)
-        if await async_handle_utility_commands(args, config, tracker_rules, script_dir, ssh_connection_pools):
+        if handle_utility_commands(args, config, tracker_rules, script_dir):
             return 0
-
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         if transfer_mode == 'rsync':
             check_sshpass_installed()
 
-        await _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint)
+        asyncio.run(async_main(args, config, tracker_rules, script_dir, checkpoint))
 
     except KeyboardInterrupt:
         logging.warning("Process interrupted by user. Shutting down.")
@@ -1733,18 +1767,8 @@ async def async_main() -> int:
         logging.error(f"An unexpected error occurred in main: {e}", exc_info=True)
         return 1
     finally:
-        for pool in ssh_connection_pools.values():
-            await pool.close_all()
-        logging.info("All SSH connections have been closed.")
         logging.info("--- Torrent Mover script finished ---")
     return 0
-
-def main() -> int:
-    try:
-        return asyncio.run(async_main())
-    except KeyboardInterrupt:
-        logging.warning("Process interrupted by user. Shutting down.")
-        return 1
 
 if __name__ == "__main__":
     sys.exit(main())

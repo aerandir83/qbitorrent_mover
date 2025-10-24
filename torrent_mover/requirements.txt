@@ -4,3 +4,4 @@ rich
 configupdater
 asyncssh
 aiofiles
+paramiko

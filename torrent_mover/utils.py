@@ -5,6 +5,7 @@ import asyncio
 import asyncssh
 import logging
 import threading
+from queue import Queue, Empty
 from contextlib import asynccontextmanager, contextmanager
 from typing import Optional, Dict, List, Tuple, Any, Callable
 from pathlib import Path
@@ -16,6 +17,7 @@ import sys
 import shutil
 import json
 import socket
+import paramiko
 
 # Constants
 DEFAULT_SSH_TIMEOUT = 30
@@ -77,8 +79,12 @@ class AsyncSSHConnectionPool:
         try:
             try:
                 conn = self._pool.get_nowait()
-                if conn.is_closing():
-                    raise AttributeError("Connection is closing")
+                transport = conn.get_transport_info()
+                if not transport or conn.is_closed():
+                    # Decrement count if connection died in the pool
+                    async with self._lock:
+                        self._created -= 1
+                    raise AttributeError("Connection is dead or closed")
             except (asyncio.QueueEmpty, AttributeError):
                 async with self._lock:
                     if self._created < self.max_size:
@@ -106,6 +112,110 @@ class AsyncSSHConnectionPool:
                 conn = self._pool.get_nowait()
                 conn.close()
             except asyncio.QueueEmpty:
+                break
+
+
+class SSHConnectionPool:
+    """Thread-safe SSH connection pool to reuse connections."""
+
+    def __init__(self, host: str, port: int, username: str, password: str, max_size: int = DEFAULT_SSH_POOL_SIZE, timeout: int = DEFAULT_SSH_TIMEOUT):
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.max_size = max_size
+        self.timeout = timeout
+        self._pool: Queue[Tuple[paramiko.SFTPClient, paramiko.SSHClient]] = Queue(maxsize=max_size)
+        self._lock = threading.Lock()
+        self._created = 0
+
+    def _create_connection(self) -> Tuple[paramiko.SFTPClient, paramiko.SSHClient]:
+        """Create a new SSH client and SFTP session."""
+        try:
+            ssh_client = paramiko.SSHClient()
+            ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh_client.connect(
+                hostname=self.host,
+                port=self.port,
+                username=self.username,
+                password=self.password,
+                timeout=self.timeout
+            )
+            transport = ssh_client.get_transport()
+            if transport:
+                transport.set_keepalive(DEFAULT_KEEPALIVE_INTERVAL)
+            sftp = ssh_client.open_sftp()
+            return sftp, ssh_client
+        except paramiko.ssh_exception.AuthenticationException as e:
+            logging.error(f"Authentication failed for user '{self.username}' at {self.host}:{self.port}.")
+            logging.error("Please check your username and password in config.ini.")
+            raise e
+        except (socket.timeout, TimeoutError) as e:
+            logging.error(f"Connection timed out while trying to connect to {self.host}:{self.port}.")
+            logging.error("Please check network/firewall settings and that the SSH port is correct.")
+            raise e
+        except Exception as e:
+            logging.error(f"Failed to create SSH connection to {self.host}:{self.port}: {e}")
+            raise
+
+    @contextmanager
+    def get_connection(self) -> Tuple[paramiko.SFTPClient, paramiko.SSHClient]:
+        """Context manager to get a connection from the pool."""
+        sftp, ssh = None, None
+        try:
+            # Try to get existing connection
+            try:
+                sftp, ssh = self._pool.get_nowait()
+                # Verify connection is still alive
+                transport = ssh.get_transport()
+                if not transport or not transport.is_active():
+                    # Connection is dead, close it and decrement the counter
+                    with self._lock:
+                        self._created -= 1
+                    try:
+                        ssh.close()
+                    except:
+                        pass
+                    raise AttributeError("Connection is dead")
+            except (Empty, AttributeError):
+                # Create new connection if pool is empty or connection is dead
+                with self._lock:
+                    if self._created < self.max_size:
+                        sftp, ssh = self._create_connection()
+                        self._created += 1
+                        logging.debug(f"Created new connection ({self._created}/{self.max_size})")
+                    else:
+                        # Wait for a connection to become available
+                        sftp, ssh = self._pool.get(timeout=self.timeout)
+
+            yield sftp, ssh
+
+        except Exception as e:
+            # Don't return broken connection to pool
+            if ssh:
+                try:
+                    ssh.close()
+                except:
+                    pass
+            logging.error(f"Error with SSH connection: {e}")
+            raise
+        else:
+            # Return connection to pool
+            try:
+                self._pool.put_nowait((sftp, ssh))
+            except:
+                # Pool is full, close connection
+                if ssh:
+                    ssh.close()
+
+    def close_all(self):
+        """Close all connections in the pool."""
+        while not self._pool.empty():
+            try:
+                sftp, ssh = self._pool.get_nowait()
+                if ssh:
+                    ssh.close()
+            except Empty:
                 break
 
 
