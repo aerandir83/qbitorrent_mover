@@ -67,6 +67,8 @@ remote_destination_path =
 # These must match the section names you use for your clients.
 source_client_section = SOURCE_CLIENT
 destination_client_section = DESTINATION_CLIENT
+# The name of the section that defines the SSH/SFTP server for the source.
+source_server_section = SOURCE_SERVER
 
 # The category in the SOURCE qBittorrent client that marks torrents for moving.
 category_to_move = move-me
