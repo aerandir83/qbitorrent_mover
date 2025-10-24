@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.6.1"
+__version__ = "1.6.2"
 
 import configparser
 import sys
@@ -22,7 +22,7 @@ import shlex
 import threading
 from collections import defaultdict
 import errno
-from .utils import retry, SSHConnectionPool, LockFile
+from .utils import retry, SSHConnectionPool, LockFile, _get_remote_size_du_core, batch_get_remote_sizes
 import tempfile
 import getpass
 import configupdater
@@ -302,40 +302,6 @@ def get_remote_size_rsync(sftp_config, remote_path):
     except Exception as e:
         # Re-raise to be handled by the retry decorator or the calling function
         raise e
-
-
-@retry(tries=2, delay=5)
-def _get_remote_size_du_core(ssh_client, remote_path):
-    """
-    Core logic for getting remote size using 'du -sb'. Does not handle concurrency.
-    This function is retried on failure.
-    """
-    # Escape single quotes in the path to prevent command injection issues.
-    command = f"du -sb {shlex.quote(remote_path)}"
-
-    try:
-        stdin, stdout, stderr = ssh_client.exec_command(command, timeout=60)
-        exit_status = stdout.channel.recv_exit_status()  # Wait for command to finish
-
-        if exit_status != 0:
-            stderr_output = stderr.read().decode('utf-8').strip()
-            if "No such file or directory" in stderr_output:
-                logging.warning(f"'du' command failed for path '{remote_path}': File not found.")
-                return 0
-            raise Exception(f"'du' command failed with exit code {exit_status}. Stderr: {stderr_output}")
-
-        output = stdout.read().decode('utf-8').strip()
-        # The output is like "12345\t/path/to/dir". We only need the number.
-        size_str = output.split()[0]
-        if size_str.isdigit():
-            return int(size_str)
-        else:
-            raise ValueError(f"Could not parse 'du' output. Raw output: '{output}'")
-
-    except Exception as e:
-        logging.error(f"An error occurred executing 'du' command for '{remote_path}': {e}")
-        # Re-raise to be handled by the retry decorator or the calling function
-        raise
 
 
 def is_remote_dir(ssh_client, path):
@@ -1279,37 +1245,6 @@ def change_ownership(path_to_change, user, group, remote_config=None, dry_run=Fa
             logging.error(f"An exception occurred during local chown: {e}", exc_info=True)
 
 
-def analyze_torrent(torrent, sftp_config, transfer_mode, ui, pool=None):
-    """
-    Analyzes a single torrent to determine its size.
-    """
-    name, hash = torrent.name, torrent.hash
-    remote_content_path = torrent.content_path
-    logging.debug(f"Analyzing torrent: {name}")
-    total_size = None
-
-    try:
-        if transfer_mode == 'rsync':
-            total_size = get_remote_size_rsync(sftp_config, remote_content_path)
-        else:
-            with pool.get_connection() as (sftp, ssh):
-                total_size = _get_remote_size_du_core(ssh, remote_content_path)
-
-        if total_size is not None and total_size > 0:
-            ui.update_torrent_status_text(hash, "Analyzed", color="green")
-        elif total_size == 0:
-            ui.update_torrent_status_text(hash, "Skipped (zero size)", color="dim")
-
-    except Exception as e:
-        ui.log(f"[bold red]Error calculating size for '{name}': {e}[/]")
-        ui.update_torrent_status_text(hash, "Analysis Failed", color="bold red")
-        return torrent, None
-    finally:
-        ui.advance_analysis_progress()
-
-    return torrent, total_size
-
-
 def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config, tracker_rules, ui, ssh_connection_pools, dry_run=False, test_run=False):
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
@@ -1867,21 +1802,45 @@ def main():
                 for t in eligible_torrents:
                     ui.add_torrent_to_plan(t.name, t.hash, "[dim]Calculating...[/dim]")
 
-                with ThreadPoolExecutor(max_workers=analysis_workers, thread_name_prefix='Analyzer') as executor:
+                if transfer_mode == 'rsync':
+                    for torrent in eligible_torrents:
+                        try:
+                            size = get_remote_size_rsync(sftp_config, torrent.content_path)
+                            if size is not None and size > 0:
+                                analyzed_torrents.append((torrent, size))
+                                total_transfer_size += size
+                                size_gb = size / (1024**3)
+                                ui._torrents_data[torrent.hash]["size"] = f"{size_gb:.2f} GB"
+                                ui.update_torrent_status_text(torrent.hash, "Analyzed", color="green")
+                            elif size == 0:
+                                ui.update_torrent_status_text(torrent.hash, "Skipped (zero size)", color="dim")
+                        except Exception as e:
+                            ui.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
+                            ui.update_torrent_status_text(torrent.hash, "Analysis Failed", color="bold red")
+                        finally:
+                            ui.advance_analysis_progress()
+                else:
                     source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
                     source_pool = ssh_connection_pools.get(source_server_section)
                     if not source_pool:
                         ui.log(f"[bold red]Error: SSH connection pool for server section '{source_server_section}' not found. Check config.[/]")
                         return 1
-
-                    future_to_torrent = {executor.submit(analyze_torrent, t, sftp_config, transfer_mode, ui, pool=source_pool): t for t in eligible_torrents}
-                    for future in as_completed(future_to_torrent):
-                        _analyzed_torrent, size = future.result()
-                        if size is not None and size > 0:
-                            analyzed_torrents.append((_analyzed_torrent, size))
-                            total_transfer_size += size
-                            size_gb = size / (1024**3)
-                            ui._torrents_data[_analyzed_torrent.hash]["size"] = f"{size_gb:.2f} GB"
+                    with source_pool.get_connection() as (sftp, ssh):
+                        paths = [t.content_path for t in eligible_torrents]
+                        sizes = batch_get_remote_sizes(ssh, paths)
+                        for torrent in eligible_torrents:
+                            size = sizes.get(torrent.content_path)
+                            if size is not None and size > 0:
+                                analyzed_torrents.append((torrent, size))
+                                total_transfer_size += size
+                                size_gb = size / (1024**3)
+                                ui._torrents_data[torrent.hash]["size"] = f"{size_gb:.2f} GB"
+                                ui.update_torrent_status_text(torrent.hash, "Analyzed", color="green")
+                            elif size == 0:
+                                ui.update_torrent_status_text(torrent.hash, "Skipped (zero size)", color="dim")
+                            else:
+                                ui.update_torrent_status_text(torrent.hash, "Analysis Failed", color="bold red")
+                            ui.advance_analysis_progress()
             except Exception as e:
                 ui.log(f"[bold red]A critical error occurred during the analysis phase: {e}[/]")
                 return 1
