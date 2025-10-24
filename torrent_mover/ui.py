@@ -30,7 +30,7 @@ class UIManager:
 
         # 1. Header
         self.header_text = Text("Initializing...", justify="center")
-        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.5.1[/bold magenta]", border_style="magenta")
+        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.6.0[/bold magenta]", border_style="magenta")
 
         # 2. Run Progress (counts and overall size)
         self.analysis_progress = Progress(TextColumn("[cyan]Analyzed"), BarColumn(), MofNCompleteColumn())
