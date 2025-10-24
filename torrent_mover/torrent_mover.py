@@ -442,10 +442,9 @@ def _sftp_upload_from_cache(dest_pool, local_cache_path, source_file_path, dest_
     file_name = local_cache_path.name
 
     if not local_cache_path.is_file():
-        logging.warning(f"Cannot upload '{file_name}' from cache: File does not exist.")
+        logging.error(f"Cannot upload '{file_name}' from cache: File does not exist.")
         ui.update_file_status(torrent_hash, source_file_path, "[red]Cache file missing[/red]")
-        ui.advance_torrent_file_progress(torrent_hash)
-        return
+        raise FileNotFoundError(f"Local cache file not found: {local_cache_path}")
 
     try:
         total_size = local_cache_path.stat().st_size
@@ -466,31 +465,31 @@ def _sftp_upload_from_cache(dest_pool, local_cache_path, source_file_path, dest_
                 ui.update_file_progress(torrent_hash, source_file_path, total_size)
                 return
 
-        if dest_size > 0:
-            ui.update_torrent_byte_progress(torrent_hash, dest_size)
-            ui.advance_overall_progress(dest_size)
-            ui.update_file_progress(torrent_hash, source_file_path, dest_size)
+            if dest_size > 0:
+                ui.update_torrent_byte_progress(torrent_hash, dest_size)
+                ui.advance_overall_progress(dest_size)
+                ui.update_file_progress(torrent_hash, source_file_path, dest_size)
 
 
-        dest_dir = os.path.dirname(dest_file_path)
-        sftp_mkdir_p(sftp, dest_dir)
+            dest_dir = os.path.dirname(dest_file_path)
+            sftp_mkdir_p(sftp, dest_dir)
 
-        with open(local_cache_path, 'rb') as source_f:
-            source_f.seek(dest_size)
-            with sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f:
-                while True:
-                    chunk = source_f.read(32768)
-                    if not chunk: break
-                    dest_f.write(chunk)
-                    increment = len(chunk)
-                    ui.update_torrent_byte_progress(torrent_hash, increment)
-                    ui.advance_overall_progress(increment)
-                    ui.update_file_progress(torrent_hash, source_file_path, increment)
+            with open(local_cache_path, 'rb') as source_f:
+                source_f.seek(dest_size)
+                with sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f:
+                    while True:
+                        chunk = source_f.read(32768)
+                        if not chunk: break
+                        dest_f.write(chunk)
+                        increment = len(chunk)
+                        ui.update_torrent_byte_progress(torrent_hash, increment)
+                        ui.advance_overall_progress(increment)
+                        ui.update_file_progress(torrent_hash, source_file_path, increment)
 
-        if sftp.stat(dest_file_path).st_size != total_size:
-            raise Exception("Final size mismatch during cached upload.")
+            if sftp.stat(dest_file_path).st_size != total_size:
+                raise Exception("Final size mismatch during cached upload.")
 
-        ui.update_file_status(torrent_hash, source_file_path, "[green]Completed[/green]")
+            ui.update_file_status(torrent_hash, source_file_path, "[green]Completed[/green]")
 
     except Exception as e:
         ui.update_file_status(torrent_hash, source_file_path, "[red]Upload Failed[/red]")
@@ -897,9 +896,11 @@ def transfer_content_sftp_upload(
                         upload_futures.append(upload_future)
                     except Exception as e:
                         logging.error(f"Download of '{os.path.basename(source_f)}' failed, it will not be uploaded. Error: {e}")
+                        # Re-raise the exception to be caught by the main transfer_torrent function
                         raise
 
                 for upload_future in as_completed(upload_futures):
+                    # This will re-raise any exception caught during the upload process
                     upload_future.result()
 
             transfer_successful = True
