@@ -394,10 +394,10 @@ def _sftp_download_to_cache(source_pool, source_file_path, local_cache_path, tor
             total_size = remote_stat.st_size
 
             ui.start_file_transfer(torrent_hash, source_file_path, total_size)
-        ui.update_file_status(torrent_hash, source_file_path, "Downloading")
+            ui.update_file_status(torrent_hash, source_file_path, "Downloading")
 
-        local_size = 0
-        if local_cache_path.exists():
+            local_size = 0
+            if local_cache_path.exists():
             local_size = local_cache_path.stat().st_size
 
         if local_size >= total_size:
@@ -456,10 +456,10 @@ def _sftp_upload_from_cache(dest_pool, local_cache_path, source_file_path, dest_
             dest_size = 0
             try:
                 dest_size = sftp.stat(dest_file_path).st_size
-        except FileNotFoundError:
-            pass
+            except FileNotFoundError:
+                pass
 
-        if dest_size >= total_size:
+            if dest_size >= total_size:
             logging.info(f"Skipping upload (exists and size matches): {file_name}")
             ui.update_torrent_byte_progress(torrent_hash, total_size)
             ui.advance_overall_progress(total_size)
@@ -511,12 +511,12 @@ def _sftp_upload_file(source_pool, dest_pool, source_file_path, dest_file_path, 
             # Get source file size
             try:
                 source_stat = source_sftp.stat(source_file_path)
-            total_size = source_stat.st_size
-        except FileNotFoundError:
-            logging.warning(f"Source file not found, skipping: {source_file_path}")
-            return
+                total_size = source_stat.st_size
+            except FileNotFoundError:
+                logging.warning(f"Source file not found, skipping: {source_file_path}")
+                return
 
-        if total_size == 0:
+            if total_size == 0:
             logging.warning(f"Skipping zero-byte source file: {file_name}")
             return
 
@@ -609,11 +609,11 @@ def _sftp_download_file(pool, remote_file, local_file, torrent_hash, ui, dry_run
             logging.debug(f"SFTP Check: Remote file '{remote_file}' size: {total_size}")
 
             if total_size == 0:
-            logging.warning(f"Skipping zero-byte file: {file_name}")
-            return
+                logging.warning(f"Skipping zero-byte file: {file_name}")
+                return
 
-        local_size = 0
-        if local_path.exists():
+            local_size = 0
+            if local_path.exists():
             local_size = local_path.stat().st_size
             logging.debug(f"SFTP Check: Local file '{local_file}' exists with size: {local_size}")
             if local_size == total_size:
@@ -1085,7 +1085,7 @@ def destination_health_check(config, total_transfer_size_bytes, ssh_connection_p
     logging.info("--- Running Destination Health Check ---")
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
     dest_path = config['DESTINATION_PATHS'].get('destination_path')
-    remote_config = config['DESTination_SERVER'] if transfer_mode == 'sftp_upload' and 'DESTINATION_SERVER' in config else None
+    remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' and 'DESTINATION_SERVER' in config else None
     dest_pool = ssh_connection_pools.get('DESTINATION_SERVER') if remote_config else None
 
     available_space = -1
@@ -1248,10 +1248,10 @@ def change_ownership(path_to_change, user, group, remote_config=None, dry_run=Fa
                 remote_command = f"chown -R -- '{owner_spec}' '{escaped_path}'"
                 logging.debug(f"Executing remote command: {remote_command}")
                 stdin, stdout, stderr = ssh.exec_command(remote_command, timeout=120)
-            exit_status = stdout.channel.recv_exit_status()
+                exit_status = stdout.channel.recv_exit_status()
 
-            if exit_status == 0:
-                logging.info("Remote ownership changed successfully.")
+                if exit_status == 0:
+                    logging.info("Remote ownership changed successfully.")
             else:
                 stderr_output = stderr.read().decode('utf-8').strip()
                 logging.error(f"Failed to change remote ownership for '{path_to_change}'. Exit code: {exit_status}, Stderr: {stderr_output}")
@@ -1641,10 +1641,10 @@ def test_path_permissions(path_to_test, remote_config=None, ssh_connection_pools
                 test_file_path = f"{path_to_test.rstrip('/')}/permission_test_{os.getpid()}.tmp"
 
                 logging.info(f"Attempting to create a remote test file: {test_file_path}")
-            with sftp.open(test_file_path, 'w') as f:
-                f.write('test')
-            logging.info("Remote test file created successfully.")
-            sftp.remove(test_file_path)
+                with sftp.open(test_file_path, 'w') as f:
+                    f.write('test')
+                logging.info("Remote test file created successfully.")
+                sftp.remove(test_file_path)
             logging.info("Remote test file removed successfully.")
             logging.info(f"[bold green]SUCCESS:[/] Remote write permissions are correctly configured for '{remote_config['username']}' on path '{path_to_test}'")
             return True
