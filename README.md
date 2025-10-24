@@ -10,11 +10,11 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.6.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **1.6.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 1.6.0 (Latest)
+### Version 1.6.3 (Latest)
 *   **New Feature**: Introduced a Rich-based UI for real-time progress tracking of torrent analysis and transfers.
 *   **New Feature**: Implemented local caching for `sftp_upload` mode to improve reliability and performance.
 *   **Improvement**: Switched to using `du -sb` for remote size calculation, significantly speeding up the analysis phase.

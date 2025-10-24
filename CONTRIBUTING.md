@@ -108,4 +108,4 @@ Example: `feat: Add support for Deluge torrent client`
 
 This project follows Semantic Versioning (`MAJOR.MINOR.PATCH`). The official version is set in the `__version__` variable in `torrent_mover/torrent_mover.py`.
 
-When you submit a pull request, please **do not** bump the version number yourself. The project maintainer will update the version upon merging, based on the conventional commit type of your contribution.
+When you submit a pull request, please **do not** bump the version number yourself. The project maintainer will update the version in `torrent_mover/torrent_mover.py`, `README.md`, and any other relevant files upon merging, based on the conventional commit type of your contribution.

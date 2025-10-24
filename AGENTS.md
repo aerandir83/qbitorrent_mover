@@ -76,7 +76,8 @@ Use the following rules based on your conventional commit type:
 3. You determine the correct conventional commit type (e.g., `feat:`, `fix:`).
 4. If the type is `feat:` or `fix:`, you **must** open `torrent_mover/torrent_mover.py`.
 5. You **must** find the `__version__` variable and update it according to the rules above.
-6. You will then proceed to the pre-commit and submission steps.
+6. **You must also update the version number in `README.md` and any other files where the version is displayed.**
+7. You will then proceed to the pre-commit and submission steps.
 
 ### 6. Pre-Commit Steps and Submission
 
