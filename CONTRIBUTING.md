@@ -103,3 +103,9 @@ Please follow the conventional commit message format. This makes the commit hist
 *   **chore:** Changes to the build process or auxiliary tools.
 
 Example: `feat: Add support for Deluge torrent client`
+
+### Versioning
+
+This project follows Semantic Versioning (`MAJOR.MINOR.PATCH`). The official version is set in the `__version__` variable in `torrent_mover/torrent_mover.py`.
+
+When you submit a pull request, please **do not** bump the version number yourself. The project maintainer will update the version upon merging, based on the conventional commit type of your contribution.
