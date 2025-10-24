@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.6.3"
+__version__ = "1.7.0"
 
 import configparser
 import sys
@@ -1464,10 +1464,26 @@ def main() -> int:
     parser.add_argument('--category', help='(For -c mode) Specify a category to scan, overriding the config.')
     parser.add_argument('-nr', '--no-rules', action='store_true', help='(For -c mode) Ignore existing rules and show all torrents in the category.')
     parser.add_argument('--test-permissions', action='store_true', help='Test write permissions for the configured destination_path and exit.')
-    parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
+    parser.add_argument('--check-config', action='store_true', help='Validate the configuration file and exit.')
+    parser.add_argument('--version', action='store_true', help="Show program's version and config file path, then exit.")
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
+    if args.version:
+        print(f"{Path(sys.argv[0]).name} {__version__}")
+        print(f"Configuration file: {args.config}")
+        return 0
     setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
+    logging.info(f"Using configuration file: {args.config}")
+    if args.check_config:
+        logging.info("--- Running Configuration Check ---")
+        config = load_config(args.config)
+        validator = ConfigValidator(config)
+        if validator.validate():
+            logging.info("[bold green]SUCCESS:[/] Configuration file appears to be valid.")
+            return 0
+        else:
+            logging.error("[bold red]FAILURE:[/] Configuration file has errors.")
+            return 1
     config_template_path = script_dir / 'config.ini.template'
     update_config(args.config, str(config_template_path))
     checkpoint = TransferCheckpoint(script_dir / 'transfer_checkpoint.json')
