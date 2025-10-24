@@ -6,40 +6,64 @@ import logging
 import threading
 from queue import Queue, Empty
 from contextlib import contextmanager
+from typing import Optional, Dict, List, Tuple, Any, Callable
+from pathlib import Path
+import os
+import fcntl
+import atexit
+import configparser
+import sys
+import shutil
+import json
+
+# Constants
+DEFAULT_SSH_TIMEOUT = 30
+DEFAULT_KEEPALIVE_INTERVAL = 30
+DEFAULT_SSH_POOL_SIZE = 5
+DEFAULT_RETRY_ATTEMPTS = 2
+DEFAULT_RETRY_DELAY = 5
+SSH_EXEC_TIMEOUT = 60
+BATCH_SSH_EXEC_TIMEOUT = 120
+BATCH_SIZE = 10
+
 
 class SSHConnectionPool:
     """Thread-safe SSH connection pool to reuse connections."""
 
-    def __init__(self, host, port, username, password, max_size=5, timeout=30):
+    def __init__(self, host: str, port: int, username: str, password: str, max_size: int = DEFAULT_SSH_POOL_SIZE, timeout: int = DEFAULT_SSH_TIMEOUT):
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.max_size = max_size
         self.timeout = timeout
-        self._pool = Queue(maxsize=max_size)
+        self._pool: Queue[Tuple[paramiko.SFTPClient, paramiko.SSHClient]] = Queue(maxsize=max_size)
         self._lock = threading.Lock()
         self._created = 0
 
-    def _create_connection(self):
+    def _create_connection(self) -> Tuple[paramiko.SFTPClient, paramiko.SSHClient]:
         """Create a new SSH client and SFTP session."""
-        ssh_client = paramiko.SSHClient()
-        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh_client.connect(
-            hostname=self.host,
-            port=self.port,
-            username=self.username,
-            password=self.password,
-            timeout=self.timeout
-        )
-        transport = ssh_client.get_transport()
-        if transport:
-            transport.set_keepalive(30)
-        sftp = ssh_client.open_sftp()
-        return sftp, ssh_client
+        try:
+            ssh_client = paramiko.SSHClient()
+            ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh_client.connect(
+                hostname=self.host,
+                port=self.port,
+                username=self.username,
+                password=self.password,
+                timeout=self.timeout
+            )
+            transport = ssh_client.get_transport()
+            if transport:
+                transport.set_keepalive(DEFAULT_KEEPALIVE_INTERVAL)
+            sftp = ssh_client.open_sftp()
+            return sftp, ssh_client
+        except Exception as e:
+            logging.error(f"Failed to create SSH connection to {self.host}:{self.port}: {e}")
+            raise
 
     @contextmanager
-    def get_connection(self):
+    def get_connection(self) -> Tuple[paramiko.SFTPClient, paramiko.SSHClient]:
         """Context manager to get a connection from the pool."""
         sftp, ssh = None, None
         try:
@@ -66,7 +90,7 @@ class SSHConnectionPool:
                         logging.debug(f"Created new connection ({self._created}/{self.max_size})")
                     else:
                         # Wait for a connection to become available
-                        sftp, ssh = self._pool.get(timeout=60)
+                        sftp, ssh = self._pool.get(timeout=self.timeout)
 
             yield sftp, ssh
 
@@ -77,6 +101,7 @@ class SSHConnectionPool:
                     ssh.close()
                 except:
                     pass
+            logging.error(f"Error with SSH connection: {e}")
             raise
         else:
             # Return connection to pool
@@ -97,20 +122,16 @@ class SSHConnectionPool:
             except Empty:
                 break
 
-import os
-import fcntl
-import atexit
-from pathlib import Path
 
 class LockFile:
     """Atomic lock file using fcntl (Unix only)."""
 
-    def __init__(self, lock_path):
-        self.lock_path = Path(lock_path)
-        self.lock_fd = None
+    def __init__(self, lock_path: Path):
+        self.lock_path = lock_path
+        self.lock_fd: Optional[int] = None
         self._acquired = False
 
-    def acquire(self):
+    def acquire(self) -> None:
         """Acquire the lock. Raises RuntimeError if already locked."""
         try:
             # Open the file, creating it if it doesn't exist
@@ -134,7 +155,7 @@ class LockFile:
             else:
                 raise RuntimeError(f"Script is already running (lock file: {self.lock_path})")
 
-    def release(self):
+    def release(self) -> None:
         """Release the lock."""
         if self.lock_fd and self._acquired:
             try:
@@ -148,7 +169,7 @@ class LockFile:
             finally:
                 self.lock_fd = None
 
-    def get_locking_pid(self):
+    def get_locking_pid(self) -> Optional[str]:
         """Read the PID from the lock file, if it exists."""
         if self.lock_path.exists():
             try:
@@ -158,7 +179,7 @@ class LockFile:
         return None
 
 
-def retry(tries=2, delay=5, backoff=1):
+def retry(tries: int = DEFAULT_RETRY_ATTEMPTS, delay: int = DEFAULT_RETRY_DELAY, backoff: int = 1) -> Callable:
     """
     A decorator for retrying a function call with a specified delay.
 
@@ -166,9 +187,9 @@ def retry(tries=2, delay=5, backoff=1):
     :param delay: The delay between retries in seconds.
     :param backoff: The factor by which the delay should grow (default is 1 for fixed delay).
     """
-    def deco_retry(f):
+    def deco_retry(f: Callable) -> Callable:
         @wraps(f)
-        def f_retry(*args, **kwargs):
+        def f_retry(*args: Any, **kwargs: Any) -> Any:
             _tries, _delay = tries, delay
             for attempt in range(1, _tries + 1):
                 try:
@@ -186,8 +207,8 @@ def retry(tries=2, delay=5, backoff=1):
         return f_retry
     return deco_retry
 
-@retry(tries=2, delay=5)
-def _get_remote_size_du_core(ssh_client, remote_path):
+@retry(tries=DEFAULT_RETRY_ATTEMPTS, delay=DEFAULT_RETRY_DELAY)
+def _get_remote_size_du_core(ssh_client: paramiko.SSHClient, remote_path: str) -> int:
     """
     Core logic for getting remote size using 'du -sb'. Does not handle concurrency.
     This function is retried on failure.
@@ -197,7 +218,7 @@ def _get_remote_size_du_core(ssh_client, remote_path):
     command = f"du -sb '{escaped_path}'"
 
     try:
-        stdin, stdout, stderr = ssh_client.exec_command(command, timeout=60)
+        stdin, stdout, stderr = ssh_client.exec_command(command, timeout=SSH_EXEC_TIMEOUT)
         exit_status = stdout.channel.recv_exit_status()  # Wait for command to finish
 
         if exit_status != 0:
@@ -216,11 +237,16 @@ def _get_remote_size_du_core(ssh_client, remote_path):
             raise ValueError(f"Could not parse 'du' output. Raw output: '{output}'")
 
     except Exception as e:
-        logging.error(f"An error occurred executing 'du' command for '{remote_path}': {e}")
+        logging.error(f"Cannot access remote file or directory: {remote_path}\n"
+                      f"This could mean:\n"
+                      f" • The path doesn't exist on the remote server\n"
+                      f" • You don't have permission to access it\n"
+                      f" • The SSH connection was interrupted\n"
+                      f"Technical details: {e}")
         # Re-raise to be handled by the retry decorator or the calling function
         raise
 
-def batch_get_remote_sizes(ssh_client, paths, batch_size=10):
+def batch_get_remote_sizes(ssh_client: paramiko.SSHClient, paths: List[str], batch_size: int = BATCH_SIZE) -> Dict[str, int]:
     """
     Get sizes for multiple paths in a single SSH session.
     Uses a single command with multiple du calls.
@@ -239,7 +265,7 @@ def batch_get_remote_sizes(ssh_client, paths, batch_size=10):
         # Join with semicolons
         command = "; ".join(cmd_parts)
         try:
-            stdin, stdout, stderr = ssh_client.exec_command(command, timeout=120)
+            stdin, stdout, stderr = ssh_client.exec_command(command, timeout=BATCH_SSH_EXEC_TIMEOUT)
             exit_status = stdout.channel.recv_exit_status()
             output = stdout.read().decode('utf-8').strip()
             # Parse output
@@ -264,10 +290,6 @@ def batch_get_remote_sizes(ssh_client, paths, batch_size=10):
                     results[path] = 0
     return results
 
-import configparser
-import sys
-from pathlib import Path
-import shutil
 
 class ConfigValidator:
     """Validates configuration file structure and values."""
@@ -285,8 +307,8 @@ class ConfigValidator:
 
     def __init__(self, config: configparser.ConfigParser):
         self.config = config
-        self.errors = []
-        self.warnings = []
+        self.errors: List[str] = []
+        self.warnings: List[str] = []
 
     def validate(self) -> bool:
         """Run all validation checks. Returns True if config is valid."""
@@ -310,13 +332,13 @@ class ConfigValidator:
 
         return True
 
-    def _check_required_sections(self):
+    def _check_required_sections(self) -> None:
         """Ensure required sections exist."""
         for section in self.REQUIRED_SECTIONS:
             if not self.config.has_section(section):
                 self.errors.append(f"Missing required section: [{section}]")
 
-    def _check_required_options(self):
+    def _check_required_options(self) -> None:
         """Ensure required options exist in each section."""
         for section, options in self.REQUIRED_SECTIONS.items():
             if not self.config.has_section(section):
@@ -327,7 +349,7 @@ class ConfigValidator:
                 elif not self.config.get(section, option).strip():
                     self.errors.append(f"Option '{option}' in [{section}] is empty")
 
-    def _check_transfer_mode(self):
+    def _check_transfer_mode(self) -> None:
         """Validate transfer mode and related requirements."""
         if not self.config.has_section('SETTINGS'):
             return
@@ -343,7 +365,7 @@ class ConfigValidator:
         if mode == 'rsync' and not shutil.which('rsync'):
             self.warnings.append("rsync mode selected but 'rsync' command not found in PATH")
 
-    def _check_paths(self):
+    def _check_paths(self) -> None:
         """Validate path configurations."""
         if not self.config.has_section('DESTINATION_PATHS'):
             return
@@ -352,7 +374,7 @@ class ConfigValidator:
         if dest_path and not Path(dest_path).is_absolute():
             self.warnings.append(f"destination_path '{dest_path}' is not an absolute path")
 
-    def _check_numeric_values(self):
+    def _check_numeric_values(self) -> None:
         """Validate numeric configuration values."""
         if not self.config.has_section('SETTINGS'):
             return
@@ -373,7 +395,7 @@ class ConfigValidator:
                 except ValueError:
                     self.errors.append(f"Option '{option}' must be an integer")
 
-    def _check_client_sections_exist(self):
+    def _check_client_sections_exist(self) -> None:
         """Verify that referenced client sections exist."""
         if not self.config.has_section('SETTINGS'):
             return
@@ -389,24 +411,24 @@ class ConfigValidator:
 
 class RateLimitedFile:
     """Wrapper for file objects that limits read/write speed."""
-    def __init__(self, file_obj, max_bytes_per_sec):
+    def __init__(self, file_obj: Any, max_bytes_per_sec: float):
         self.file = file_obj
         self.max_bytes_per_sec = max_bytes_per_sec if max_bytes_per_sec else float('inf')
         self.last_time = time.time()
         self.bytes_since_last = 0
 
-    def read(self, size):
+    def read(self, size: int) -> bytes:
         data = self.file.read(size)
         self._throttle(len(data))
         return data
 
-    def write(self, data):
+    def write(self, data: bytes) -> int:
         bytes_written = self.file.write(data)
         if bytes_written:
             self._throttle(bytes_written)
         return bytes_written
 
-    def _throttle(self, bytes_transferred):
+    def _throttle(self, bytes_transferred: int) -> None:
         if self.max_bytes_per_sec == float('inf'):
             return
 
@@ -423,18 +445,17 @@ class RateLimitedFile:
             self.last_time = time.time()
             self.bytes_since_last = 0
 
-    def __getattr__(self, attr):
+    def __getattr__(self, attr: str) -> Any:
         """Proxy other attributes to the wrapped file object."""
         return getattr(self.file, attr)
 
-import json
 
 class TransferCheckpoint:
-    def __init__(self, checkpoint_file):
-        self.file = Path(checkpoint_file)
+    def __init__(self, checkpoint_file: Path):
+        self.file = checkpoint_file
         self.state = self._load()
 
-    def _load(self):
+    def _load(self) -> Dict[str, List[str]]:
         if self.file.exists():
             try:
                 return json.loads(self.file.read_text())
@@ -443,15 +464,15 @@ class TransferCheckpoint:
                 return {"completed": []}
         return {"completed": []}
 
-    def mark_completed(self, torrent_hash):
+    def mark_completed(self, torrent_hash: str) -> None:
         if torrent_hash not in self.state["completed"]:
             self.state["completed"].append(torrent_hash)
             self._save()
 
-    def is_completed(self, torrent_hash):
+    def is_completed(self, torrent_hash: str) -> bool:
         return torrent_hash in self.state["completed"]
 
-    def _save(self):
+    def _save(self) -> None:
         try:
             self.file.write_text(json.dumps(self.state, indent=2))
         except IOError as e:
