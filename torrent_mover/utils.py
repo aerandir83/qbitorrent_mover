@@ -386,3 +386,43 @@ class ConfigValidator:
 
         if dest_section and not self.config.has_section(dest_section):
             self.errors.append(f"destination_client_section references non-existent section [{dest_section}]")
+
+class RateLimitedFile:
+    """Wrapper for file objects that limits read/write speed."""
+    def __init__(self, file_obj, max_bytes_per_sec):
+        self.file = file_obj
+        self.max_bytes_per_sec = max_bytes_per_sec if max_bytes_per_sec else float('inf')
+        self.last_time = time.time()
+        self.bytes_since_last = 0
+
+    def read(self, size):
+        data = self.file.read(size)
+        self._throttle(len(data))
+        return data
+
+    def write(self, data):
+        bytes_written = self.file.write(data)
+        if bytes_written:
+            self._throttle(bytes_written)
+        return bytes_written
+
+    def _throttle(self, bytes_transferred):
+        if self.max_bytes_per_sec == float('inf'):
+            return
+
+        self.bytes_since_last += bytes_transferred
+        elapsed = time.time() - self.last_time
+
+        if elapsed > 0:
+            required_time = self.bytes_since_last / self.max_bytes_per_sec
+            sleep_time = required_time - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+        if elapsed >= 1.0:
+            self.last_time = time.time()
+            self.bytes_since_last = 0
+
+    def __getattr__(self, attr):
+        """Proxy other attributes to the wrapped file object."""
+        return getattr(self.file, attr)

@@ -97,3 +97,7 @@ local_cache_sftp_upload = False
 # NOTE: The user running the script needs the appropriate permissions to perform 'chown'.
 chown_user =
 chown_group =
+# (Optional) Bandwidth limits for SFTP transfers in megabits per second (Mbps).
+# Set to 0 for unlimited speed.
+sftp_download_limit_mbps = 0
+sftp_upload_limit_mbps = 0
