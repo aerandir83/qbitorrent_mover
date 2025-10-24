@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.6.0"
+__version__ = "1.6.3"
 
 import configparser
 import sys
@@ -827,40 +827,26 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, torrent_hash, u
     raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {max_retries} attempts.")
 
 
-def transfer_content(pool, sftp, remote_path, local_path, torrent_hash, ui, max_concurrent_downloads, dry_run=False):
+def transfer_content(pool, all_files, torrent_hash, ui, max_concurrent_downloads, dry_run=False):
     """
-    Transfers a remote file or directory to a local path, preserving structure.
+    Transfers a list of remote files to their local destination paths.
     """
-    remote_stat = sftp.stat(remote_path)
-    if remote_stat.st_mode & 0o40000:  # S_ISDIR
-        all_files = []
-        _get_all_files_recursive(sftp, remote_path, local_path, all_files)
+    with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as file_executor:
+        futures = [
+            file_executor.submit(_sftp_download_file, pool, remote_f, local_f, torrent_hash, ui, dry_run)
+            for remote_f, local_f in all_files
+        ]
+        for future in as_completed(futures):
+            future.result()
 
-        with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as file_executor:
-            futures = [
-                file_executor.submit(_sftp_download_file, pool, remote_f, local_f, torrent_hash, ui, dry_run)
-                for remote_f, local_f in all_files
-            ]
-            for future in as_completed(futures):
-                future.result()
-
-    else: # It's a single file
-        _sftp_download_file(pool, remote_path, local_path, torrent_hash, ui, dry_run)
 
 def transfer_content_sftp_upload(
-    source_pool, dest_pool, source_sftp, source_path, dest_path, torrent_hash, ui,
+    source_pool, dest_pool, all_files, torrent_hash, ui,
     max_concurrent_downloads, max_concurrent_uploads, total_size, dry_run=False, local_cache_sftp_upload=False
 ):
     """
-    Transfers a remote file or directory from a source SFTP to a destination SFTP server.
+    Transfers a list of files from a source SFTP to a destination SFTP server.
     """
-    source_stat = source_sftp.stat(source_path)
-    all_files = []
-    is_dir = source_stat.st_mode & 0o40000
-    if is_dir:
-        _get_all_files_recursive(source_sftp, source_path, dest_path, all_files)
-    else: # It's a single file
-        all_files.append((source_path, dest_path))
 
     # Memory safety: For very large torrents, force caching to avoid high memory usage
     # from Paramiko's internal buffering during direct SFTP-to-SFTP streaming.
@@ -1373,17 +1359,15 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                 logging.info(f"TRANSFER: Starting SFTP-to-SFTP upload for '{name}'...")
                 dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
                 local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
-                with source_pool.get_connection() as (sftp, ssh):
-                    transfer_content_sftp_upload(
-                        source_pool, dest_pool, sftp, source_content_path, dest_content_path,
-                        hash, ui, max_concurrent_downloads, max_concurrent_uploads, total_size, dry_run,
-                        local_cache_sftp_upload
-                    )
+                transfer_content_sftp_upload(
+                    source_pool, dest_pool, all_files, hash, ui,
+                    max_concurrent_downloads, max_concurrent_uploads, total_size, dry_run,
+                    local_cache_sftp_upload
+                )
                 logging.info(f"TRANSFER: SFTP-to-SFTP upload completed for '{name}'.")
             else: # Default 'sftp' download
                 logging.info(f"TRANSFER: Starting SFTP download for '{name}'...")
-                with source_pool.get_connection() as (sftp, ssh):
-                    transfer_content(source_pool, sftp, source_content_path, dest_content_path, hash, ui, max_concurrent_downloads, dry_run)
+                transfer_content(source_pool, all_files, hash, ui, max_concurrent_downloads, dry_run)
                 logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
 
 
