@@ -3,11 +3,8 @@ from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
 import sys
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from torrent_mover import torrent_mover
-from torrent_mover import utils
+from .. import torrent_mover
+from .. import utils
 
 class TestTrackerRules(unittest.TestCase):
     """Test tracker-based categorization logic."""
