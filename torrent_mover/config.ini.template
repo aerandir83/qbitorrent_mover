@@ -101,3 +101,8 @@ chown_group =
 # Set to 0 for unlimited speed.
 sftp_download_limit_mbps = 0
 sftp_upload_limit_mbps = 0
+# (Optional) The size (in Kilobytes) for SFTP read/write chunks.
+# Larger values (e.g., 256, 512, 1024) may improve transfer speeds
+# on high-latency networks, but can increase memory usage.
+# Default is 64.
+sftp_chunk_size_kb = 64

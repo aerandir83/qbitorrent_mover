@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.7.2"
+__version__ = "1.8.0"
 
 import configparser
 import sys
@@ -42,7 +42,6 @@ MAX_RETRY_ATTEMPTS = 2
 RETRY_DELAY_SECONDS = 5
 DEFAULT_PARALLEL_JOBS = 4
 GB_BYTES = 1024**3
-SFTP_CHUNK_SIZE = 32768
 SSH_TIMEOUT = 10
 
 SSH_CONTROL_PATH: Optional[str] = None
@@ -312,7 +311,7 @@ def _get_all_files_recursive(sftp: paramiko.SFTPClient, remote_path: str, base_d
             continue
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
-def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: str, local_cache_path: Path, torrent_hash: str, ui: UIManager, download_limit_bytes_per_sec: int = 0) -> None:
+def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: str, local_cache_path: Path, torrent_hash: str, ui: UIManager, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
     """
     Downloads a file from SFTP to a local cache path, with resume support and progress reporting.
     """
@@ -346,7 +345,7 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
                 remote_f = RateLimitedFile(remote_f_raw, download_limit_bytes_per_sec)
                 with open(local_cache_path, mode) as local_f:
                     while True:
-                        chunk = remote_f.read(SFTP_CHUNK_SIZE * 2)
+                        chunk = remote_f.read(sftp_chunk_size)
                         if not chunk: break
                         local_f.write(chunk)
                         increment = len(chunk)
@@ -358,7 +357,7 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
         raise
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
-def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path, source_file_path: str, dest_file_path: str, torrent_hash: str, ui: UIManager, upload_limit_bytes_per_sec: int = 0) -> None:
+def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path, source_file_path: str, dest_file_path: str, torrent_hash: str, ui: UIManager, upload_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
     """
     Uploads a file from a local cache path to the destination SFTP server.
     """
@@ -395,7 +394,7 @@ def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path
                 source_f = RateLimitedFile(source_f_raw, upload_limit_bytes_per_sec)
                 with sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f:
                     while True:
-                        chunk = source_f.read(SFTP_CHUNK_SIZE)
+                        chunk = source_f.read(sftp_chunk_size)
                         if not chunk: break
                         dest_f.write(chunk)
                         increment = len(chunk)
@@ -412,7 +411,7 @@ def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path
     finally:
         ui.advance_torrent_file_progress(torrent_hash)
 
-def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPool, source_file_path: str, dest_file_path: str, torrent_hash: str, ui: UIManager, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, upload_limit_bytes_per_sec: int = 0) -> None:
+def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPool, source_file_path: str, dest_file_path: str, torrent_hash: str, ui: UIManager, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, upload_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
     """
     Streams a single file from a source SFTP server to a destination SFTP server with a progress bar.
     Establishes its own SFTP sessions for thread safety. Supports resuming.
@@ -465,7 +464,7 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
                     with dest_sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f_raw:
                         dest_f = RateLimitedFile(dest_f_raw, upload_limit_bytes_per_sec)
                         while True:
-                            chunk = source_f.read(SFTP_CHUNK_SIZE)
+                            chunk = source_f.read(sftp_chunk_size)
                             if not chunk: break
                             dest_f.write(chunk)
                             increment = len(chunk)
@@ -495,7 +494,7 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
         ui.advance_torrent_file_progress(torrent_hash)
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
-def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: str, torrent_hash: str, ui: UIManager, dry_run: bool = False, download_limit_bytes_per_sec: int = 0) -> None:
+def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: str, torrent_hash: str, ui: UIManager, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
     """
     Downloads a single file with a progress bar, with retries. Establishes its own SFTP session
     to ensure thread safety when called from a ThreadPoolExecutor.
@@ -547,7 +546,7 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
                         if local_size > 0:
                             local_f.seek(local_size)
                         while True:
-                            chunk = remote_f.read(SFTP_CHUNK_SIZE)
+                            chunk = remote_f.read(sftp_chunk_size)
                             if not chunk: break
                             local_f.write(chunk)
                             increment = len(chunk)
@@ -673,13 +672,13 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                 raise e
     raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {MAX_RETRY_ATTEMPTS} attempts.")
 
-def transfer_content(pool: SSHConnectionPool, all_files: List[Tuple[str, str]], torrent_hash: str, ui: UIManager, max_concurrent_downloads: int, dry_run: bool = False, download_limit_bytes_per_sec: int = 0) -> None:
+def transfer_content(pool: SSHConnectionPool, all_files: List[Tuple[str, str]], torrent_hash: str, ui: UIManager, max_concurrent_downloads: int, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
     """
     Transfers a list of remote files to their local destination paths.
     """
     with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as file_executor:
         futures = [
-            file_executor.submit(_sftp_download_file, pool, remote_f, local_f, torrent_hash, ui, dry_run, download_limit_bytes_per_sec)
+            file_executor.submit(_sftp_download_file, pool, remote_f, local_f, torrent_hash, ui, dry_run, download_limit_bytes_per_sec, sftp_chunk_size)
             for remote_f, local_f in all_files
         ]
         for future in as_completed(futures):
@@ -688,7 +687,7 @@ def transfer_content(pool: SSHConnectionPool, all_files: List[Tuple[str, str]], 
 def transfer_content_sftp_upload(
     source_pool: SSHConnectionPool, dest_pool: SSHConnectionPool, all_files: List[Tuple[str, str]], torrent_hash: str, ui: UIManager,
     max_concurrent_downloads: int, max_concurrent_uploads: int, total_size: int, dry_run: bool = False, local_cache_sftp_upload: bool = False,
-    download_limit_bytes_per_sec: int = 0, upload_limit_bytes_per_sec: int = 0
+    download_limit_bytes_per_sec: int = 0, upload_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536
 ) -> None:
     """
     Transfers a list of files from a source SFTP to a destination SFTP server.
@@ -713,7 +712,7 @@ def transfer_content_sftp_upload(
                     download_executor.submit(
                         _sftp_download_to_cache, source_pool, source_f,
                         temp_dir / os.path.basename(source_f), torrent_hash, ui,
-                        download_limit_bytes_per_sec
+                        download_limit_bytes_per_sec, sftp_chunk_size
                     ): (source_f, dest_f)
                     for source_f, dest_f in all_files
                 }
@@ -726,7 +725,7 @@ def transfer_content_sftp_upload(
                         upload_future = upload_executor.submit(
                             _sftp_upload_from_cache, dest_pool, local_cache_path,
                             source_f, dest_f, torrent_hash, ui,
-                            upload_limit_bytes_per_sec
+                            upload_limit_bytes_per_sec, sftp_chunk_size
                         )
                         upload_futures.append(upload_future)
                     except Exception as e:
@@ -745,7 +744,7 @@ def transfer_content_sftp_upload(
                 file_executor.submit(
                     _sftp_upload_file, source_pool, dest_pool, source_f, dest_f,
                     torrent_hash, ui, dry_run,
-                    download_limit_bytes_per_sec, upload_limit_bytes_per_sec
+                    download_limit_bytes_per_sec, upload_limit_bytes_per_sec, sftp_chunk_size
                 )
                 for source_f, dest_f in all_files
             ]
@@ -1088,7 +1087,7 @@ def _pre_transfer_setup(torrent: qbittorrentapi.TorrentDictionary, config: confi
         all_files.append((source_content_path, dest_content_path))
     return all_files, source_content_path, dest_content_path, destination_save_path
 
-def _execute_transfer(torrent: qbittorrentapi.TorrentDictionary, total_size: int, config: configparser.ConfigParser, ui: UIManager, ssh_connection_pools: Dict[str, SSHConnectionPool], all_files: List[Tuple[str, str]], source_content_path: str, dest_content_path: str, dry_run: bool) -> None:
+def _execute_transfer(torrent: qbittorrentapi.TorrentDictionary, total_size: int, config: configparser.ConfigParser, ui: UIManager, ssh_connection_pools: Dict[str, SSHConnectionPool], all_files: List[Tuple[str, str]], source_content_path: str, dest_content_path: str, dry_run: bool, sftp_chunk_size: int) -> None:
     """Executes the file transfer based on the configured transfer mode."""
     name = torrent.name
     hash_ = torrent.hash
@@ -1116,12 +1115,12 @@ def _execute_transfer(torrent: qbittorrentapi.TorrentDictionary, total_size: int
                 source_pool, dest_pool, all_files, hash_, ui,
                 max_concurrent_downloads, max_concurrent_uploads, total_size, dry_run,
                 local_cache_sftp_upload,
-                download_limit_bytes, upload_limit_bytes
+                download_limit_bytes, upload_limit_bytes, sftp_chunk_size
             )
             logging.info(f"TRANSFER: SFTP-to-SFTP upload completed for '{name}'.")
         else:
             logging.info(f"TRANSFER: Starting SFTP download for '{name}'...")
-            transfer_content(source_pool, all_files, hash_, ui, max_concurrent_downloads, dry_run, download_limit_bytes)
+            transfer_content(source_pool, all_files, hash_, ui, max_concurrent_downloads, dry_run, download_limit_bytes, sftp_chunk_size)
             logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
 
 def _post_transfer_actions(torrent: qbittorrentapi.TorrentDictionary, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ssh_connection_pools: Dict[str, SSHConnectionPool], dest_content_path: str, destination_save_path: str, dry_run: bool, test_run: bool) -> bool:
@@ -1177,7 +1176,7 @@ def _post_transfer_actions(torrent: qbittorrentapi.TorrentDictionary, source_qbi
         logging.info(f"[DRY RUN] Would delete torrent and data from Source: {name}")
     return True
 
-def transfer_torrent(torrent: qbittorrentapi.TorrentDictionary, total_size: int, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, ssh_connection_pools: Dict[str, SSHConnectionPool], dry_run: bool = False, test_run: bool = False) -> Tuple[bool, float]:
+def transfer_torrent(torrent: qbittorrentapi.TorrentDictionary, total_size: int, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, ssh_connection_pools: Dict[str, SSHConnectionPool], dry_run: bool = False, test_run: bool = False, sftp_chunk_size: int = 65536) -> Tuple[bool, float]:
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
@@ -1202,7 +1201,7 @@ def transfer_torrent(torrent: qbittorrentapi.TorrentDictionary, total_size: int,
             return True, duration
         _execute_transfer(
             torrent, total_size, config, ui, ssh_connection_pools,
-            all_files, source_content_path, dest_content_path, dry_run
+            all_files, source_content_path, dest_content_path, dry_run, sftp_chunk_size
         )
         if _post_transfer_actions(
             torrent, source_qbit, destination_qbit, config, tracker_rules,
@@ -1493,6 +1492,7 @@ def main() -> int:
         validator = ConfigValidator(config)
         if not validator.validate():
             return 1
+        sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
         server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
         for section_name in server_sections:
             max_sessions = config[section_name].getint('max_concurrent_ssh_sessions', 8)
@@ -1675,7 +1675,7 @@ def main() -> int:
                     transfer_futures = {
                         executor.submit(
                             transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
-                            ui, ssh_connection_pools, args.dry_run, args.test_run
+                            ui, ssh_connection_pools, args.dry_run, args.test_run, sftp_chunk_size
                         ): (t, size) for t, size in analyzed_torrents
                     }
                     for future in as_completed(transfer_futures):

@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.7.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **1.8.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 1.7.2 (Latest)
+### Version 1.8.0 (Latest)
+*   **Feat**: The SFTP read/write chunk size is now configurable in `config.ini` via the `sftp_chunk_size_kb` setting. This allows users to tune the chunk size for their network conditions, which can lead to significant performance improvements, especially on high-latency networks. The default is `64` KB.
+
+### Version 1.7.2
 *   **Refactor**: The UI version is now set dynamically from the canonical `__version__` variable in `torrent_mover.py`, eliminating the hardcoded version in `ui.py`.
 *   **UI Fix**: Corrected a crash caused by an improper `rich` library implementation for fixed-width columns. The per-file progress bars are now correctly aligned and no longer cause the application to hang.
 *   **UI Enhancement**: The per-file progress display now includes the completed size vs. the total size (e.g., `50.1 MB / 100.2 MB`).
