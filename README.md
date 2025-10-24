@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.7.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **1.7.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 1.7.2 (Latest)
+### Version 1.7.3 (Latest)
+*   **Refactor**: Improved exception handling for network and file-related errors to provide clearer, more actionable feedback to the user. This helps in diagnosing issues with authentication, network stability, and file permissions.
+
+### Version 1.7.2
 *   **Refactor**: The UI version is now set dynamically from the canonical `__version__` variable in `torrent_mover.py`, eliminating the hardcoded version in `ui.py`.
 *   **UI Fix**: Corrected a crash caused by an improper `rich` library implementation for fixed-width columns. The per-file progress bars are now correctly aligned and no longer cause the application to hang.
 *   **UI Enhancement**: The per-file progress display now includes the completed size vs. the total size (e.g., `50.1 MB / 100.2 MB`).

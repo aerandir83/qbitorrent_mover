@@ -15,6 +15,7 @@ import configparser
 import sys
 import shutil
 import json
+import socket
 
 # Constants
 DEFAULT_SSH_TIMEOUT = 30
@@ -58,6 +59,14 @@ class SSHConnectionPool:
                 transport.set_keepalive(DEFAULT_KEEPALIVE_INTERVAL)
             sftp = ssh_client.open_sftp()
             return sftp, ssh_client
+        except paramiko.ssh_exception.AuthenticationException as e:
+            logging.error(f"Authentication failed for user '{self.username}' at {self.host}:{self.port}.")
+            logging.error("Please check your username and password in config.ini.")
+            raise e
+        except (socket.timeout, TimeoutError) as e:
+            logging.error(f"Connection timed out while trying to connect to {self.host}:{self.port}.")
+            logging.error("Please check network/firewall settings and that the SSH port is correct.")
+            raise e
         except Exception as e:
             logging.error(f"Failed to create SSH connection to {self.host}:{self.port}: {e}")
             raise
