@@ -17,6 +17,7 @@ from rich.table import Table
 from rich.text import Text
 import threading
 from collections import OrderedDict
+from rich.table import Table
 
 
 class TorrentTableRenderable:
@@ -308,3 +309,27 @@ class UIManager:
             main_grid.add_row(Panel(torrent_grid, border_style="cyan" if data.get("progress_obj") else "dim"))
 
         self.torrents_table_panel.renderable = main_grid
+
+    def display_stats(self, stats):
+        """Displays the final transfer statistics."""
+        table = Table(title="[bold]Transfer Statistics[/bold]", show_header=True, header_style="bold magenta")
+        table.add_column("Metric", style="dim")
+        table.add_column("Value", justify="right")
+
+        table.add_row("Total Bytes Transferred", f"{stats['total_bytes_transferred'] / (1024**3):.2f} GB")
+        table.add_row("Disk Space Saved on Source", f"{stats['total_bytes_transferred'] / (1024**3):.2f} GB")
+        table.add_row("Successful Transfers", str(stats['successful_transfers']))
+        table.add_row("Failed Transfers", str(stats['failed_transfers']))
+        table.add_row("Total Duration", f"{stats['duration']:.2f} seconds")
+
+        if stats["total_transfer_time"] > 0:
+            average_speed = stats["total_bytes_transferred"] / stats["total_transfer_time"]
+            table.add_row("Average Transfer Speed", f"{average_speed / (1024*1024):.2f} MB/s")
+
+        if stats["torrent_transfer_times"]:
+            min_time = min(stats["torrent_transfer_times"])
+            max_time = max(stats["torrent_transfer_times"])
+            avg_time = sum(stats["torrent_transfer_times"]) / len(stats["torrent_transfer_times"])
+            table.add_row("Torrent Transfer Time (min/avg/max)", f"{min_time:.2f}s / {avg_time:.2f}s / {max_time:.2f}s")
+
+        self.console.print(table)
