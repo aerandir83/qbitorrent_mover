@@ -21,7 +21,7 @@ import re
 import threading
 from collections import defaultdict
 import errno
-from .utils import retry, SSHConnectionPool
+from .utils import retry, SSHConnectionPool, LockFile
 import tempfile
 import getpass
 import configupdater
@@ -1684,20 +1684,14 @@ def test_path_permissions(path_to_test, remote_config=None, ssh_connection_pools
 def main():
     """Main entry point for the script."""
     script_dir = Path(__file__).resolve().parent
-    lock_file_path = script_dir / 'torrent_mover.lock'
+    lock = None  # Initialize lock variable
 
-    if lock_file_path.exists():
-        try:
-            with open(lock_file_path, 'r') as f:
-                pid = int(f.read().strip())
-            if pid_exists(pid):
-                # Use a basic print here since logging isn't set up yet.
-                print(f"ERROR: Script is already running with PID {pid}. Aborting.", file=sys.stderr)
-                sys.exit(1)
-            else:
-                lock_file_path.unlink()
-        except (IOError, ValueError):
-            lock_file_path.unlink()
+    try:
+        lock = LockFile(script_dir / 'torrent_mover.lock')
+        lock.acquire()
+    except RuntimeError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
     default_config_path = script_dir / 'config.ini'
     parser = argparse.ArgumentParser(description="A script to move qBittorrent torrents and data between servers.", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -1810,9 +1804,6 @@ def main():
             return 0
 
         # --- Main execution block ---
-        with open(lock_file_path, 'w') as f:
-            f.write(str(os.getpid()))
-
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         if transfer_mode == 'rsync':
             check_sshpass_installed()
@@ -1952,15 +1943,7 @@ def main():
             for pool in ssh_connection_pools.values():
                 pool.close_all()
             logging.info("All SSH connections have been closed.")
-        if lock_file_path.exists():
-            try:
-                with open(lock_file_path, 'r') as f:
-                    pid = int(f.read().strip())
-                if pid == os.getpid():
-                    lock_file_path.unlink()
-                    logging.info("Lock file removed.")
-            except (IOError, ValueError) as e:
-                logging.error(f"Could not read or verify lock file before removing: {e}")
+        # The LockFile's atexit handler will manage cleanup.
         logging.info("--- Torrent Mover script finished ---")
     return 0
 if __name__ == "__main__":
