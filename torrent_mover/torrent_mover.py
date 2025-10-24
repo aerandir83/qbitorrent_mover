@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import shutil
 import subprocess
 import re
+import shlex
 import threading
 from collections import defaultdict
 import errno
@@ -307,8 +308,7 @@ def is_remote_dir(ssh_client, path):
     """Checks if a remote path is a directory using 'test -d'."""
     try:
         # Escape single quotes to prevent command injection
-        escaped_path = path.replace("'", "'\\''")
-        command = f"test -d '{escaped_path}'"
+        command = f"test -d {shlex.quote(path)}"
         stdin, stdout, stderr = ssh_client.exec_command(command, timeout=30)
         exit_status = stdout.channel.recv_exit_status()
         return exit_status == 0
@@ -1065,8 +1065,7 @@ def destination_health_check(config, total_transfer_size_bytes, ssh_connection_p
     try:
         if remote_config:
             with dest_pool.get_connection() as (sftp, ssh):
-                escaped_path = dest_path.replace("'", "'\\''")
-                command = f"df -kP '{escaped_path}'"
+                command = f"df -kP {shlex.quote(dest_path)}"
                 stdin, stdout, stderr = ssh.exec_command(command, timeout=30)
                 exit_status = stdout.channel.recv_exit_status()
 
@@ -1217,8 +1216,7 @@ def change_ownership(path_to_change, user, group, remote_config=None, dry_run=Fa
         pool = ssh_connection_pools.get('DESTINATION_SERVER')
         try:
             with pool.get_connection() as (sftp, ssh):
-                escaped_path = path_to_change.replace("'", "'\\''")
-                remote_command = f"chown -R -- '{owner_spec}' '{escaped_path}'"
+                remote_command = f"chown -R -- {shlex.quote(owner_spec)} {shlex.quote(path_to_change)}"
                 logging.debug(f"Executing remote command: {remote_command}")
                 stdin, stdout, stderr = ssh.exec_command(remote_command, timeout=120)
                 exit_status = stdout.channel.recv_exit_status()
