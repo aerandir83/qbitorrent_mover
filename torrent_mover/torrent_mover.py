@@ -22,7 +22,7 @@ import shlex
 import threading
 from collections import defaultdict
 import errno
-from .utils import ConfigValidator, retry, SSHConnectionPool, LockFile, _get_remote_size_du_core, batch_get_remote_sizes, RateLimitedFile
+from .utils import ConfigValidator, retry, SSHConnectionPool, LockFile, _get_remote_size_du_core, batch_get_remote_sizes, RateLimitedFile, TransferCheckpoint
 import tempfile
 import getpass
 import configupdater
@@ -1373,6 +1373,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
     """
     name, hash = torrent.name, torrent.hash
     success = False
+    start_time = time.time()
     try:
         # --- 1. Pre-transfer setup ---
         all_files, source_content_path, dest_content_path, destination_save_path = _pre_transfer_setup(
@@ -1406,14 +1407,17 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         ):
             logging.info(f"SUCCESS: Successfully processed torrent: {name}")
             success = True
-            return True
+            duration = time.time() - start_time
+            return True, duration
         else:
-            return False
+            duration = time.time() - start_time
+            return False, duration
 
     except Exception as e:
         logging.error(f"An error occurred while processing torrent {name}: {e}", exc_info=True)
         success = False
-        return False
+        duration = time.time() - start_time
+        return False, duration
     finally:
         ui.stop_torrent_transfer(hash, success=success)
 
@@ -1687,6 +1691,7 @@ def main():
     config_template_path = script_dir / 'config.ini.template'
     update_config(args.config, str(config_template_path))
 
+    checkpoint = TransferCheckpoint(script_dir / 'transfer_checkpoint.json')
     ssh_connection_pools = {}
     try:
         config = load_config(args.config)
@@ -1814,6 +1819,13 @@ def main():
                 if torrent.hash not in eligible_hashes:
                     eligible_torrents.append(torrent)
 
+        if checkpoint.state["completed"]:
+            original_count = len(eligible_torrents)
+            eligible_torrents = [t for t in eligible_torrents if not checkpoint.is_completed(t.hash)]
+            skipped_count = original_count - len(eligible_torrents)
+            if skipped_count > 0:
+                logging.info(f"Skipped {skipped_count} torrent(s) that were already completed in a previous run.")
+
         if not eligible_torrents:
             logging.info("No torrents to move at this time.")
             return 0
@@ -1821,6 +1833,14 @@ def main():
         # This is the main UI-driven execution block.
         total_count = len(eligible_torrents)
         processed_count = 0
+        stats = {
+            "total_bytes_transferred": 0,
+            "successful_transfers": 0,
+            "failed_transfers": 0,
+            "start_time": time.time(),
+            "torrent_transfer_times": [],
+            "total_transfer_time": 0
+        }
         with UIManager() as ui:
             ui.set_analysis_total(total_count)
             ui.update_header(f"Found {total_count} torrents to process. Analyzing...")
@@ -1905,17 +1925,26 @@ def main():
                         executor.submit(
                             transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
                             ui, ssh_connection_pools, args.dry_run, args.test_run
-                        ): t for t, size in analyzed_torrents
+                        ): (t, size) for t, size in analyzed_torrents
                     }
 
                     for future in as_completed(transfer_futures):
-                        torrent = transfer_futures[future]
+                        torrent, size = transfer_futures[future]
                         try:
-                            if future.result():
+                            success, duration = future.result()
+                            if success:
                                 processed_count += 1
+                                checkpoint.mark_completed(torrent.hash)
+                                stats["successful_transfers"] += 1
+                                stats["total_bytes_transferred"] += size
+                                stats["torrent_transfer_times"].append(duration)
+                                stats["total_transfer_time"] += duration
+                            else:
+                                stats["failed_transfers"] += 1
                         except Exception as e:
                             logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
                             ui.update_torrent_status_text(torrent.hash, "Failed", color="bold red")
+                            stats["failed_transfers"] += 1
                         finally:
                             ui.advance_transfer_progress()
             except KeyboardInterrupt:
@@ -1923,6 +1952,9 @@ def main():
                 ui.update_footer("Shutdown requested.")
                 raise
 
+            stats["end_time"] = time.time()
+            stats["duration"] = stats["end_time"] - stats["start_time"]
+            ui.display_stats(stats)
             ui.update_header(f"Processing complete. Moved {processed_count}/{total_count} torrent(s).")
             ui.update_footer("All tasks finished.")
             logging.info(f"Processing complete. Successfully moved {processed_count}/{total_count} torrent(s).")

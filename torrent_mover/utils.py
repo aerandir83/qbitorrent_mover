@@ -426,3 +426,33 @@ class RateLimitedFile:
     def __getattr__(self, attr):
         """Proxy other attributes to the wrapped file object."""
         return getattr(self.file, attr)
+
+import json
+
+class TransferCheckpoint:
+    def __init__(self, checkpoint_file):
+        self.file = Path(checkpoint_file)
+        self.state = self._load()
+
+    def _load(self):
+        if self.file.exists():
+            try:
+                return json.loads(self.file.read_text())
+            except json.JSONDecodeError:
+                logging.warning(f"Could not decode checkpoint file '{self.file}'. Starting fresh.")
+                return {"completed": []}
+        return {"completed": []}
+
+    def mark_completed(self, torrent_hash):
+        if torrent_hash not in self.state["completed"]:
+            self.state["completed"].append(torrent_hash)
+            self._save()
+
+    def is_completed(self, torrent_hash):
+        return torrent_hash in self.state["completed"]
+
+    def _save(self):
+        try:
+            self.file.write_text(json.dumps(self.state, indent=2))
+        except IOError as e:
+            logging.error(f"Failed to save checkpoint file '{self.file}': {e}")
