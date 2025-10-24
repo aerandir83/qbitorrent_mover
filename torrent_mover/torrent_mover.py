@@ -22,7 +22,7 @@ import shlex
 import threading
 from collections import defaultdict
 import errno
-from .utils import ConfigValidator, retry, SSHConnectionPool, LockFile, _get_remote_size_du_core, batch_get_remote_sizes
+from .utils import ConfigValidator, retry, SSHConnectionPool, LockFile, _get_remote_size_du_core, batch_get_remote_sizes, RateLimitedFile
 import tempfile
 import getpass
 import configupdater
@@ -349,7 +349,7 @@ def _get_all_files_recursive(sftp, remote_path, base_dest_path, file_list):
             continue
 
 @retry(tries=2, delay=5)
-def _sftp_download_to_cache(source_pool, source_file_path, local_cache_path, torrent_hash, ui):
+def _sftp_download_to_cache(source_pool, source_file_path, local_cache_path, torrent_hash, ui, download_limit_bytes_per_sec=0):
     """
     Downloads a file from SFTP to a local cache path, with resume support and progress reporting.
     """
@@ -382,9 +382,10 @@ def _sftp_download_to_cache(source_pool, source_file_path, local_cache_path, tor
                 logging.info(f"Downloading to cache: {os.path.basename(source_file_path)}")
                 mode = 'wb'
 
-            with sftp.open(source_file_path, 'rb') as remote_f:
-                remote_f.seek(local_size)
-                remote_f.prefetch()
+            with sftp.open(source_file_path, 'rb') as remote_f_raw:
+                remote_f_raw.seek(local_size)
+                remote_f_raw.prefetch()
+                remote_f = RateLimitedFile(remote_f_raw, download_limit_bytes_per_sec)
                 with open(local_cache_path, mode) as local_f:
                     while True:
                         chunk = remote_f.read(65536)
@@ -400,7 +401,7 @@ def _sftp_download_to_cache(source_pool, source_file_path, local_cache_path, tor
         raise
 
 @retry(tries=2, delay=5)
-def _sftp_upload_from_cache(dest_pool, local_cache_path, source_file_path, dest_file_path, torrent_hash, ui):
+def _sftp_upload_from_cache(dest_pool, local_cache_path, source_file_path, dest_file_path, torrent_hash, ui, upload_limit_bytes_per_sec=0):
     """
     Uploads a file from a local cache path to the destination SFTP server.
     """
@@ -440,8 +441,9 @@ def _sftp_upload_from_cache(dest_pool, local_cache_path, source_file_path, dest_
             dest_dir = os.path.dirname(dest_file_path)
             sftp_mkdir_p(sftp, dest_dir)
 
-            with open(local_cache_path, 'rb') as source_f:
-                source_f.seek(dest_size)
+            with open(local_cache_path, 'rb') as source_f_raw:
+                source_f_raw.seek(dest_size)
+                source_f = RateLimitedFile(source_f_raw, upload_limit_bytes_per_sec)
                 with sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f:
                     while True:
                         chunk = source_f.read(32768)
@@ -464,7 +466,7 @@ def _sftp_upload_from_cache(dest_pool, local_cache_path, source_file_path, dest_
     finally:
         ui.advance_torrent_file_progress(torrent_hash)
 
-def _sftp_upload_file(source_pool, dest_pool, source_file_path, dest_file_path, torrent_hash, ui, dry_run=False):
+def _sftp_upload_file(source_pool, dest_pool, source_file_path, dest_file_path, torrent_hash, ui, dry_run=False, download_limit_bytes_per_sec=0, upload_limit_bytes_per_sec=0):
     """
     Streams a single file from a source SFTP server to a destination SFTP server with a progress bar.
     Establishes its own SFTP sessions for thread safety. Supports resuming.
@@ -519,11 +521,13 @@ def _sftp_upload_file(source_pool, dest_pool, source_file_path, dest_file_path, 
         sftp_mkdir_p(dest_sftp, dest_dir)
 
         try:
-            with source_sftp.open(source_file_path, 'rb') as source_f:
-                source_f.seek(dest_size)
-                source_f.prefetch()
+            with source_sftp.open(source_file_path, 'rb') as source_f_raw:
+                source_f_raw.seek(dest_size)
+                source_f_raw.prefetch()
+                source_f = RateLimitedFile(source_f_raw, download_limit_bytes_per_sec)
                 # Open destination file in append mode if resuming
-                with dest_sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f:
+                with dest_sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f_raw:
+                    dest_f = RateLimitedFile(dest_f_raw, upload_limit_bytes_per_sec)
                     while True:
                         chunk = source_f.read(32768)
                         if not chunk: break
@@ -558,7 +562,7 @@ def _sftp_upload_file(source_pool, dest_pool, source_file_path, dest_file_path, 
 
 
 @retry(tries=2, delay=5)
-def _sftp_download_file(pool, remote_file, local_file, torrent_hash, ui, dry_run=False):
+def _sftp_download_file(pool, remote_file, local_file, torrent_hash, ui, dry_run=False, download_limit_bytes_per_sec=0):
     """
     Downloads a single file with a progress bar, with retries. Establishes its own SFTP session
     to ensure thread safety when called from a ThreadPoolExecutor.
@@ -611,9 +615,10 @@ def _sftp_download_file(pool, remote_file, local_file, torrent_hash, ui, dry_run
         try:
             # Manual download loop to support resuming
             mode = 'r+b' if local_size > 0 else 'wb'
-            with sftp.open(remote_file, 'rb') as remote_f:
-                remote_f.seek(local_size)
-                remote_f.prefetch()  # Helps with performance
+            with sftp.open(remote_file, 'rb') as remote_f_raw:
+                remote_f_raw.seek(local_size)
+                remote_f_raw.prefetch()  # Helps with performance
+                remote_f = RateLimitedFile(remote_f_raw, download_limit_bytes_per_sec)
                 with open(local_path, mode) as local_f:
                     if local_size > 0:
                         local_f.seek(local_size)
@@ -792,13 +797,13 @@ def transfer_content_rsync(sftp_config, remote_path, local_path, torrent_hash, u
     raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {max_retries} attempts.")
 
 
-def transfer_content(pool, all_files, torrent_hash, ui, max_concurrent_downloads, dry_run=False):
+def transfer_content(pool, all_files, torrent_hash, ui, max_concurrent_downloads, dry_run=False, download_limit_bytes_per_sec=0):
     """
     Transfers a list of remote files to their local destination paths.
     """
     with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as file_executor:
         futures = [
-            file_executor.submit(_sftp_download_file, pool, remote_f, local_f, torrent_hash, ui, dry_run)
+            file_executor.submit(_sftp_download_file, pool, remote_f, local_f, torrent_hash, ui, dry_run, download_limit_bytes_per_sec)
             for remote_f, local_f in all_files
         ]
         for future in as_completed(futures):
@@ -807,7 +812,8 @@ def transfer_content(pool, all_files, torrent_hash, ui, max_concurrent_downloads
 
 def transfer_content_sftp_upload(
     source_pool, dest_pool, all_files, torrent_hash, ui,
-    max_concurrent_downloads, max_concurrent_uploads, total_size, dry_run=False, local_cache_sftp_upload=False
+    max_concurrent_downloads, max_concurrent_uploads, total_size, dry_run=False, local_cache_sftp_upload=False,
+    download_limit_bytes_per_sec=0, upload_limit_bytes_per_sec=0
 ):
     """
     Transfers a list of files from a source SFTP to a destination SFTP server.
@@ -838,7 +844,8 @@ def transfer_content_sftp_upload(
                 download_futures = {
                     download_executor.submit(
                         _sftp_download_to_cache, source_pool, source_f,
-                        temp_dir / os.path.basename(source_f), torrent_hash, ui
+                        temp_dir / os.path.basename(source_f), torrent_hash, ui,
+                        download_limit_bytes_per_sec
                     ): (source_f, dest_f)
                     for source_f, dest_f in all_files
                 }
@@ -851,7 +858,8 @@ def transfer_content_sftp_upload(
                         local_cache_path = temp_dir / os.path.basename(source_f)
                         upload_future = upload_executor.submit(
                             _sftp_upload_from_cache, dest_pool, local_cache_path,
-                            source_f, dest_f, torrent_hash, ui
+                            source_f, dest_f, torrent_hash, ui,
+                            upload_limit_bytes_per_sec
                         )
                         upload_futures.append(upload_future)
                     except Exception as e:
@@ -874,7 +882,8 @@ def transfer_content_sftp_upload(
             futures = [
                 file_executor.submit(
                     _sftp_upload_file, source_pool, dest_pool, source_f, dest_f,
-                    torrent_hash, ui, dry_run
+                    torrent_hash, ui, dry_run,
+                    download_limit_bytes_per_sec, upload_limit_bytes_per_sec
                 )
                 for source_f, dest_f in all_files
             ]
@@ -1268,6 +1277,10 @@ def _execute_transfer(torrent, total_size, config, ui, ssh_connection_pools, all
     else:
         max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)
         max_concurrent_uploads = config['SETTINGS'].getint('max_concurrent_uploads', 4)
+        sftp_download_limit_mbps = config['SETTINGS'].getfloat('sftp_download_limit_mbps', 0)
+        sftp_upload_limit_mbps = config['SETTINGS'].getfloat('sftp_upload_limit_mbps', 0)
+        download_limit_bytes = int(sftp_download_limit_mbps * 1024 * 1024 / 8)
+        upload_limit_bytes = int(sftp_upload_limit_mbps * 1024 * 1024 / 8)
         source_pool = ssh_connection_pools.get('SOURCE_SERVER')
 
         if transfer_mode == 'sftp_upload':
@@ -1277,12 +1290,13 @@ def _execute_transfer(torrent, total_size, config, ui, ssh_connection_pools, all
             transfer_content_sftp_upload(
                 source_pool, dest_pool, all_files, hash, ui,
                 max_concurrent_downloads, max_concurrent_uploads, total_size, dry_run,
-                local_cache_sftp_upload
+                local_cache_sftp_upload,
+                download_limit_bytes, upload_limit_bytes
             )
             logging.info(f"TRANSFER: SFTP-to-SFTP upload completed for '{name}'.")
         else: # Default 'sftp' download
             logging.info(f"TRANSFER: Starting SFTP download for '{name}'...")
-            transfer_content(source_pool, all_files, hash, ui, max_concurrent_downloads, dry_run)
+            transfer_content(source_pool, all_files, hash, ui, max_concurrent_downloads, dry_run, download_limit_bytes)
             logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
 
 
