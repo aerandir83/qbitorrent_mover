@@ -10,11 +10,17 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.7.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **1.8.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 1.7.0 (Latest)
+### Version 1.8.0 (Latest)
+*   **UI Feature**: Redesigned the progress bars to show completed/total size (e.g., `1.2 GB / 16.3 GB`) for better clarity.
+*   **UI Fix**: Corrected the alignment of individual file progress bars, creating a cleaner, more stable layout.
+*   **UI Feature**: Added transfer speed and ETA to the per-file progress display.
+*   **UI Enhancement**: The UI now dynamically displays the script's version number in the header.
+
+### Version 1.7.0
 *   **Security**: Applied `shlex.quote()` to all shell command constructions to prevent command injection vulnerabilities.
 *   **Enhancement**: The `--version` output now includes the path to the configuration file being used.
 *   **Feature**: Added a `--check-config` flag to validate the configuration file without running a full transfer.

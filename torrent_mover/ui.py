@@ -13,6 +13,7 @@ from rich.progress import (
     TotalFileSizeColumn,
     MofNCompleteColumn,
     TaskID,
+    FileSizeColumn,
 )
 from rich.table import Table
 from rich.text import Text
@@ -63,14 +64,14 @@ class TorrentTableRenderable:
 class UIManager:
     """A class to manage the Rich UI for the torrent mover script."""
 
-    def __init__(self) -> None:
+    def __init__(self, version: str = "") -> None:
         self.console = Console()
         self._lock = threading.RLock()
         self._live: Optional[Live] = None
         self._torrents_data: OrderedDictType[str, Dict[str, Any]] = OrderedDict()
 
         self.header_text = Text("Initializing...", justify="center")
-        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.7.0[/bold magenta]", border_style="magenta")
+        self.header_panel = Panel(self.header_text, title=f"[bold magenta]Torrent Mover v{version}[/bold magenta]", border_style="magenta")
 
         self.analysis_progress = Progress(TextColumn("[cyan]Analyzed"), BarColumn(), MofNCompleteColumn())
         self.analysis_task: TaskID = self.analysis_progress.add_task("Torrents", total=0, visible=False)
@@ -78,7 +79,7 @@ class UIManager:
         self.transfer_progress = Progress(TextColumn("[blue]Completed"), BarColumn(), MofNCompleteColumn())
         self.transfer_task: TaskID = self.transfer_progress.add_task("Torrents", total=0, visible=False)
 
-        self.overall_progress = Progress(TextColumn("[green]Overall"), BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), TotalFileSizeColumn(), TransferSpeedColumn(), TimeRemainingColumn())
+        self.overall_progress = Progress(TextColumn("[green]Overall"), BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), FileSizeColumn(), TextColumn("/"), TotalFileSizeColumn(), TransferSpeedColumn(), TimeRemainingColumn())
         self.overall_task: TaskID = self.overall_progress.add_task("Total", total=0, visible=False)
 
         run_progress_group = Group(self.analysis_progress, self.transfer_progress, self.overall_progress)
@@ -168,7 +169,7 @@ class UIManager:
                 return
             byte_progress = Progress(
                 TextColumn("[bold blue]Bytes[/bold blue]"), BarColumn(),
-                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), "•", TotalFileSizeColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), "•", FileSizeColumn(), TextColumn("/"), TotalFileSizeColumn(),
             )
             byte_task = byte_progress.add_task("Bytes", total=total_size * transfer_multiplier)
             file_progress = Progress(
@@ -204,8 +205,15 @@ class UIManager:
             if not data or file_path not in data["files"]:
                 return
             progress = Progress(
-                TextColumn("[blue]{task.description}[/blue]"), BarColumn(),
-                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), "•", TransferSpeedColumn(),
+                TextColumn("{task.description}", style="blue", justify="right", width=12),  # Status (e.g., "Downloading")
+                BarColumn(bar_width=30),                                   # Fixed-width bar
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%", justify="left", width=5),
+                "•",
+                TransferSpeedColumn(justify="left", width=10),             # Speed
+                "•",
+                FileSizeColumn(justify="right", width=10),                 # Completed Size
+                TextColumn("/", justify="center", width=1),
+                TotalFileSizeColumn(justify="left", width=10)                  # Total Size
             )
             task_id = progress.add_task("Starting...", total=file_size)
             data["files"][file_path] = {
