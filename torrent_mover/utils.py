@@ -1,11 +1,11 @@
 import time
 import logging
 from functools import wraps
-import paramiko
+import asyncio
+import asyncssh
 import logging
 import threading
-from queue import Queue, Empty
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Optional, Dict, List, Tuple, Any, Callable
 from pathlib import Path
 import os
@@ -28,107 +28,84 @@ BATCH_SSH_EXEC_TIMEOUT = 120
 BATCH_SIZE = 10
 
 
-class SSHConnectionPool:
-    """Thread-safe SSH connection pool to reuse connections."""
+class AsyncSSHConnectionPool:
+    """Async pool for asyncssh connections."""
 
-    def __init__(self, host: str, port: int, username: str, password: str, max_size: int = DEFAULT_SSH_POOL_SIZE, timeout: int = DEFAULT_SSH_TIMEOUT):
+    def __init__(self, host: str, port: int, username: str, password: str, max_size: int = DEFAULT_SSH_POOL_SIZE):
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.max_size = max_size
-        self.timeout = timeout
-        self._pool: Queue[Tuple[paramiko.SFTPClient, paramiko.SSHClient]] = Queue(maxsize=max_size)
-        self._lock = threading.Lock()
+        self._pool: asyncio.Queue[asyncssh.SSHClientConnection] = asyncio.Queue(maxsize=max_size)
+        self._lock = asyncio.Lock()
         self._created = 0
 
-    def _create_connection(self) -> Tuple[paramiko.SFTPClient, paramiko.SSHClient]:
-        """Create a new SSH client and SFTP session."""
+    async def _create_connection(self) -> asyncssh.SSHClientConnection:
+        """Create a new asyncssh connection."""
         try:
-            ssh_client = paramiko.SSHClient()
-            ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh_client.connect(
-                hostname=self.host,
-                port=self.port,
-                username=self.username,
-                password=self.password,
-                timeout=self.timeout
+            # The 'client_keys' option is set to None to disable public key authentication,
+            # forcing password authentication which is what this script expects.
+            # 'known_hosts=None' disables host key verification.
+            conn = await asyncio.wait_for(
+                asyncssh.connect(
+                    self.host, self.port,
+                    username=self.username,
+                    password=self.password,
+                    client_keys=None,
+                    known_hosts=None
+                ),
+                timeout=DEFAULT_SSH_TIMEOUT
             )
-            transport = ssh_client.get_transport()
-            if transport:
-                transport.set_keepalive(DEFAULT_KEEPALIVE_INTERVAL)
-            sftp = ssh_client.open_sftp()
-            return sftp, ssh_client
-        except paramiko.ssh_exception.AuthenticationException as e:
+            return conn
+        except asyncssh.PermissionDenied as e:
             logging.error(f"Authentication failed for user '{self.username}' at {self.host}:{self.port}.")
             logging.error("Please check your username and password in config.ini.")
             raise e
-        except (socket.timeout, TimeoutError) as e:
-            logging.error(f"Connection timed out while trying to connect to {self.host}:{self.port}.")
+        except (OSError, asyncio.TimeoutError) as e:
+            logging.error(f"Connection timed out or failed while trying to connect to {self.host}:{self.port}.")
             logging.error("Please check network/firewall settings and that the SSH port is correct.")
             raise e
         except Exception as e:
-            logging.error(f"Failed to create SSH connection to {self.host}:{self.port}: {e}")
+            logging.error(f"Failed to create async SSH connection to {self.host}:{self.port}: {e}")
             raise
 
-    @contextmanager
-    def get_connection(self) -> Tuple[paramiko.SFTPClient, paramiko.SSHClient]:
-        """Context manager to get a connection from the pool."""
-        sftp, ssh = None, None
+    @asynccontextmanager
+    async def get_connection(self) -> asyncssh.SSHClientConnection:
+        """Async context manager to get a connection from the pool."""
+        conn = None
         try:
-            # Try to get existing connection
             try:
-                sftp, ssh = self._pool.get_nowait()
-                # Verify connection is still alive
-                transport = ssh.get_transport()
-                if not transport or not transport.is_active():
-                    # Connection is dead, close it and decrement the counter
-                    with self._lock:
-                        self._created -= 1
-                    try:
-                        ssh.close()
-                    except:
-                        pass
-                    raise AttributeError("Connection is dead")
-            except (Empty, AttributeError):
-                # Create new connection if pool is empty or connection is dead
-                with self._lock:
+                conn = self._pool.get_nowait()
+                if conn.is_closing():
+                    raise AttributeError("Connection is closing")
+            except (asyncio.QueueEmpty, AttributeError):
+                async with self._lock:
                     if self._created < self.max_size:
-                        sftp, ssh = self._create_connection()
+                        conn = await self._create_connection()
                         self._created += 1
-                        logging.debug(f"Created new connection ({self._created}/{self.max_size})")
+                        logging.debug(f"Created new async connection ({self._created}/{self.max_size})")
                     else:
-                        # Wait for a connection to become available
-                        sftp, ssh = self._pool.get(timeout=self.timeout)
+                        conn = await self._pool.get()
 
-            yield sftp, ssh
-
-        except Exception as e:
-            # Don't return broken connection to pool
-            if ssh:
-                try:
-                    ssh.close()
-                except:
-                    pass
-            logging.error(f"Error with SSH connection: {e}")
+            yield conn
+        except Exception:
+            if conn:
+                conn.close()
             raise
         else:
-            # Return connection to pool
             try:
-                self._pool.put_nowait((sftp, ssh))
-            except:
-                # Pool is full, close connection
-                if ssh:
-                    ssh.close()
+                self._pool.put_nowait(conn)
+            except asyncio.QueueFull:
+                conn.close()
 
-    def close_all(self):
+    async def close_all(self):
         """Close all connections in the pool."""
         while not self._pool.empty():
             try:
-                sftp, ssh = self._pool.get_nowait()
-                if ssh:
-                    ssh.close()
-            except Empty:
+                conn = self._pool.get_nowait()
+                conn.close()
+            except asyncio.QueueEmpty:
                 break
 
 
@@ -216,68 +193,47 @@ def retry(tries: int = DEFAULT_RETRY_ATTEMPTS, delay: int = DEFAULT_RETRY_DELAY,
         return f_retry
     return deco_retry
 
-@retry(tries=DEFAULT_RETRY_ATTEMPTS, delay=DEFAULT_RETRY_DELAY)
-def _get_remote_size_du_core(ssh_client: paramiko.SSHClient, remote_path: str) -> int:
+async def _async_get_remote_size_du_core(conn: asyncssh.SSHClientConnection, remote_path: str) -> int:
     """
-    Core logic for getting remote size using 'du -sb'. Does not handle concurrency.
-    This function is retried on failure.
+    Core async logic for getting remote size using 'du -sb'.
     """
-    # Escape single quotes in the path to prevent command injection issues.
     escaped_path = remote_path.replace("'", "'\\''")
     command = f"du -sb '{escaped_path}'"
-
     try:
-        stdin, stdout, stderr = ssh_client.exec_command(command, timeout=SSH_EXEC_TIMEOUT)
-        exit_status = stdout.channel.recv_exit_status()  # Wait for command to finish
-
-        if exit_status != 0:
-            stderr_output = stderr.read().decode('utf-8').strip()
+        result = await asyncio.wait_for(conn.run(command), timeout=SSH_EXEC_TIMEOUT)
+        if result.exit_status != 0:
+            stderr_output = result.stderr.strip() if result.stderr else ""
             if "No such file or directory" in stderr_output:
                 logging.warning(f"'du' command failed for path '{remote_path}': File not found.")
                 return 0
-            raise Exception(f"'du' command failed with exit code {exit_status}. Stderr: {stderr_output}")
+            raise Exception(f"'du' command failed with exit code {result.exit_status}. Stderr: {stderr_output}")
 
-        output = stdout.read().decode('utf-8').strip()
-        # The output is like "12345\t/path/to/dir". We only need the number.
+        output = result.stdout.strip() if result.stdout else ""
         size_str = output.split()[0]
         if size_str.isdigit():
             return int(size_str)
         else:
             raise ValueError(f"Could not parse 'du' output. Raw output: '{output}'")
-
     except Exception as e:
-        logging.error(f"Cannot access remote file or directory: {remote_path}\n"
-                      f"This could mean:\n"
-                      f" • The path doesn't exist on the remote server\n"
-                      f" • You don't have permission to access it\n"
-                      f" • The SSH connection was interrupted\n"
-                      f"Technical details: {e}")
-        # Re-raise to be handled by the retry decorator or the calling function
+        logging.error(f"Cannot access remote file or directory: {remote_path} - {e}")
         raise
 
-def batch_get_remote_sizes(ssh_client: paramiko.SSHClient, paths: List[str], batch_size: int = BATCH_SIZE) -> Dict[str, int]:
+async def _async_batch_get_remote_sizes(conn: asyncssh.SSHClientConnection, paths: List[str], batch_size: int = BATCH_SIZE) -> Dict[str, int]:
     """
-    Get sizes for multiple paths in a single SSH session.
-    Uses a single command with multiple du calls.
+    Async implementation to get sizes for multiple paths.
     """
     results = {}
-    # Process in batches to avoid command length limits
     for i in range(0, len(paths), batch_size):
         batch = paths[i:i + batch_size]
-        # Build command that gets all sizes in one go
-        # Using printf to get parseable output
         cmd_parts = []
         for path in batch:
             escaped = path.replace("'", "'\\''")
-            # Output format: SIZE\tPATH
             cmd_parts.append(f"du -sb '{escaped}' 2>/dev/null || echo '0\t{escaped}'")
-        # Join with semicolons
         command = "; ".join(cmd_parts)
+
         try:
-            stdin, stdout, stderr = ssh_client.exec_command(command, timeout=BATCH_SSH_EXEC_TIMEOUT)
-            exit_status = stdout.channel.recv_exit_status()
-            output = stdout.read().decode('utf-8').strip()
-            # Parse output
+            result = await asyncio.wait_for(conn.run(command), timeout=BATCH_SSH_EXEC_TIMEOUT)
+            output = result.stdout.strip() if result.stdout else ""
             for line in output.split('\n'):
                 if not line:
                     continue
@@ -290,11 +246,11 @@ def batch_get_remote_sizes(ssh_client: paramiko.SSHClient, paths: List[str], bat
                     except ValueError:
                         logging.warning(f"Could not parse size from line: {line}")
         except Exception as e:
-            logging.error(f"Batch size calculation failed: {e}")
-            # Fall back to individual queries
+            logging.error(f"Async batch size calculation failed: {e}")
+            # Fallback for the batch
             for path in batch:
                 try:
-                    results[path] = _get_remote_size_du_core(ssh_client, path)
+                    results[path] = await _async_get_remote_size_du_core(conn, path)
                 except:
                     results[path] = 0
     return results

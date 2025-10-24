@@ -10,11 +10,12 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.8.1**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **1.9.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 1.8.1 (Latest)
+### Version 1.9.0 (Latest)
+*   **Feat**: Migrated all SFTP operations from the synchronous `paramiko` library to the high-performance `asyncssh` library. This is a major experimental refactor designed to improve I/O throughput and reduce connection overhead.
 *   **Fix**: Add robust handling for destination recheck failures. If a file transfer succeeds but the torrent fails the recheck on the destination, the script now assumes the data is corrupt and deletes it to force a full re-transfer on the next run.
 
 ### Version 1.8.0

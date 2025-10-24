@@ -1,5 +1,6 @@
 argcomplete
-paramiko
 qbittorrent-api
 rich
 configupdater
+asyncssh
+aiofiles
