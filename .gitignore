@@ -157,3 +157,4 @@ cython_debug/
 
 # VSCode
 .vscode/
+torrent_mover/config.ini
