@@ -46,7 +46,16 @@ class SSHConnectionPool:
             try:
                 sftp, ssh = self._pool.get_nowait()
                 # Verify connection is still alive
-                ssh.get_transport().is_active()
+                transport = ssh.get_transport()
+                if not transport or not transport.is_active():
+                    # Connection is dead, close it and decrement the counter
+                    with self._lock:
+                        self._created -= 1
+                    try:
+                        ssh.close()
+                    except:
+                        pass
+                    raise AttributeError("Connection is dead")
             except (Empty, AttributeError):
                 # Create new connection if pool is empty or connection is dead
                 with self._lock:

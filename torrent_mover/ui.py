@@ -259,7 +259,7 @@ class UIManager:
 
                 for file_path, file_data in data["files"].items():
                     file_name = file_path.split('/')[-1]
-                    progress_renderable = file_data.get("progress_obj") or Text(file_data["status"], justify="center")
+                    progress_renderable = file_data.get("progress_obj") or Text.from_markup(file_data["status"], justify="center")
                     files_table.add_row(file_name, progress_renderable)
 
                 torrent_grid.add_row(Panel(files_table, style="blue", border_style="dim"))
