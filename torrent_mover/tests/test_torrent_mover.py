@@ -3,8 +3,8 @@ from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
 import sys
 
-from .. import torrent_mover
-from .. import utils
+from torrent_mover import torrent_mover
+from torrent_mover import utils
 
 class TestTrackerRules(unittest.TestCase):
     """Test tracker-based categorization logic."""
