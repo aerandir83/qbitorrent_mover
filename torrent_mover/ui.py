@@ -15,7 +15,7 @@ from rich.progress import (
     TaskID,
     FileSizeColumn,
 )
-from rich.table import Table
+from rich.table import Table, Column
 from rich.text import Text
 import threading
 from collections import OrderedDict
@@ -205,8 +205,15 @@ class UIManager:
             if not data or file_path not in data["files"]:
                 return
             progress = Progress(
-                TextColumn("[blue]{task.description}[/blue]"), BarColumn(),
-                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), "•", TransferSpeedColumn(),
+                TextColumn("{task.description}", style="blue", table_column=Column(justify="right", width=12)),
+                BarColumn(bar_width=30),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%", table_column=Column(justify="left", width=5)),
+                "•",
+                TransferSpeedColumn(table_column=Column(justify="left", width=10)),
+                "•",
+                FileSizeColumn(table_column=Column(justify="right", width=10)),
+                TextColumn("/", table_column=Column(justify="center", width=1)),
+                TotalFileSizeColumn(table_column=Column(justify="left", width=10))
             )
             task_id = progress.add_task("Starting...", total=file_size)
             data["files"][file_path] = {
