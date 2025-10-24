@@ -104,15 +104,37 @@ class UIManager:
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         if self._live:
-            for data in self._torrents_data.values():
-                if isinstance(data.get("byte_progress_obj"), Progress):
-                    data["byte_progress_obj"].stop()
-                if isinstance(data.get("file_progress_obj"), Progress):
-                    data["file_progress_obj"].stop()
-                if "files" in data:
-                    for file_data in data["files"].values():
-                        if isinstance(file_data.get("progress_obj"), Progress):
-                            file_data["progress_obj"].stop()
+            # Force stop ALL progress objects, even if UI crashed
+            with self._lock:
+                for data in self._torrents_data.values():
+                    # Stop main torrent-level progress objects
+                    for key in ['progress_obj', 'byte_progress_obj', 'file_progress_obj']:
+                        progress_item = data.get(key)
+                        if isinstance(progress_item, Progress):
+                            try:
+                                progress_item.stop()
+                            except Exception:
+                                pass # Ignore errors during shutdown
+                        elif isinstance(progress_item, Group):
+                             # Handle the group containing byte/file progress
+                             for sub_progress in progress_item.renderables:
+                                 if isinstance(sub_progress, Progress):
+                                     try:
+                                         sub_progress.stop()
+                                     except Exception:
+                                         pass
+
+                    # Stop all file-level progress objects
+                    if "files" in data:
+                        for file_data in data["files"].values():
+                            file_progress = file_data.get("progress_obj")
+                            if isinstance(file_progress, Progress):
+                                try:
+                                    file_progress.stop()
+                                except Exception:
+                                    pass
+
+            # Stop the main live display
             self._live.stop()
 
     def log(self, message: str) -> None:
