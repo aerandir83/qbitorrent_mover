@@ -96,7 +96,7 @@ local_cache_sftp_upload = False
 # For 'rsync'/'sftp' modes, this is executed LOCALLY on the machine running the script.
 # NOTE: The user running the script needs the appropriate permissions to perform 'chown'.
 chown_user =
-chown_grop =
+chown_group =
 # (Optional) Bandwidth limits for SFTP transfers in megabits per second (Mbps).
 # Set to 0 for unlimited speed.
 sftp_download_limit_mbps = 0
