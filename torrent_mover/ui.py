@@ -13,6 +13,7 @@ from rich.progress import (
     TotalFileSizeColumn,
     MofNCompleteColumn,
     TaskID,
+    FileSizeColumn,
 )
 from rich.table import Table
 from rich.text import Text
@@ -78,7 +79,7 @@ class UIManager:
         self.transfer_progress = Progress(TextColumn("[blue]Completed"), BarColumn(), MofNCompleteColumn())
         self.transfer_task: TaskID = self.transfer_progress.add_task("Torrents", total=0, visible=False)
 
-        self.overall_progress = Progress(TextColumn("[green]Overall"), BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), TotalFileSizeColumn(), TransferSpeedColumn(), TimeRemainingColumn())
+        self.overall_progress = Progress(TextColumn("[green]Overall"), BarColumn(), TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), FileSizeColumn(), TextColumn("/"), TotalFileSizeColumn(), TransferSpeedColumn(), TimeRemainingColumn())
         self.overall_task: TaskID = self.overall_progress.add_task("Total", total=0, visible=False)
 
         run_progress_group = Group(self.analysis_progress, self.transfer_progress, self.overall_progress)
@@ -168,7 +169,7 @@ class UIManager:
                 return
             byte_progress = Progress(
                 TextColumn("[bold blue]Bytes[/bold blue]"), BarColumn(),
-                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), "•", TotalFileSizeColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), "•", FileSizeColumn(), TextColumn("/"), TotalFileSizeColumn(),
             )
             byte_task = byte_progress.add_task("Bytes", total=total_size * transfer_multiplier)
             file_progress = Progress(
