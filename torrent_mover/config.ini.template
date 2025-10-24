@@ -80,8 +80,6 @@ size_threshold_gb =
 # - rsync: Downloads files from the source server to this machine via rsync (faster).
 # - sftp_upload: Transfers files directly from the source server to the destination server via SFTP.
 transfer_mode = rsync
-# This setting is deprecated. Use the new download/upload settings below.
-# max_concurrent_file_transfers = 5
 # For 'sftp' mode, and for 'sftp_upload' with local caching, this is the max number of concurrent downloads.
 max_concurrent_downloads = 4
 # For 'sftp_upload' mode, this is the max number of concurrent uploads.
