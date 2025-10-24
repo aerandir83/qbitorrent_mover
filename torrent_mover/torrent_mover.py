@@ -22,7 +22,7 @@ import shlex
 import threading
 from collections import defaultdict
 import errno
-from .utils import retry, SSHConnectionPool, LockFile, _get_remote_size_du_core, batch_get_remote_sizes
+from .utils import ConfigValidator, retry, SSHConnectionPool, LockFile, _get_remote_size_du_core, batch_get_remote_sizes
 import tempfile
 import getpass
 import configupdater
@@ -1231,139 +1231,171 @@ def change_ownership(path_to_change, user, group, remote_config=None, dry_run=Fa
             logging.error(f"An exception occurred during local chown: {e}", exc_info=True)
 
 
+def _pre_transfer_setup(torrent, config, ssh_connection_pools):
+    """Handles pre-transfer setup including path resolution and file listing."""
+    source_pool = ssh_connection_pools.get('SOURCE_SERVER')
+    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+    source_content_path = torrent.content_path.rstrip('/\\')
+    dest_base_path = config['DESTINATION_PATHS']['destination_path']
+    content_name = os.path.basename(source_content_path)
+    dest_content_path = os.path.join(dest_base_path, content_name)
+    remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
+    destination_save_path = remote_dest_base_path
+    all_files = []
+
+    if transfer_mode != 'rsync':
+        with source_pool.get_connection() as (sftp, ssh):
+            source_stat = sftp.stat(source_content_path)
+            if source_stat.st_mode & 0o40000:  # S_ISDIR
+                _get_all_files_recursive(sftp, source_content_path, dest_content_path, all_files)
+            else: # It's a single file
+                all_files.append((source_content_path, dest_content_path))
+    else:
+        all_files.append((source_content_path, dest_content_path))
+
+    return all_files, source_content_path, dest_content_path, destination_save_path
+
+
+def _execute_transfer(torrent, total_size, config, ui, ssh_connection_pools, all_files, source_content_path, dest_content_path, dry_run):
+    """Executes the file transfer based on the configured transfer mode."""
+    name = torrent.name
+    hash = torrent.hash
+    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+
+    if transfer_mode == 'rsync':
+        transfer_content_rsync(config['SOURCE_SERVER'], source_content_path, dest_content_path, hash, ui, dry_run)
+        logging.info(f"TRANSFER: Rsync transfer completed for '{name}'.")
+    else:
+        max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)
+        max_concurrent_uploads = config['SETTINGS'].getint('max_concurrent_uploads', 4)
+        source_pool = ssh_connection_pools.get('SOURCE_SERVER')
+
+        if transfer_mode == 'sftp_upload':
+            logging.info(f"TRANSFER: Starting SFTP-to-SFTP upload for '{name}'...")
+            dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
+            local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
+            transfer_content_sftp_upload(
+                source_pool, dest_pool, all_files, hash, ui,
+                max_concurrent_downloads, max_concurrent_uploads, total_size, dry_run,
+                local_cache_sftp_upload
+            )
+            logging.info(f"TRANSFER: SFTP-to-SFTP upload completed for '{name}'.")
+        else: # Default 'sftp' download
+            logging.info(f"TRANSFER: Starting SFTP download for '{name}'...")
+            transfer_content(source_pool, all_files, hash, ui, max_concurrent_downloads, dry_run)
+            logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
+
+
+def _post_transfer_actions(torrent, source_qbit, destination_qbit, config, tracker_rules, ssh_connection_pools, dest_content_path, destination_save_path, dry_run, test_run):
+    """Handles all actions after a successful transfer."""
+    name, hash = torrent.name, torrent.hash
+    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+
+    # --- Change Ownership ---
+    chown_user = config['SETTINGS'].get('chown_user', '').strip()
+    chown_group = config['SETTINGS'].get('chown_group', '').strip()
+    if chown_user or chown_group:
+        remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' else None
+        change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
+
+    # --- Add to Destination Client ---
+    destination_save_path_str = str(destination_save_path).replace("\\", "/")
+    if not dry_run:
+        logging.debug(f"Exporting .torrent file for {name}")
+        torrent_file_content = source_qbit.torrents_export(torrent_hash=hash)
+        logging.info(f"CLIENT: Adding torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
+        destination_qbit.torrents_add(
+            torrent_files=torrent_file_content,
+            save_path=destination_save_path_str,
+            is_paused=True,
+            category=torrent.category,
+            use_auto_torrent_management=True
+        )
+        time.sleep(5)
+    else:
+        logging.info(f"[DRY RUN] Would export and add torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
+
+    # --- Recheck, Resume, and Categorize ---
+    if not dry_run:
+        logging.info(f"CLIENT: Triggering force recheck on Destination for: {name}")
+        destination_qbit.torrents_recheck(torrent_hashes=hash)
+    else:
+        logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
+
+    if not wait_for_recheck_completion(destination_qbit, hash, dry_run=dry_run):
+        logging.error(f"Failed to verify recheck for {name}. Leaving on Source for next run.")
+        return False
+
+    if not dry_run:
+        logging.info(f"CLIENT: Starting torrent on Destination: {name}")
+        destination_qbit.torrents_resume(torrent_hashes=hash)
+    else:
+        logging.info(f"[DRY RUN] Would start torrent on Destination: {name}")
+
+    logging.info(f"CLIENT: Attempting to categorize torrent on Destination: {name}")
+    set_category_based_on_tracker(destination_qbit, hash, tracker_rules, dry_run=dry_run)
+
+    # --- Remove from Source Client ---
+    if not dry_run and not test_run:
+        logging.info(f"CLIENT: Pausing torrent on Source before deletion: {name}")
+        source_qbit.torrents_pause(torrent_hashes=hash)
+    else:
+        logging.info(f"[DRY RUN/TEST RUN] Would pause torrent on Source: {name}")
+
+    if test_run:
+        logging.info(f"[TEST RUN] Skipping deletion of torrent from Source: {name}")
+    elif not dry_run:
+        logging.info(f"CLIENT: Deleting torrent and data from Source: {name}")
+        source_qbit.torrents_delete(torrent_hashes=hash, delete_files=True)
+    else:
+        logging.info(f"[DRY RUN] Would delete torrent and data from Source: {name}")
+
+    return True
+
+
 def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config, tracker_rules, ui, ssh_connection_pools, dry_run=False, test_run=False):
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
     name, hash = torrent.name, torrent.hash
-    source_sftp, source_ssh = None, None
-    source_paused = False
     success = False
-    all_files = [] # This list will be populated for multi-file torrents
     try:
-        # --- Pre-transfer setup and file listing ---
-        source_pool = ssh_connection_pools.get('SOURCE_SERVER')
-        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-        source_content_path = torrent.content_path.rstrip('/\\')
-        dest_base_path = config['DESTINATION_PATHS']['destination_path']
-        content_name = os.path.basename(source_content_path)
-        dest_content_path = os.path.join(dest_base_path, content_name)
+        # --- 1. Pre-transfer setup ---
+        all_files, source_content_path, dest_content_path, destination_save_path = _pre_transfer_setup(
+            torrent, config, ssh_connection_pools
+        )
 
-        if transfer_mode != 'rsync':
-            # For SFTP modes, we need to get a list of all files to be transferred
-            # to know the total file count for the UI.
-            with source_pool.get_connection() as (sftp, ssh):
-                source_stat = sftp.stat(source_content_path)
-                if source_stat.st_mode & 0o40000:  # S_ISDIR
-                    _get_all_files_recursive(sftp, source_content_path, dest_content_path, all_files)
-                else: # It's a single file
-                    all_files.append((source_content_path, dest_content_path))
-        else:
-             # For rsync, we treat it as a single file operation for progress tracking
-            all_files.append((source_content_path, dest_content_path))
-
-        # Pass the list of file paths (source_f) to the UI manager
+        # --- 2. UI Initialization ---
         local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
+        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
-        ui.start_torrent_transfer(hash, total_size, [source_f for source_f, dest_f in all_files], transfer_multiplier)
+        source_file_paths = [source_f for source_f, dest_f in all_files]
+        ui.start_torrent_transfer(hash, total_size, source_file_paths, transfer_multiplier)
 
         if dry_run:
             logging.info(f"[DRY RUN] Simulating transfer for '{name}'.")
-            # Instantly complete the progress bars
             ui.update_torrent_byte_progress(hash, total_size)
             ui.advance_overall_progress(total_size)
             success = True
             return True
 
-        # --- Execute Transfer ---
-        remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
-        destination_save_path = remote_dest_base_path
+        # --- 3. Execute Transfer ---
+        _execute_transfer(
+            torrent, total_size, config, ui, ssh_connection_pools,
+            all_files, source_content_path, dest_content_path, dry_run
+        )
 
-        if transfer_mode == 'rsync':
-            transfer_content_rsync(config['SOURCE_SERVER'], source_content_path, dest_content_path, hash, ui, dry_run)
-            logging.info(f"TRANSFER: Rsync transfer completed for '{name}'.")
-        else:
-            max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)
-            max_concurrent_uploads = config['SETTINGS'].getint('max_concurrent_uploads', 4)
-            source_pool = ssh_connection_pools.get('SOURCE_SERVER')
-
-            if transfer_mode == 'sftp_upload':
-                logging.info(f"TRANSFER: Starting SFTP-to-SFTP upload for '{name}'...")
-                dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
-                local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
-                transfer_content_sftp_upload(
-                    source_pool, dest_pool, all_files, hash, ui,
-                    max_concurrent_downloads, max_concurrent_uploads, total_size, dry_run,
-                    local_cache_sftp_upload
-                )
-                logging.info(f"TRANSFER: SFTP-to-SFTP upload completed for '{name}'.")
-            else: # Default 'sftp' download
-                logging.info(f"TRANSFER: Starting SFTP download for '{name}'...")
-                transfer_content(source_pool, all_files, hash, ui, max_concurrent_downloads, dry_run)
-                logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
-
-
-        # --- Post-transfer actions ---
-        chown_user = config['SETTINGS'].get('chown_user', '').strip()
-        chown_group = config['SETTINGS'].get('chown_group', '').strip()
-        if chown_user or chown_group:
-            remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' else None
-            change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
-
-        destination_save_path = destination_save_path.replace("\\", "/")
-
-        if not dry_run:
-            logging.debug(f"Exporting .torrent file for {name}")
-            torrent_file_content = source_qbit.torrents_export(torrent_hash=hash)
-            logging.info(f"CLIENT: Adding torrent to Destination (paused) with save path '{destination_save_path}': {name}")
-            destination_qbit.torrents_add(
-                torrent_files=torrent_file_content,
-                save_path=destination_save_path,
-                is_paused=True,
-                category=torrent.category,
-                use_auto_torrent_management=True
-            )
-            time.sleep(5)
-        else:
-            logging.info(f"[DRY RUN] Would export and add torrent to Destination (paused) with save path '{destination_save_path}': {name}")
-
-        if not dry_run:
-            logging.info(f"CLIENT: Triggering force recheck on Destination for: {name}")
-            destination_qbit.torrents_recheck(torrent_hashes=hash)
-        else:
-            logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
-
-        if wait_for_recheck_completion(destination_qbit, hash, dry_run=dry_run):
-            if not dry_run:
-                logging.info(f"CLIENT: Starting torrent on Destination: {name}")
-                destination_qbit.torrents_resume(torrent_hashes=hash)
-            else:
-                logging.info(f"[DRY RUN] Would start torrent on Destination: {name}")
-
-            logging.info(f"CLIENT: Attempting to categorize torrent on Destination: {name}")
-            set_category_based_on_tracker(destination_qbit, hash, tracker_rules, dry_run=dry_run)
-
-            if not dry_run and not test_run:
-                logging.info(f"CLIENT: Pausing torrent on Source before deletion: {name}")
-                source_qbit.torrents_pause(torrent_hashes=hash)
-                source_paused = True
-            else:
-                logging.info(f"[DRY RUN/TEST RUN] Would pause torrent on Source: {name}")
-
-            if test_run:
-                logging.info(f"[TEST RUN] Skipping deletion of torrent from Source: {name}")
-            elif not dry_run:
-                logging.info(f"CLIENT: Deleting torrent and data from Source: {name}")
-                source_qbit.torrents_delete(torrent_hashes=hash, delete_files=True)
-            else:
-                logging.info(f"[DRY RUN] Would delete torrent and data from Source: {name}")
-
+        # --- 4. Post-transfer actions ---
+        if _post_transfer_actions(
+            torrent, source_qbit, destination_qbit, config, tracker_rules,
+            ssh_connection_pools, dest_content_path, destination_save_path, dry_run, test_run
+        ):
             logging.info(f"SUCCESS: Successfully processed torrent: {name}")
             success = True
             return True
         else:
-            logging.error(f"Failed to verify recheck for {name}. Leaving on Source for next run.")
             return False
+
     except Exception as e:
         logging.error(f"An error occurred while processing torrent {name}: {e}", exc_info=True)
         success = False
@@ -1644,6 +1676,10 @@ def main():
     ssh_connection_pools = {}
     try:
         config = load_config(args.config)
+        validator = ConfigValidator(config)
+        if not validator.validate():
+            sys.exit(1)
+
         # Initialize pools now as they might be needed by utility commands
         server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
         for section_name in server_sections:
