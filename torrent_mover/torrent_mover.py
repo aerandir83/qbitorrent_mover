@@ -849,7 +849,7 @@ def transfer_content(pool, sftp, remote_path, local_path, torrent_hash, ui, max_
 
 def transfer_content_sftp_upload(
     source_pool, dest_pool, source_sftp, source_path, dest_path, torrent_hash, ui,
-    max_concurrent_downloads, max_concurrent_uploads, dry_run=False, local_cache_sftp_upload=False
+    max_concurrent_downloads, max_concurrent_uploads, total_size, dry_run=False, local_cache_sftp_upload=False
 ):
     """
     Transfers a remote file or directory from a source SFTP to a destination SFTP server.
@@ -861,6 +861,14 @@ def transfer_content_sftp_upload(
         _get_all_files_recursive(source_sftp, source_path, dest_path, all_files)
     else: # It's a single file
         all_files.append((source_path, dest_path))
+
+    # Memory safety: For very large torrents, force caching to avoid high memory usage
+    # from Paramiko's internal buffering during direct SFTP-to-SFTP streaming.
+    one_gb = 1 * (1024**3)
+    if total_size > one_gb and not local_cache_sftp_upload:
+        logging.warning(f"Total torrent size ({total_size / (1024**3):.2f} GB) exceeds 1 GB threshold.")
+        logging.warning("Forcing local caching for this transfer to ensure memory safety.")
+        local_cache_sftp_upload = True
 
     if local_cache_sftp_upload:
         if dry_run:
@@ -1368,7 +1376,7 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
                 with source_pool.get_connection() as (sftp, ssh):
                     transfer_content_sftp_upload(
                         source_pool, dest_pool, sftp, source_content_path, dest_content_path,
-                        hash, ui, max_concurrent_downloads, max_concurrent_uploads, dry_run,
+                        hash, ui, max_concurrent_downloads, max_concurrent_uploads, total_size, dry_run,
                         local_cache_sftp_upload
                     )
                 logging.info(f"TRANSFER: SFTP-to-SFTP upload completed for '{name}'.")
