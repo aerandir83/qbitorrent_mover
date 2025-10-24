@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 import configparser
 import sys
@@ -444,6 +444,7 @@ def _sftp_upload_from_cache(dest_pool, local_cache_path, source_file_path, dest_
     if not local_cache_path.is_file():
         logging.error(f"Cannot upload '{file_name}' from cache: File does not exist.")
         ui.update_file_status(torrent_hash, source_file_path, "[red]Cache file missing[/red]")
+        ui.advance_torrent_file_progress(torrent_hash)
         raise FileNotFoundError(f"Local cache file not found: {local_cache_path}")
 
     try:
@@ -581,8 +582,8 @@ def _sftp_upload_file(source_pool, dest_pool, source_file_path, dest_file_path, 
                 raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_dest_size}")
 
         except PermissionError as e:
-            logging.error(f"Permission denied on destination server. Check user permissions for path: {dest_file_path}")
-            logging.error(f"The user '{dest_sftp_config['username']}' may not have write access to that directory on the destination server.")
+            logging.error(f"Permission denied on destination server for path: {dest_file_path}")
+            logging.error("Please check that the destination user has write access to that directory.")
             raise e
         except Exception as e:
             logging.error(f"Upload failed for {file_name}: {e}")
@@ -621,13 +622,13 @@ def _sftp_download_file(pool, remote_file, local_file, torrent_hash, ui, dry_run
                     ui.update_torrent_byte_progress(torrent_hash, total_size - local_size)
                     ui.advance_overall_progress(total_size - local_size)
                     return
-            elif local_size > total_size:
-                logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
-                logging.debug(f"SFTP OVERWRITE: Local: {local_size}, Remote: {total_size}. Overwriting file '{file_name}'.")
-                local_size = 0
-            else:  # local_size < total_size
-                logging.info(f"Resuming download for {file_name} from {local_size / (1024*1024):.2f} MB.")
-                logging.debug(f"SFTP RESUME: Local: {local_size}, Remote: {total_size}. Resuming file '{file_name}'.")
+                elif local_size > total_size:
+                    logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
+                    logging.debug(f"SFTP OVERWRITE: Local: {local_size}, Remote: {total_size}. Overwriting file '{file_name}'.")
+                    local_size = 0
+                else:  # local_size < total_size
+                    logging.info(f"Resuming download for {file_name} from {local_size / (1024*1024):.2f} MB.")
+                    logging.debug(f"SFTP RESUME: Local: {local_size}, Remote: {total_size}. Resuming file '{file_name}'.")
 
         if local_size > 0:
             ui.update_torrent_byte_progress(torrent_hash, local_size)
@@ -1444,10 +1445,6 @@ def transfer_torrent(torrent, total_size, source_qbit, destination_qbit, config,
         success = False
         return False
     finally:
-        if source_sftp:
-            source_sftp.close()
-        if source_ssh:
-            source_ssh.close()
         ui.stop_torrent_transfer(hash, success=success)
 
 

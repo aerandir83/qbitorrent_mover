@@ -30,7 +30,7 @@ class UIManager:
 
         # 1. Header
         self.header_text = Text("Initializing...", justify="center")
-        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.5.1[/bold magenta]", border_style="magenta")
+        self.header_panel = Panel(self.header_text, title="[bold magenta]Torrent Mover v1.6.0[/bold magenta]", border_style="magenta")
 
         # 2. Run Progress (counts and overall size)
         self.analysis_progress = Progress(TextColumn("[cyan]Analyzed"), BarColumn(), MofNCompleteColumn())
@@ -259,7 +259,7 @@ class UIManager:
 
                 for file_path, file_data in data["files"].items():
                     file_name = file_path.split('/')[-1]
-                    progress_renderable = file_data.get("progress_obj") or Text(file_data["status"], justify="center")
+                    progress_renderable = file_data.get("progress_obj") or Text.from_markup(file_data["status"], justify="center")
                     files_table.add_row(file_name, progress_renderable)
 
                 torrent_grid.add_row(Panel(files_table, style="blue", border_style="dim"))
