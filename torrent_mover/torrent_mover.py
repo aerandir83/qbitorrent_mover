@@ -1804,9 +1804,6 @@ def main():
             return 0
 
         # --- Main execution block ---
-        with open(lock_file_path, 'w') as f:
-            f.write(str(os.getpid()))
-
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         if transfer_mode == 'rsync':
             check_sshpass_installed()
