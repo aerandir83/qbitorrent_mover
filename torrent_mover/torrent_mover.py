@@ -1488,7 +1488,7 @@ async def async_handle_utility_commands(args: argparse.Namespace, config: config
 
     return False
 
-def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Namespace, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, AsyncSSHConnectionPool], checkpoint: TransferCheckpoint) -> None:
+async def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Namespace, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, AsyncSSHConnectionPool], checkpoint: TransferCheckpoint) -> None:
     """Connects to clients and runs the main transfer process."""
     sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
     try:
@@ -1574,7 +1574,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                         paths = [t.content_path for t in eligible_torrents]
                         return await _async_batch_get_remote_sizes(conn, paths)
 
-                sizes = asyncio.run(_analyze_sftp_torrents())
+                sizes = await _analyze_sftp_torrents()
 
                 for torrent in eligible_torrents:
                     size = sizes.get(torrent.content_path)
@@ -1601,7 +1601,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
             return
 
         ui.set_overall_total(total_transfer_size)
-        if not args.dry_run and not asyncio.run(async_destination_health_check(config, total_transfer_size, ssh_connection_pools)):
+        if not args.dry_run and not await async_destination_health_check(config, total_transfer_size, ssh_connection_pools):
             ui.update_header("[bold red]Destination health check failed. Aborting transfer process.[/]")
             logging.error("FATAL: Destination health check failed.")
             time.sleep(5)
@@ -1722,7 +1722,7 @@ async def async_main() -> int:
         if transfer_mode == 'rsync':
             check_sshpass_installed()
 
-        _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint)
+        await _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint)
 
     except KeyboardInterrupt:
         logging.warning("Process interrupted by user. Shutting down.")
