@@ -1139,7 +1139,7 @@ def destination_health_check(config, total_transfer_size_bytes, ssh_connection_p
         logging.error(f"An error occurred during disk space check: {e}", exc_info=True)
         return False
 
-    if not test_path_permissions(dest_path, remote_config=remote_config):
+    if not test_path_permissions(dest_path, remote_config=remote_config, ssh_connection_pools=ssh_connection_pools):
         logging.error("FATAL: Destination permission check failed.")
         return False
 
@@ -1725,82 +1725,96 @@ def main():
     config_template_path = script_dir / 'config.ini.template'
     update_config(args.config, str(config_template_path))
 
-    if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions:
-        config = load_config(args.config)
-        tracker_rules = load_tracker_rules(script_dir)
-        logging.info("Executing utility command...")
-
-        if args.test_permissions:
-            transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-            dest_path = config['DESTINATION_PATHS'].get('destination_path')
-            if not dest_path:
-                logging.error("FATAL: 'destination_path' is not defined in your config file.")
-                return 1
-            remote_config = None
-            if transfer_mode == 'sftp_upload':
-                if 'DESTINATION_SERVER' not in config:
-                    logging.error("FATAL: 'transfer_mode' is 'sftp_upload' but [DESTINATION_SERVER] is not defined in config.")
-                    return 1
-                remote_config = config['DESTINATION_SERVER']
-            test_path_permissions(dest_path, remote_config=remote_config, ssh_connection_pools=ssh_connection_pools)
-            return 0
-
-        if args.list_rules:
-            if not tracker_rules:
-                logging.info("No rules found.")
-                return 0
-            console = Console()
-            table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
-            table.add_column("Tracker Domain", style="dim", width=40)
-            table.add_column("Assigned Category")
-            sorted_rules = sorted(tracker_rules.items())
-            for domain, category in sorted_rules:
-                table.add_row(domain, f"[yellow]{category}[/yellow]" if category == "ignore" else f"[cyan]{category}[/cyan]")
-            console.print(table)
-            return 0
-
-        if args.add_rule:
-            domain, category = args.add_rule
-            tracker_rules[domain] = category
-            if save_tracker_rules(tracker_rules, script_dir):
-                logging.info(f"Successfully added rule: '{domain}' -> '{category}'.")
-            return 0
-
-        if args.delete_rule:
-            domain_to_delete = args.delete_rule
-            if domain_to_delete in tracker_rules:
-                del tracker_rules[domain_to_delete]
-                if save_tracker_rules(tracker_rules, script_dir):
-                    logging.info(f"Successfully deleted rule for '{domain_to_delete}'.")
-            else:
-                logging.warning(f"No rule found for domain '{domain_to_delete}'. Nothing to delete.")
-            return 0
-
-        if args.interactive_categorize:
-            try:
-                dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
-                destination_qbit = connect_qbit(config[dest_client_section], "Destination")
-                if args.category:
-                    cat_to_scan = args.category
-                    logging.info(f"Using category from command line: '{cat_to_scan}'")
-                else:
-                    cat_to_scan = config['SETTINGS'].get('category_to_move')
-                    if cat_to_scan:
-                        logging.info(f"Using 'category_to_move' from config: '{cat_to_scan}'")
-                    else:
-                        logging.warning("No category specified via --category or in config. Defaulting to 'uncategorized'.")
-                        cat_to_scan = ''
-                run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
-            except Exception as e:
-                logging.error(f"Failed to run interactive categorization: {e}", exc_info=True)
-            return 0
-        return 0
-
+    ssh_connection_pools = {}
     try:
+        config = load_config(args.config)
+        # Initialize pools now as they might be needed by utility commands
+        server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
+        for section_name in server_sections:
+            max_sessions = config[section_name].getint('max_concurrent_ssh_sessions', 8)
+            ssh_connection_pools[section_name] = SSHConnectionPool(
+                host=config[section_name]['host'],
+                port=config[section_name].getint('port'),
+                username=config[section_name]['username'],
+                password=config[section_name]['password'],
+                max_size=max_sessions
+            )
+            logging.info(f"Initialized SSH connection pool for '{section_name}' with size {max_sessions}.")
+
+        if args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions:
+            tracker_rules = load_tracker_rules(script_dir)
+            logging.info("Executing utility command...")
+
+            if args.test_permissions:
+                transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+                dest_path = config['DESTINATION_PATHS'].get('destination_path')
+                if not dest_path:
+                    logging.error("FATAL: 'destination_path' is not defined in your config file.")
+                    return 1
+                remote_config = None
+                if transfer_mode == 'sftp_upload':
+                    if 'DESTINATION_SERVER' not in config:
+                        logging.error("FATAL: 'transfer_mode' is 'sftp_upload' but [DESTINATION_SERVER] is not defined in config.")
+                        return 1
+                    remote_config = config['DESTINATION_SERVER']
+                test_path_permissions(dest_path, remote_config=remote_config, ssh_connection_pools=ssh_connection_pools)
+                return 0
+
+            if args.list_rules:
+                if not tracker_rules:
+                    logging.info("No rules found.")
+                    return 0
+                console = Console()
+                table = Table(title="Tracker to Category Rules", show_header=True, header_style="bold magenta")
+                table.add_column("Tracker Domain", style="dim", width=40)
+                table.add_column("Assigned Category")
+                sorted_rules = sorted(tracker_rules.items())
+                for domain, category in sorted_rules:
+                    table.add_row(domain, f"[yellow]{category}[/yellow]" if category == "ignore" else f"[cyan]{category}[/cyan]")
+                console.print(table)
+                return 0
+
+            if args.add_rule:
+                domain, category = args.add_rule
+                tracker_rules[domain] = category
+                if save_tracker_rules(tracker_rules, script_dir):
+                    logging.info(f"Successfully added rule: '{domain}' -> '{category}'.")
+                return 0
+
+            if args.delete_rule:
+                domain_to_delete = args.delete_rule
+                if domain_to_delete in tracker_rules:
+                    del tracker_rules[domain_to_delete]
+                    if save_tracker_rules(tracker_rules, script_dir):
+                        logging.info(f"Successfully deleted rule for '{domain_to_delete}'.")
+                else:
+                    logging.warning(f"No rule found for domain '{domain_to_delete}'. Nothing to delete.")
+                return 0
+
+            if args.interactive_categorize:
+                try:
+                    dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
+                    destination_qbit = connect_qbit(config[dest_client_section], "Destination")
+                    if args.category:
+                        cat_to_scan = args.category
+                        logging.info(f"Using category from command line: '{cat_to_scan}'")
+                    else:
+                        cat_to_scan = config['SETTINGS'].get('category_to_move')
+                        if cat_to_scan:
+                            logging.info(f"Using 'category_to_move' from config: '{cat_to_scan}'")
+                        else:
+                            logging.warning("No category specified via --category or in config. Defaulting to 'uncategorized'.")
+                            cat_to_scan = ''
+                    run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
+                except Exception as e:
+                    logging.error(f"Failed to run interactive categorization: {e}", exc_info=True)
+                return 0
+            return 0
+
+        # --- Main execution block ---
         with open(lock_file_path, 'w') as f:
             f.write(str(os.getpid()))
 
-        config = load_config(args.config)
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         if transfer_mode == 'rsync':
             check_sshpass_installed()
@@ -1840,19 +1854,6 @@ def main():
         if not eligible_torrents:
             logging.info("No torrents to move at this time.")
             return 0
-
-        ssh_connection_pools = {}
-        server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
-        for section_name in server_sections:
-            max_sessions = config[section_name].getint('max_concurrent_ssh_sessions', 8)
-            ssh_connection_pools[section_name] = SSHConnectionPool(
-                host=config[section_name]['host'],
-                port=config[section_name].getint('port'),
-                username=config[section_name]['username'],
-                password=config[section_name]['password'],
-                max_size=max_sessions
-            )
-            logging.info(f"Initialized SSH connection pool for '{section_name}' with size {max_sessions}.")
 
         # This is the main UI-driven execution block.
         total_count = len(eligible_torrents)
