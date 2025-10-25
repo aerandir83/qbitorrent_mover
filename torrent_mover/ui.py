@@ -69,48 +69,67 @@ class UIManagerV2:
         self._lock = threading.RLock()
         self._live: Optional[Live] = None
 
+        # --- CORRECTED ORDER: Define all attributes first ---
         # Data structures
         self._torrents: OrderedDict[str, Dict] = OrderedDict()
-        self._active_torrents: Deque[str] = deque(maxlen=5)
+        self._active_torrents: Deque[str] = deque(maxlen=5)  # Last 5 active
         self._completed_hashes: set = set()
-        self._completed_torrents_log: Deque[Tuple[str, bool]] = deque(maxlen=10)
+        self._completed_torrents_log: Deque[Tuple[str, bool]] = deque(maxlen=10) # Store (name, success)
 
         # Logging
-        self.log_handler = RichLogHandler(max_lines=15)
+        self.log_handler = RichLogHandler(max_lines=15) # Keep last 15 log lines
+        # Add handler ONLY to the root logger to capture everything
         logging.getLogger().addHandler(self.log_handler)
+        self.log_renderables = Renderables([]) # Initialize log renderables
 
-        # Statistics
+        # Statistics (live updated)
         self._stats = {
-            "total_torrents": 0,
             "total_bytes": 0,
             "transferred_bytes": 0,
             "start_time": time.time(),
             "active_transfers": 0,
             "completed_transfers": 0,
-            "failed_transfers": 0
+            "failed_transfers": 0,
+            "total_torrents": 0, # Added for clarity
         }
+        self._stats_thread: Optional[threading.Thread] = None
+        self._stats_thread_stop = threading.Event()
 
-        # Layout
+
+        # Completed table (initialize here)
+        self.completed_table = Table.grid(padding=(0, 1))
+        self.completed_table.add_column("Status", width=4)
+        self.completed_table.add_column("Torrent Name")
+        # --- END ATTRIBUTE DEFINITIONS ---
+
+
+        # Create layout
         self.layout = Layout()
         self.layout.split(
             Layout(name="header", size=3),
             Layout(name="body", ratio=1),
             Layout(name="footer", size=3)
         )
+
+        # Split body into left (torrents & logs) and right (stats & completed)
         self.layout["body"].split_row(
             Layout(name="left_panel", ratio=2),
             Layout(name="right_panel", ratio=1)
         )
+
+        # Split left panel vertically
         self.layout["left_panel"].split(
-            Layout(name="torrents", ratio=3),
-            Layout(name="logs", ratio=1)
-        )
-        self.layout["right_panel"].split(
-            Layout(name="stats", ratio=1),
-            Layout(name="completed", ratio=1)
+             Layout(name="torrents", ratio=3), # Give more space to progress bars
+             Layout(name="logs", ratio=1)      # Add logs panel below
         )
 
-        # Initialize components
+        # Split right panel vertically
+        self.layout["right_panel"].split(
+             Layout(name="stats", ratio=1),
+             Layout(name="completed", ratio=1) # Add completed panel below
+        )
+
+        # Initialize components (Now safe to call setup methods)
         self._setup_header(version)
         self._setup_progress()
         self._setup_stats_panel()
