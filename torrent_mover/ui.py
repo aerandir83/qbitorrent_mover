@@ -54,16 +54,6 @@ class RichLogHandler(logging.Handler):
 
 
 class UIManagerV2:
-    """
-    Redesigned UI with focus on performance and information density.
-
-    KEY IMPROVEMENTS:
-    - Single Progress object shared across all torrents (not per-torrent)
-    - Smart file display: only show last 5 active files
-    - Live stats panel
-    - Persistent layout (no rebuilds)
-    - Ring buffer for torrent history
-    """
     def __init__(self, version: str = ""):
         self.console = Console()
         self._lock = threading.RLock()
