@@ -97,39 +97,33 @@ class UIManagerV2:
             "failed_transfers": 0
         }
 
-        # --- MODIFIED LAYOUT ---
+        # --- LAYOUT DEFINITION ---
         self.layout = Layout()
         self.layout.split(
             Layout(name="header", size=3),
             Layout(name="body", ratio=1),
             Layout(name="footer", size=3)
         )
-
-        # Split body into left (torrents & logs) and right (stats & completed)
         self.layout["body"].split_row(
             Layout(name="left_panel", ratio=2),
             Layout(name="right_panel", ratio=1)
         )
-
-        # Split left panel vertically
         self.layout["left_panel"].split(
-             Layout(name="torrents", ratio=3), # Give more space to progress bars
-             Layout(name="logs", ratio=1)      # Add logs panel below
+             Layout(name="torrents", ratio=3),
+             Layout(name="logs", ratio=1)
         )
-
-        # Split right panel vertically
         self.layout["right_panel"].split(
              Layout(name="stats", ratio=1),
-             Layout(name="completed", ratio=1) # Add completed panel below
+             Layout(name="completed", ratio=1)
         )
-        # --- END MODIFIED LAYOUT ---
+        # --- END LAYOUT DEFINITION ---
 
         # Initialize components
         self._setup_header(version)
         self._setup_progress()
         self._setup_stats_panel()
-        self._setup_log_panel() # New
-        self._setup_completed_panel() # New
+        self._setup_log_panel()
+        self._setup_completed_panel()
         self._setup_footer()
 
     def _setup_header(self, version: str):
@@ -242,12 +236,16 @@ class UIManagerV2:
                      Panel(renderable, title="[bold]Recently Completed (Last 10)", border_style="dim")
                  )
 
-    def _update_log_panel(self):
-        """Update the log panel with the latest log records."""
-        with self._lock:
-            self.log_renderables = self.log_handler.get_renderables()
-            if isinstance(self.layout["logs"].renderable, Panel):
-                self.layout["logs"].renderable.renderable = self.log_renderables
+    def _update_log_display(self):
+        """Update the log display panel."""
+        self.log_renderables = self.log_handler.get_renderables()
+        # Update panel content (only renderable, not title/border)
+        if isinstance(self.layout["logs"].renderable, Panel):
+             self.layout["logs"].renderable.renderable = self.log_renderables
+        else: # First time setup (shouldn't happen often)
+             self.layout["logs"].update(
+                 Panel(self.log_renderables, title="[bold]Logs (Last 15)", border_style="yellow")
+             )
 
     def _update_stats_display(self):
         """Update the stats table (called periodically)."""
@@ -303,17 +301,21 @@ class UIManagerV2:
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._live:
             self._stats_thread_stop.set()
-            self._stats_thread.join()
+            if hasattr(self, '_stats_thread'): # Check if thread started
+                 self._stats_thread.join()
             self.main_progress.stop()
             self.files_progress.stop()
             self._live.stop()
+            # --- REMOVE HANDLER ---
+            logging.getLogger().removeHandler(self.log_handler)
+            # --- END REMOVE ---
 
     def _stats_updater(self):
-        """Background thread to update stats every second."""
-        while not self._stats_thread_stop.wait(1.0):
+        """Background thread to update stats, logs, and completed list periodically."""
+        while not self._stats_thread_stop.wait(1.0): # Update every second
             self._update_stats_display()
-            self._update_log_panel()
-            self._update_completed_display()
+            self._update_log_display() # Add this
+            self._update_completed_display() # Add this
 
     # ===== Public API =====
 
@@ -373,29 +375,40 @@ class UIManagerV2:
 
     def start_file_transfer(self, torrent_hash: str, file_path: str, file_size: int):
         """Start tracking a file transfer."""
-        # Only show last 5 files
-        if len(self.active_file_tasks) >= 5:
-            # Remove oldest
-            try:
-                oldest_file = next(iter(self.active_file_tasks))
-                task_id = self.active_file_tasks.pop(oldest_file)
-                self.files_progress.remove_task(task_id)
-            except StopIteration:
-                pass # No tasks to remove
+        with self._lock:
+            torrent_name = self._torrents.get(torrent_hash, {}).get("name", "Unknown Torrent")
+            short_torrent_name = torrent_name[:25] # Truncate torrent name
 
-        # Add new file
-        file_name = file_path.split('/')[-1]
-        task_id = self.files_progress.add_task(
-            file_name[:50],
-            total=file_size
-        )
-        self.active_file_tasks[file_path] = task_id
+            # Only show last 5 files globally
+            if len(self.active_file_tasks) >= 5:
+                # Remove oldest
+                try:
+                    oldest_file_key = next(iter(self.active_file_tasks)) # Get key (full path)
+                    task_id = self.active_file_tasks.pop(oldest_file_key)
+                    self.files_progress.remove_task(task_id)
+                except StopIteration:
+                    pass # No tasks to remove
+
+            # Add new file
+            file_name_only = file_path.split('/')[-1]
+            # --- MODIFIED DESCRIPTION ---
+            display_name = f"[dim]{short_torrent_name}:[/] {file_name_only}"
+            task_id = self.files_progress.add_task(
+                display_name[:60], # Limit total length
+                total=file_size,
+                start=False # Don't start automatically, let update start it
+            )
+            self.active_file_tasks[file_path] = task_id # Use full path as key
 
     def update_file_progress(self, file_path: str, bytes_transferred: int):
         """Update progress for a specific file."""
         if file_path in self.active_file_tasks:
+            task_id = self.active_file_tasks[file_path]
+            task = self.files_progress._tasks[task_id] # Access task directly
+            if not task.started:
+                self.files_progress.start_task(task_id)
             self.files_progress.update(
-                self.active_file_tasks[file_path],
+                task_id,
                 advance=bytes_transferred
             )
 
@@ -407,9 +420,10 @@ class UIManagerV2:
 
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
         """Mark a torrent as completed."""
+        torrent_name = "Unknown Torrent"
         with self._lock:
             if torrent_hash in self._torrents:
-                torrent_name = self._torrents[torrent_hash]["name"]
+                torrent_name = self._torrents[torrent_hash]["name"] # Get name before potentially removing
                 self._torrents[torrent_hash]["status"] = "completed" if success else "failed"
                 self._completed_hashes.add(torrent_hash)
                 self._stats["active_transfers"] = max(0, self._stats["active_transfers"] - 1)
@@ -419,11 +433,14 @@ class UIManagerV2:
                 else:
                     self._stats["failed_transfers"] += 1
 
-                # Add to completed log
+                # --- ADD TO COMPLETED LOG ---
                 self._completed_torrents_log.append((torrent_name, success))
+                # --- END ADD ---
+
 
         # Hide current torrent progress
         self.main_progress.update(self.current_torrent_task, visible=False, description="[yellow]Current: (none)")
+        # No need to manually call _update_completed_display here, the background thread handles it
 
     def update_header(self, text: str):
         """Update header text."""
@@ -436,7 +453,10 @@ class UIManagerV2:
         self.layout["footer"].update(Panel(self.footer_text, border_style="dim"))
 
     def log(self, message: str):
-        """Log a message (appears above UI)."""
+        """Log a message (appears above UI via console.log, and in the log panel via handler)."""
+        # The RichLogHandler attached to the root logger will capture this
+        logging.info(message) # Example: Use standard logging
+        # We can keep console.log if we want messages *also* above the live UI.
         self.console.log(message)
 
     def display_stats(self, stats: Dict[str, Any]) -> None:
