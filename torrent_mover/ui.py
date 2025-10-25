@@ -1,4 +1,7 @@
 # torrent_mover/ui.py
+import logging
+from rich.logging import RichHandler
+from rich.containers import Renderables
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -24,6 +27,37 @@ from rich.layout import Layout
 import time
 
 
+class RichLogHandler(logging.Handler):
+    """A logging handler that captures the last N records for display in Rich."""
+    def __init__(self, max_lines: int = 15):
+        super().__init__()
+        self.max_lines = max_lines
+        self.records: Deque[logging.LogRecord] = deque(maxlen=max_lines)
+        # Use Rich's formatter for nice output
+        self.setFormatter(logging.Formatter('%(message)s'))
+
+
+    def emit(self, record: logging.LogRecord):
+        # We store the raw record and format it later
+        self.records.append(record)
+
+    def get_renderables(self) -> Renderables:
+        """Format the captured records into Rich Text objects."""
+        lines = []
+        for record in self.records:
+            # Basic level styling
+            if record.levelno >= logging.ERROR:
+                style = "bold red"
+            elif record.levelno >= logging.WARNING:
+                style = "yellow"
+            elif record.levelno >= logging.INFO:
+                style = "none"
+            else: # DEBUG
+                style = "dim"
+            lines.append(Text(self.format(record), style=style))
+        return Renderables(lines)
+
+
 class UIManagerV2:
     """
     Redesigned UI with focus on performance and information density.
@@ -45,6 +79,12 @@ class UIManagerV2:
         self._torrents: OrderedDict[str, Dict] = OrderedDict()
         self._active_torrents: Deque[str] = deque(maxlen=5)  # Last 5 active
         self._completed_hashes: set = set()
+        self._completed_torrents_log: Deque[Tuple[str, bool]] = deque(maxlen=10) # Store (name, success)
+
+        # Logging
+        self.log_handler = RichLogHandler(max_lines=15) # Keep last 15 log lines
+        # Add handler ONLY to the root logger to capture everything
+        logging.getLogger().addHandler(self.log_handler)
 
         # Statistics (live updated)
         self._stats = {
@@ -57,7 +97,7 @@ class UIManagerV2:
             "failed_transfers": 0
         }
 
-        # Create layout
+        # --- MODIFIED LAYOUT ---
         self.layout = Layout()
         self.layout.split(
             Layout(name="header", size=3),
@@ -65,16 +105,31 @@ class UIManagerV2:
             Layout(name="footer", size=3)
         )
 
-        # Split body into left (torrents) and right (stats)
+        # Split body into left (torrents & logs) and right (stats & completed)
         self.layout["body"].split_row(
-            Layout(name="torrents", ratio=2),
-            Layout(name="stats", ratio=1)
+            Layout(name="left_panel", ratio=2),
+            Layout(name="right_panel", ratio=1)
         )
+
+        # Split left panel vertically
+        self.layout["left_panel"].split(
+             Layout(name="torrents", ratio=3), # Give more space to progress bars
+             Layout(name="logs", ratio=1)      # Add logs panel below
+        )
+
+        # Split right panel vertically
+        self.layout["right_panel"].split(
+             Layout(name="stats", ratio=1),
+             Layout(name="completed", ratio=1) # Add completed panel below
+        )
+        # --- END MODIFIED LAYOUT ---
 
         # Initialize components
         self._setup_header(version)
         self._setup_progress()
         self._setup_stats_panel()
+        self._setup_log_panel() # New
+        self._setup_completed_panel() # New
         self._setup_footer()
 
     def _setup_header(self, version: str):
@@ -144,12 +199,55 @@ class UIManagerV2:
             Panel(self.stats_table, title="[bold]Live Stats", border_style="cyan")
         )
 
+    def _setup_log_panel(self):
+        """Setup the live log panel."""
+        self.log_renderables = self.log_handler.get_renderables()
+        self.layout["logs"].update(
+            Panel(self.log_renderables, title="[bold]Logs (Last 15)", border_style="yellow")
+        )
+
+    def _setup_completed_panel(self):
+        """Setup the completed torrents panel."""
+        self.completed_table = Table.grid(padding=(0, 1))
+        self.completed_table.add_column("Status")
+        self.completed_table.add_column("Torrent Name")
+        self._update_completed_display() # Initial empty setup
+        self.layout["completed"].update(
+            Panel(self.completed_table, title="[bold]Recently Completed (Last 10)", border_style="dim")
+        )
+
     def _setup_footer(self):
         """Setup footer with queue status."""
         self.footer_text = Text("Ready", justify="center", style="dim")
         self.layout["footer"].update(
             Panel(self.footer_text, border_style="dim")
         )
+
+    def _update_completed_display(self):
+        """Update the completed torrents table."""
+        with self._lock:
+            self.completed_table = Table.grid(padding=(0, 1))
+            self.completed_table.add_column("Status", width=4) # Icon column
+            self.completed_table.add_column("Torrent Name")
+            for name, success in reversed(self.completed_torrents_log): # Show newest first
+                status_icon = "[green]✓[/]" if success else "[bold red]✗[/]"
+                self.completed_table.add_row(status_icon, Text(name[:50], overflow="ellipsis")) # Truncate long names
+
+            # Update panel content (only renderable, not title/border)
+            renderable = self.completed_table if self._completed_torrents_log else Text(" ", justify="center") # Show blank if empty
+            if isinstance(self.layout["completed"].renderable, Panel):
+                 self.layout["completed"].renderable.renderable = renderable
+            else: # First time setup
+                 self.layout["completed"].update(
+                     Panel(renderable, title="[bold]Recently Completed (Last 10)", border_style="dim")
+                 )
+
+    def _update_log_panel(self):
+        """Update the log panel with the latest log records."""
+        with self._lock:
+            self.log_renderables = self.log_handler.get_renderables()
+            if isinstance(self.layout["logs"].renderable, Panel):
+                self.layout["logs"].renderable.renderable = self.log_renderables
 
     def _update_stats_display(self):
         """Update the stats table (called periodically)."""
@@ -214,6 +312,8 @@ class UIManagerV2:
         """Background thread to update stats every second."""
         while not self._stats_thread_stop.wait(1.0):
             self._update_stats_display()
+            self._update_log_panel()
+            self._update_completed_display()
 
     # ===== Public API =====
 
@@ -309,6 +409,7 @@ class UIManagerV2:
         """Mark a torrent as completed."""
         with self._lock:
             if torrent_hash in self._torrents:
+                torrent_name = self._torrents[torrent_hash]["name"]
                 self._torrents[torrent_hash]["status"] = "completed" if success else "failed"
                 self._completed_hashes.add(torrent_hash)
                 self._stats["active_transfers"] = max(0, self._stats["active_transfers"] - 1)
@@ -317,6 +418,9 @@ class UIManagerV2:
                     self._stats["completed_transfers"] += 1
                 else:
                     self._stats["failed_transfers"] += 1
+
+                # Add to completed log
+                self._completed_torrents_log.append((torrent_name, success))
 
         # Hide current torrent progress
         self.main_progress.update(self.current_torrent_task, visible=False, description="[yellow]Current: (none)")
