@@ -79,11 +79,10 @@ class UIManagerV2:
         self._torrents: OrderedDict[str, Dict] = OrderedDict()
         self._active_torrents: Deque[str] = deque(maxlen=5)  # Last 5 active
         self._completed_hashes: set = set()
-        self._completed_torrents_log: Deque[Tuple[str, bool]] = deque(maxlen=10) # Store (name, success)
+        self._completed_torrents_log: Deque[Tuple[str, bool]] = deque(maxlen=10)
 
         # Logging
-        self.log_handler = RichLogHandler(max_lines=15) # Keep last 15 log lines
-        # Add handler ONLY to the root logger to capture everything
+        self.log_handler = RichLogHandler(max_lines=15)
         logging.getLogger().addHandler(self.log_handler)
 
         # Statistics (live updated)
