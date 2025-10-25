@@ -1,5 +1,6 @@
 # torrent_mover/ui.py
 
+import logging
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
@@ -19,9 +20,26 @@ from rich.table import Table, Column
 from rich.text import Text
 import threading
 from collections import OrderedDict, deque
-from typing import Dict, Any, List, Optional, OrderedDict as OrderedDictType, Deque
+from typing import Dict, Any, List, Optional, OrderedDict as OrderedDictType, Deque, Tuple
 from rich.layout import Layout
 import time
+from rich.logging import RichHandler as RichLogHandlerBase # Rename to avoid conflict
+
+
+# Custom Log Handler to capture messages for the UI panel
+class RichLogHandler(RichLogHandlerBase):
+    def __init__(self, max_lines=15, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_lines = max_lines
+        self.log_deque = deque(maxlen=max_lines)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = self.format(record)
+        renderable = self.render_message(record, message)
+        self.log_deque.append(renderable)
+
+    def get_renderables(self) -> Group:
+        return Group(*list(self.log_deque))
 
 
 class UIManagerV2:
@@ -41,21 +59,38 @@ class UIManagerV2:
         self._lock = threading.RLock()
         self._live: Optional[Live] = None
 
+        # --- CORRECTED ORDER: Define all attributes first ---
         # Data structures
         self._torrents: OrderedDict[str, Dict] = OrderedDict()
-        self._active_torrents: Deque[str] = deque(maxlen=5)  # Last 5 active
+        self._active_torrents: Deque[str] = deque(maxlen=5) # Last 5 active
         self._completed_hashes: set = set()
+        self._completed_torrents_log: Deque[Tuple[str, bool]] = deque(maxlen=10) # Store (name, success)
+
+        # Logging
+        self.log_handler = RichLogHandler(max_lines=15, show_path=False, markup=True, rich_tracebacks=True) # Keep last 15 log lines
+        # Do NOT add handler here; it will be added in setup_logging in main script
+
+        self.log_renderables = Group() # Initialize log renderables
 
         # Statistics (live updated)
         self._stats = {
-            "total_torrents": 0,
             "total_bytes": 0,
             "transferred_bytes": 0,
             "start_time": time.time(),
             "active_transfers": 0,
             "completed_transfers": 0,
-            "failed_transfers": 0
+            "failed_transfers": 0,
+            "total_torrents": 0, # Added for clarity
         }
+        self._stats_thread: Optional[threading.Thread] = None
+        self._stats_thread_stop = threading.Event()
+
+        # Completed table (initialize here)
+        self.completed_table = Table.grid(padding=(0, 1))
+        self.completed_table.add_column("Status", width=4)
+        self.completed_table.add_column("Torrent Name")
+        # --- END ATTRIBUTE DEFINITIONS ---
+
 
         # Create layout
         self.layout = Layout()
@@ -65,16 +100,30 @@ class UIManagerV2:
             Layout(name="footer", size=3)
         )
 
-        # Split body into left (torrents) and right (stats)
+        # Split body into left (torrents & logs) and right (stats & completed)
         self.layout["body"].split_row(
-            Layout(name="torrents", ratio=2),
-            Layout(name="stats", ratio=1)
+            Layout(name="left_panel", ratio=2),
+            Layout(name="right_panel", ratio=1)
         )
 
-        # Initialize components
+        # Split left panel vertically
+        self.layout["left_panel"].split(
+            Layout(name="torrents", ratio=3), # Give more space to progress bars
+            Layout(name="logs", ratio=1, minimum_size=5) # Add logs panel below, ensure min size
+        )
+
+        # Split right panel vertically
+        self.layout["right_panel"].split(
+            Layout(name="stats", ratio=1, minimum_size=8), # Ensure min size for stats
+            Layout(name="completed", ratio=1, minimum_size=5) # Add completed panel below, ensure min size
+        )
+
+        # Initialize components (Now safe to call setup methods)
         self._setup_header(version)
         self._setup_progress()
         self._setup_stats_panel()
+        self._setup_log_panel() # New
+        self._setup_completed_panel() # New
         self._setup_footer()
 
     def _setup_header(self, version: str):
@@ -144,6 +193,20 @@ class UIManagerV2:
             Panel(self.stats_table, title="[bold]Live Stats", border_style="cyan")
         )
 
+    def _setup_log_panel(self):
+        """Setup the live log panel."""
+        self.layout["logs"].update(
+            Panel(self.log_renderables, title="[bold]Logs (Last 15)[/bold]", border_style="yellow")
+        )
+
+    def _setup_completed_panel(self):
+        """Setup the completed torrents panel."""
+        # Table columns already defined in __init__
+        self._update_completed_display() # Initial empty setup
+        self.layout["completed"].update(
+            Panel(self.completed_table, title="[bold]Recently Completed (Last 10)", border_style="dim")
+        )
+
     def _setup_footer(self):
         """Setup footer with queue status."""
         self.footer_text = Text("Ready", justify="center", style="dim")
@@ -185,35 +248,75 @@ class UIManagerV2:
                 Panel(self.stats_table, title="[bold]Live Stats", border_style="cyan")
             )
 
+    def _update_log_display(self):
+        """Update the log display panel."""
+        with self._lock:
+            # Get latest renderables from handler
+            self.log_renderables = self.log_handler.get_renderables()
+            self.layout["logs"].update(
+                Panel(self.log_renderables, title="[bold]Logs (Last 15)[/bold]", border_style="yellow")
+            )
+
+    def _update_completed_display(self):
+        """Update the completed torrents table."""
+        with self._lock:
+            # Clear and rebuild table
+            self.completed_table = Table.grid(padding=(0, 1))
+            self.completed_table.add_column("Status", width=4) # Icon column
+            self.completed_table.add_column("Torrent Name")
+            for name, success in reversed(self._completed_torrents_log): # Show newest first
+                status_icon = "[green]✓[/]" if success else "[bold red]✗[/]"
+                self.completed_table.add_row(status_icon, Text(name[:50], overflow="ellipsis")) # Truncate long names
+
+            # Ensure there's some content if empty, prevents collapse
+            if not self._completed_torrents_log:
+                self.completed_table.add_row(" ", Text(" ", justify="center")) # Placeholder row
+
+            self.layout["completed"].update(
+                Panel(self.completed_table, title="[bold]Recently Completed (Last 10)", border_style="dim")
+            )
+
     def __enter__(self):
         self._live = Live(
             self.layout,
             console=self.console,
             screen=True,
-            redirect_stderr=False,
-            refresh_per_second=4 # Reduced from 10 (less CPU)
+            refresh_per_second=2 # Reduced from 10 (less CPU)
         )
         self._live.start()
 
         # Start stats update thread
-        self._stats_thread_stop = threading.Event()
+        self._stats_thread_stop.clear() # Ensure stop event is clear before starting
         self._stats_thread = threading.Thread(target=self._stats_updater, daemon=True)
         self._stats_thread.start()
 
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self._live:
+        # Stop the stats update thread gracefully
+        if self._stats_thread:
             self._stats_thread_stop.set()
-            self._stats_thread.join()
+            self._stats_thread.join(timeout=2) # Wait briefly for thread to exit
+
+        if self._live:
             self.main_progress.stop()
             self.files_progress.stop()
             self._live.stop()
 
+        # Remove the log handler we added
+        logging.getLogger().removeHandler(self.log_handler)
+
     def _stats_updater(self):
-        """Background thread to update stats every second."""
-        while not self._stats_thread_stop.wait(1.0):
-            self._update_stats_display()
+        """Background thread to update stats, logs, and completed panels."""
+        while not self._stats_thread_stop.is_set():
+            time.sleep(1) # Update interval
+            # Check if live display is still active before updating
+            if self._live and self._live.is_started and not self._stats_thread_stop.is_set():
+                self._update_stats_display()
+                self._update_log_display()
+                self._update_completed_display()
+            else:
+                break # Exit if live display stopped or stop event set
 
     # ===== Public API =====
 
