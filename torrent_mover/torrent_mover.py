@@ -1255,7 +1255,7 @@ def _post_transfer_actions(torrent: qbittorrentapi.TorrentDictionary, source_qbi
         logging.info(f"[DRY RUN] Would delete torrent and data from Source: {name}")
     return True
 
-def transfer_torrent(torrent: qbittorrentapi.TorrentDictionary, total_size: int, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, ssh_connection_pools: Dict[str, SSHConnectionPool], dry_run: bool = False, test_run: bool = False) -> Tuple[bool, float]:
+def transfer_torrent(torrent: qbittorrentapi.TorrentDictionary, total_size: int, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, ssh_connection_pools: Dict[str, SSHConnectionPool], dry_run: bool = False, test_run: bool = False, sftp_chunk_size: int = 65536) -> Tuple[bool, float]:
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
@@ -1283,7 +1283,7 @@ def transfer_torrent(torrent: qbittorrentapi.TorrentDictionary, total_size: int,
 
         _execute_transfer(
             torrent, total_size, config, ui, ssh_connection_pools,
-            all_files, source_content_path, dest_content_path, dry_run
+            all_files, source_content_path, dest_content_path, dry_run, sftp_chunk_size
         )
 
         if _post_transfer_actions(
