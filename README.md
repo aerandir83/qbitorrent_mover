@@ -10,11 +10,18 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.8.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **1.9.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 1.8.2 (Latest)
+### Version 1.9.0 (Latest)
+* **Feature**: Replaced the entire UI with a new high-performance version.
+    * Uses a persistent `rich.layout.Layout` for a stable, flicker-free display.
+    * Implements a live stats panel, removing the need for `display_stats()` at the end.
+    * Dramatically reduces memory usage by using shared `Progress` objects instead of one per-file.
+    * Shows only the last 5 active file transfers to prevent visual clutter on large torrents.
+
+### Version 1.8.2
 * **Fix**: Resolved a race condition in the `SSHConnectionPool` that could cause threads to block unnecessarily when the pool contained dead connections.
 * **Fix**: Hardened the `UIManager` to prevent resource leaks by ensuring all progress bars are stopped on exit, even during a crash.
 * **Fix**: Added dynamic batch sizing to remote size calculation (`du -sb`) to prevent shell command length limit errors on torrents with thousands of files.
