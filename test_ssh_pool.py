@@ -168,7 +168,7 @@ def test_concurrent_access():
 
 
 def test_connection_counter():
-    """Test that _created counter is accurate."""
+    """Test that _active_connections counter is accurate using get_stats()."""
     print("\n=== Test 5: Connection Counter Accuracy ===")
     pool = SSHConnectionPool(
         host='localhost',
@@ -178,21 +178,43 @@ def test_connection_counter():
         max_size=3
     )
 
-    print(f"  Initial _created: {pool._created}")
+    stats = pool.get_stats()
+    print(f"  Initial stats: {stats}")
+    if stats['active_connections'] != 0:
+         print(f"  ✗ FAIL: Initial active_connections is not 0")
+         pool.close_all()
+         return
 
-    # Create some connections
-    connections = []
-    for i in range(3):
-        with pool.get_connection() as (sftp, ssh):
-            print(f"   After connection {i+1}: _created = {pool._created}")
+    # Acquire 3 connections simultaneously to check 'in_use'
+    print("  Acquiring 3 connections...")
+    try:
+        with pool.get_connection() as (sftp1, ssh1):
+            stats1 = pool.get_stats()
+            print(f"   After connection 1: {stats1}")
+            with pool.get_connection() as (sftp2, ssh2):
+                stats2 = pool.get_stats()
+                print(f"   After connection 2: {stats2}")
+                with pool.get_connection() as (sftp3, ssh3):
+                    stats3 = pool.get_stats()
+                    print(f"   After connection 3: {stats3}")
 
-    print(f"  Final _created: {pool._created}")
-    print(f"  Pool size: {pool._pool.qsize()}")
+                    if stats3['active_connections'] == 3 and stats3['in_use'] == 3 and stats3['in_pool'] == 0:
+                         print("  ✓ SUCCESS: Stats are correct with 3 connections in use")
+                    else:
+                         print(f"  ✗ FAIL: Stats incorrect with 3 connections in use: {stats3}")
+    except Exception as e:
+        print(f"  ✗ FAIL: Error while acquiring 3 connections: {e}")
+        pool.close_all()
+        return
 
-    if pool._created == 3 and pool._pool.qsize() == 3:
-        print("  ✓ SUCCESS: Counter and pool size match")
+    # After 'with' blocks exit, all should be in pool
+    time.sleep(0.1) # Give connections time to be put back
+    stats_final = pool.get_stats()
+    print(f"  Final stats (all returned): {stats_final}")
+    if stats_final['active_connections'] == 3 and stats_final['in_use'] == 0 and stats_final['in_pool'] == 3:
+        print("  ✓ SUCCESS: Counter and pool size match after release")
     else:
-        print(f"  ✗ FAIL: Counter={pool._created}, Pool size={pool._pool.qsize()}")
+        print(f"  ✗ FAIL: Final stats incorrect: {stats_final}")
 
     pool.close_all()
 
