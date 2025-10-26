@@ -177,9 +177,10 @@ class UIManagerV2:
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
 
                     status_icon = "🔄"
+                    files_str = f"({torrent.get('completed_files', 0)}/{torrent.get('total_files', 0)} files)"
                     self.current_table.add_row(
                         f"{status_icon} {progress:.0f}%",
-                        display_name
+                        f"{display_name} [dim]{files_str}[/dim]"
                     )
 
             if active_count == 0:
@@ -240,6 +241,11 @@ class UIManagerV2:
             stats_table.add_row("✅ Completed:", f"[white]{self._stats['completed_transfers']}[/white]")
             stats_table.add_row("❌ Failed:", f"[white]{self._stats['failed_transfers']}[/white]")
 
+            stats_table.add_row("", "")  # Spacer
+
+            total_files_overall = sum(t.get('total_files', 0) for t in self._torrents.values())
+            completed_files_overall = sum(t.get('completed_files', 0) for t in self._torrents.values())
+            stats_table.add_row("📂 Files:", f"[white]{completed_files_overall} / {total_files_overall}[/white]")
             stats_table.add_row("", "")  # Spacer
 
             # Time stats
@@ -355,11 +361,14 @@ class UIManagerV2:
         self.main_progress.update(self.overall_task, total=total_bytes, visible=True)
 
     def start_torrent_transfer(self, torrent_hash: str, torrent_name: str,
-                               total_size: float, transfer_multiplier: int = 1):
+                               total_size: float, total_files: int,
+                               transfer_multiplier: int = 1):
         with self._lock:
             self._torrents[torrent_hash] = {
                 "name": torrent_name,
                 "size": total_size * transfer_multiplier,
+                "total_files": total_files,
+                "completed_files": 0,
                 "transferred": 0,
                 "status": "transferring",
                 "start_time": time.time()
@@ -392,9 +401,9 @@ class UIManagerV2:
         if len(self.active_file_tasks) >= 5:
             try:
                 oldest_file = next(iter(self.active_file_tasks))
-                task_id = self.active_file_tasks.pop(oldest_file)
+                task_id, _ = self.active_file_tasks.pop(oldest_file)
                 self.files_progress.remove_task(task_id)
-            except StopIteration:
+            except (StopIteration, KeyError):
                 pass
 
         # Add new file with icon
@@ -404,19 +413,23 @@ class UIManagerV2:
             f"📄 {display_name}",
             total=file_size
         )
-        self.active_file_tasks[file_path] = task_id
+        self.active_file_tasks[file_path] = (task_id, torrent_hash)
 
     def update_file_progress(self, file_path: str, bytes_transferred: int):
         if file_path in self.active_file_tasks:
+            task_id, _ = self.active_file_tasks[file_path]
             self.files_progress.update(
-                self.active_file_tasks[file_path],
+                task_id,
                 advance=bytes_transferred
             )
 
     def complete_file_transfer(self, file_path: str):
         if file_path in self.active_file_tasks:
-            task_id = self.active_file_tasks.pop(file_path)
+            task_id, torrent_hash = self.active_file_tasks.pop(file_path)
             self.files_progress.remove_task(task_id)
+            with self._lock:
+                if torrent_hash in self._torrents:
+                    self._torrents[torrent_hash]["completed_files"] += 1
 
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
         with self._lock:
