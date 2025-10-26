@@ -1647,15 +1647,16 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
         return
 
     total_count = len(eligible_torrents)
+    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
     with UIManager(version=__version__) as ui:
+        ui.set_transfer_mode(transfer_mode)
         ui.set_analysis_total(total_count)
         ui.update_header(f"Found {total_count} torrents to process. Analyzing...")
         sftp_config = config['SOURCE_SERVER']
         analyzed_torrents: List[Tuple[qbittorrentapi.TorrentDictionary, int]] = []
         total_transfer_size = 0
         logging.info("STATE: Starting analysis phase...")
-        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         try:
             if transfer_mode == 'rsync':
                 for torrent in eligible_torrents:
@@ -1700,7 +1701,11 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
             time.sleep(2)
             return
 
-        ui.set_overall_total(total_transfer_size * 2 if config['SETTINGS'].getboolean('local_cache_sftp_upload', False) else total_transfer_size)
+        # Corrected logic for multiplier:
+        local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
+        transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
+        ui.set_overall_total(total_transfer_size * transfer_multiplier)
+
         if not args.dry_run and not destination_health_check(config, total_transfer_size, ssh_connection_pools):
             ui.update_header("[bold red]Destination health check failed. Aborting transfer process.[/]")
             logging.error("FATAL: Destination health check failed.")
