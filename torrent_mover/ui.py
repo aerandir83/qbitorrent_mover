@@ -223,7 +223,11 @@ class UIManagerV2:
             stats_table.add_column()
 
             # Transfer stats
-            stats_table.add_row("📊 Transferred:", f"[green]{self._stats['transferred_bytes'] / (1024**3):.2f} GB[/]")
+            transferred_gb = self._stats['transferred_bytes'] / (1024**3)
+            total_gb = self._stats['total_bytes'] / (1024**3)
+            remaining_gb = total_gb - transferred_gb
+            stats_table.add_row("📊 Transferred:", f"[white]{transferred_gb:.2f} / {total_gb:.2f} GB[/white]")
+            stats_table.add_row("⏳ Remaining:", f"[white]{remaining_gb:.2f} GB[/white]")
             stats_table.add_row("⚡ Speed:", f"[yellow]{current_speed / (1024**2):.2f} MB/s[/]")
             stats_table.add_row("📈 Avg Speed:", f"[dim]{avg_speed / (1024**2):.2f} MB/s[/]")
             stats_table.add_row("🔥 Peak Speed:", f"[dim]{self._stats['peak_speed'] / (1024**2):.2f} MB/s[/]")
