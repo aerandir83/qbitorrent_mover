@@ -54,18 +54,18 @@ class UIManagerV2:
         }
 
         # Create layout with better proportions
-        self.layout = Layout()
+        self.layout = Layout(style="on #1c1c1c") # Base background (optional, can use terminal default)
         self.layout.split(
-            Layout(name="header", size=3),
-            Layout(name="body", ratio=1),
-            Layout(name="footer", size=7) # Increased for log
+            Layout(name="header", size=3, style="on #1a1a2e"), # Darker blue/purple
+            Layout(name="body", ratio=1), # Keep body transparent or match base
+            Layout(name="footer", size=7, style="on #0a0e27")  # Very dark blue/black
         )
 
         # Split body into three columns
         self.layout["body"].split_row(
-            Layout(name="left", ratio=2), # Progress bars
-            Layout(name="middle", ratio=1), # Current torrents
-            Layout(name="right", ratio=1) # Stats + Recent
+            Layout(name="left", ratio=2, style="on #16213e"),   # Dark blue-grey
+            Layout(name="middle", ratio=1, style="on #1f2a40"), # Slightly lighter blue-grey
+            Layout(name="right", ratio=1, style="on #16213e")   # Dark blue-grey (same as left)
         )
 
         # Initialize components
@@ -87,8 +87,7 @@ class UIManagerV2:
             Panel(
                 Align.center(self.header_text),
                 title="[bold magenta]TORRENT MOVER[/]",
-                border_style="dim",
-                style="on #1a1a2e"
+                border_style="dim"
             )
         )
 
@@ -140,15 +139,13 @@ class UIManagerV2:
             Panel(
                 self.main_progress,
                 title="[bold green]📈 Transfer Progress",
-                border_style="dim",
-                style="on #16213e"
+                border_style="dim"
             ),
             Panel(
                 self.files_progress,
                 title="[bold cyan]📄 Active Files (Last 5)",
                 border_style="dim",
-                height=9,
-                style="on #0f3460"
+                height=9
             )
         )
 
@@ -166,8 +163,7 @@ class UIManagerV2:
             Panel(
                 self.current_table,
                 title="[bold yellow]🎯 Active Queue",
-                border_style="dim",
-                style="on #16213e"
+                border_style="dim"
             )
         )
 
@@ -209,8 +205,7 @@ class UIManagerV2:
                 Panel(
                     self.current_table,
                     title="[bold yellow]🎯 Active Queue",
-                    border_style="dim",
-                    style="on #16213e" # <-- ADDED DARK THEME
+                    border_style="dim"
                 )
             )
 
@@ -297,11 +292,11 @@ class UIManagerV2:
                     )
 
                 stats_group = Group(
-                    Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460"),
-                    Panel(recent_table, title="[bold green]🎉 Recent Completions", border_style="dim", style="on #16213e")
+                    Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim"),
+                    Panel(recent_table, title="[bold green]🎉 Recent Completions", border_style="dim")
                 )
             else:
-                stats_group = Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460")
+                stats_group = Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim")
 
             self.layout["right"].update(stats_group)
 
@@ -310,8 +305,7 @@ class UIManagerV2:
         log_panel = Panel(
             Align.left("[dim]Log display initialized...[/]"),
             title="[bold]📜 Live Log",
-            border_style="dim",
-            style="on #0a0e27"
+            border_style="dim"
         )
         self.layout["footer"].update(log_panel)
 
@@ -325,8 +319,7 @@ class UIManagerV2:
                 Panel(
                     Align.left(log_text),
                     title="[bold]📜 Live Log",
-                    border_style="dim",
-                    style="on #0a0e27"
+                    border_style="dim"
                 )
             )
 
@@ -486,7 +479,7 @@ class UIManagerV2:
     def update_header(self, text: str):
         mode_str = f"[dim]({self.transfer_mode.upper()})[/dim]" if self.transfer_mode else ""
         self.header_text = Text(f"🚀 Torrent Mover v{self.version} {mode_str} - {text}", justify="center", style="bold magenta")
-        self.layout["header"].update(Panel(Align.center(self.header_text), title="[bold magenta]TORRENT MOVER[/]", border_style="dim", style="on #1a1a2e"))
+        self.layout["header"].update(Panel(Align.center(self.header_text), title="[bold magenta]TORRENT MOVER[/]", border_style="dim"))
 
     def log(self, message: str, style: str = "dim"):
         """Adds a message to the on-screen log buffer."""
