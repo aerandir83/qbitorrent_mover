@@ -1704,7 +1704,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
 
         logging.info("STATE: Starting transfer phase...")
         ui.update_header(f"Transferring {len(analyzed_torrents)} torrents...")
-        ui.update_footer("Executing transfers...")
+        ui.log("Executing transfers...")
         try:
             with ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as executor:
                 transfer_futures = {
