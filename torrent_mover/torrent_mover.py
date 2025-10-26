@@ -326,25 +326,27 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
             total_size = remote_stat.st_size
             ui.start_file_transfer(torrent_hash, source_file_path, total_size)
             # ui.update_file_status(torrent_hash, source_file_path, "Downloading")
-            local_size = file_tracker.get_file_progress(torrent_hash, source_file_path)
-            if local_cache_path.exists() and local_cache_path.stat().st_size > local_size:
-                 local_size = local_cache_path.stat().st_size
+            local_size = 0
+            if local_cache_path.exists():
+                try:
+                    local_size = local_cache_path.stat().st_size
+                except FileNotFoundError:
+                    local_size = 0
+            else:
+                file_tracker.record_file_progress(torrent_hash, source_file_path, 0)
 
-            if local_size >= total_size:
-                logging.info(f"Cache hit, skipping download: {os.path.basename(source_file_path)}")
-                ui.update_torrent_progress(torrent_hash, total_size)
-                # ui.advance_overall_progress(total_size)
+            if local_size == total_size:
+                logging.info(f"Skipping (exists and size matches): {os.path.basename(source_file_path)}")
+                ui.update_torrent_progress(torrent_hash, total_size - local_size)
                 ui.update_file_progress(source_file_path, total_size)
                 return
-            if local_size > 0:
-                logging.info(f"Resuming download to cache: {os.path.basename(source_file_path)}")
-                mode = 'ab'
-                ui.update_torrent_progress(torrent_hash, local_size)
-                # ui.advance_overall_progress(local_size)
-                ui.update_file_progress(source_file_path, local_size)
-            else:
-                logging.info(f"Downloading to cache: {os.path.basename(source_file_path)}")
-                mode = 'wb'
+            elif local_size > total_size:
+                logging.warning(f"Local file '{os.path.basename(source_file_path)}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
+                local_size = 0
+            elif local_size > 0:
+                logging.info(f"Resuming download for {os.path.basename(source_file_path)} from {local_size / (1024*1024):.2f} MB.")
+
+            mode = 'ab' if local_size > 0 else 'wb'
             with sftp.open(source_file_path, 'rb') as remote_f_raw:
                 remote_f_raw.seek(local_size)
                 remote_f_raw.prefetch()
@@ -531,25 +533,25 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
             if total_size == 0:
                 logging.warning(f"Skipping zero-byte file: {file_name}")
                 return
-            local_size = file_tracker.get_file_progress(torrent_hash, remote_file)
+            local_size = 0
             if local_path.exists():
-                current_on_disk = local_path.stat().st_size
-                if current_on_disk > local_size:
-                    local_size = current_on_disk
-                logging.debug(f"SFTP Check: Local file '{local_file}' exists with size: {local_size}")
-                if local_size == total_size:
-                    logging.info(f"Skipping (exists and size matches): {file_name}")
-                    logging.debug(f"SFTP SKIP: Local: {local_size}, Remote: {total_size}. Skipping file '{file_name}'.")
-                    ui.update_torrent_progress(torrent_hash, total_size - local_size)
-                    # ui.advance_overall_progress(total_size - local_size)
-                    return
-                elif local_size > total_size:
-                    logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
-                    logging.debug(f"SFTP OVERWRITE: Local: {local_size}, Remote: {total_size}. Overwriting file '{file_name}'.")
+                try:
+                    local_size = local_path.stat().st_size
+                except FileNotFoundError:
                     local_size = 0
-                else:
-                    logging.info(f"Resuming download for {file_name} from {local_size / (1024*1024):.2f} MB.")
-                    logging.debug(f"SFTP RESUME: Local: {local_size}, Remote: {total_size}. Resuming file '{file_name}'.")
+            else:
+                file_tracker.record_file_progress(torrent_hash, remote_file, 0)
+            if local_size == total_size:
+                logging.info(f"Skipping (exists and size matches): {file_name}")
+                ui.update_torrent_progress(torrent_hash, total_size - local_size)
+                ui.update_file_progress(remote_file, total_size)
+                return
+            elif local_size > total_size:
+                logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
+                local_size = 0
+            elif local_size > 0:
+                logging.info(f"Resuming download for {file_name} from {local_size / (1024*1024):.2f} MB.")
+
             if local_size > 0:
                 ui.update_torrent_progress(torrent_hash, local_size)
                 # ui.advance_overall_progress(local_size)
@@ -562,14 +564,12 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
             local_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 ui.start_file_transfer(torrent_hash, remote_file, total_size)
-                mode = 'r+b' if local_size > 0 else 'wb'
+                mode = 'ab' if local_size > 0 else 'wb'
                 with sftp.open(remote_file, 'rb') as remote_f_raw:
                     remote_f_raw.seek(local_size)
                     remote_f_raw.prefetch()
                     remote_f = RateLimitedFile(remote_f_raw, download_limit_bytes_per_sec)
                     with open(local_path, mode) as local_f:
-                        if local_size > 0:
-                            local_f.seek(local_size)
                         while True:
                             chunk = remote_f.read(sftp_chunk_size)
                             if not chunk: break
