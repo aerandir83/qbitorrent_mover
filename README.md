@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.9.1**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **1.9.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 1.9.1 (Latest)
+### Version 1.9.2 (Latest)
+*   **Fix**: Corrected an `IndentationError` in the `UIManagerV2` class that occurred after replacing the UI module.
+
+### Version 1.9.1
 *   **Feature**: Implemented a `FileTransferTracker` to checkpoint and resume individual file transfers, preventing restarts from scratch after failures.
 *   **Feature**: Centralized all script timeouts into a `Timeouts` class, allowing users to configure them via environment variables (`TM_SSH_CONNECT_TIMEOUT`, `TM_RECHECK_TIMEOUT`, etc.) for greater flexibility.
 *   **Feature**: Enhanced bandwidth monitoring in the UI to show the transfer speed of each individual active file, providing more granular insight into performance.
