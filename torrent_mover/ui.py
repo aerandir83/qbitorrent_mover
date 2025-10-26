@@ -37,6 +37,7 @@ class UIManagerV2:
         self._active_torrents: Deque[str] = deque(maxlen=5)
         self._completed_hashes: set = set()
         self._recent_completions: Deque[tuple] = deque(maxlen=5)  # (name, size, duration)
+        self._log_buffer: Deque[Text] = deque(maxlen=20)
 
         # Statistics
         self._stats = {
@@ -282,36 +283,29 @@ class UIManagerV2:
             self.layout["right"].update(stats_group)
 
     def _setup_footer(self):
-        """Enhanced footer with system info."""
-        self._update_footer_display()
+        """Initial setup for the log panel footer."""
+        log_panel = Panel(
+            Align.left("[dim]Log display initialized...[/]"),
+            title="[bold]📜 Live Log",
+            border_style="dim",
+            style="on #0a0e27"
+        )
+        self.layout["footer"].update(log_panel)
 
     def _update_footer_display(self):
-        """Update footer with detailed status."""
+        """Updates the footer with the latest log messages."""
         with self._lock:
-            # Create a mini table for footer info
-            footer_table = Table.grid(padding=(0, 3))
-            footer_table.add_column(justify="left")
-            footer_table.add_column(justify="center")
-            footer_table.add_column(justify="right")
+            # Join the deque of Text objects with newlines
+            log_text = Text("\n").join(list(self._log_buffer))
 
-            # Left: Current operation
-            left_text = "[dim]Status:[/] [green]Running[/]"
-
-            # Center: Progress summary
-            if self._stats["total_torrents"] > 0:
-                progress_pct = (self._stats["completed_transfers"] / self._stats["total_torrents"]) * 100
-                center_text = f"[cyan]{self._stats['completed_transfers']}/{self._stats['total_torrents']} torrents[/] ([yellow]{progress_pct:.0f}%[/])"
-            else:
-                center_text = "[dim]Waiting for torrents...[/]"
-
-            # Right: Connection info
-            right_text = f"[dim]SSH Pools: Active[/]"
-
-            footer_table.add_row(left_text, center_text, right_text)
-
-            self.layout["footer"].update(
-                Panel(footer_table, border_style="dim", style="on #0a0e27")
+        self.layout["footer"].update(
+            Panel(
+                Align.left(log_text),
+                title="[bold]📜 Live Log",
+                border_style="dim",
+                style="on #0a0e27"
             )
+        )
 
     def __enter__(self):
         self._live = Live(
@@ -451,12 +445,13 @@ class UIManagerV2:
         self.header_text = Text(f"🚀 Torrent Mover v{self.version} - {text}", justify="center", style="bold magenta")
         self.layout["header"].update(Panel(self.header_text, border_style="magenta", style="on #1a1a2e"))
 
-    def update_footer(self, text: str):
-        # Footer is now managed by _update_footer_display
-        pass
 
-    def log(self, message: str):
-        self.console.log(message)
+    def log(self, message: str, style: str = "dim"):
+        """Adds a message to the on-screen log buffer."""
+        with self._lock:
+            # Format with a timestamp
+            timestamp = time.strftime("%H:%M:%S")
+            self._log_buffer.append(Text(f"[{timestamp}] {message}", style=style))
 
     def display_stats(self, stats: Dict[str, Any]) -> None:
         """Displays final statistics."""
