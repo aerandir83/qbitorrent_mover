@@ -18,7 +18,6 @@ import json
 import socket
 
 # Constants
-DEFAULT_SSH_TIMEOUT = 30
 DEFAULT_KEEPALIVE_INTERVAL = 30
 DEFAULT_SSH_POOL_SIZE = 5
 DEFAULT_RETRY_ATTEMPTS = 2
@@ -33,13 +32,14 @@ class SSHConnectionPool:
     """Thread-safe SSH connection pool with proper dead connection handling."""
 
     def __init__(self, host: str, port: int, username: str, password: str,
-                 max_size: int = DEFAULT_SSH_POOL_SIZE, timeout: int = DEFAULT_SSH_TIMEOUT):
+                 max_size: int = DEFAULT_SSH_POOL_SIZE, connect_timeout: int = 10, pool_wait_timeout: int = 120):
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.max_size = max_size
-        self.timeout = timeout
+        self.connect_timeout = connect_timeout
+        self.pool_wait_timeout = pool_wait_timeout
         self._pool: Queue[Tuple[paramiko.SFTPClient, paramiko.SSHClient]] = Queue(maxsize=max_size)
         self._lock = threading.Lock()
         self._active_connections = 0  # Track connections in use + in pool
@@ -57,7 +57,7 @@ class SSHConnectionPool:
                 port=self.port,
                 username=self.username,
                 password=self.password,
-                timeout=self.timeout
+                timeout=self.connect_timeout
             )
             transport = ssh_client.get_transport()
             if transport:
@@ -135,7 +135,7 @@ class SSHConnectionPool:
                                 f"waiting for connection to {self.host}"
                             )
                             # Wait with timeout to avoid deadlock
-                            if not self._condition.wait(timeout=self.timeout * 2): # Use a longer timeout for waiting
+                            if not self._condition.wait(timeout=self.pool_wait_timeout):
                                 raise TimeoutError(
                                     f"Timeout waiting for SSH connection to {self.host}"
                                 )
@@ -620,3 +620,44 @@ class TransferCheckpoint:
             self.file.write_text(json.dumps(self.state, indent=2))
         except IOError as e:
             logging.error(f"Failed to save checkpoint file '{self.file}': {e}")
+
+
+class FileTransferTracker:
+    """Track partial file transfers for resume capability."""
+
+    def __init__(self, checkpoint_file: Path):
+        self.file = checkpoint_file
+        self.state = self._load()
+
+    def _load(self) -> Dict[str, Any]:
+        if self.file.exists():
+            try:
+                return json.loads(self.file.read_text())
+            except json.JSONDecodeError:
+                logging.warning(f"Could not decode file transfer tracker file '{self.file}'. Starting fresh.")
+                return {"files": {}}
+        return {"files": {}}
+
+    def record_file_progress(self, torrent_hash: str, file_path: str, bytes_transferred: int) -> None:
+        """Record progress for a specific file."""
+        key = f"{torrent_hash}:{file_path}"
+        self.state["files"][key] = {
+            "bytes": bytes_transferred,
+            "timestamp": time.time()
+        }
+        self._save()
+
+    def get_file_progress(self, torrent_hash: str, file_path: str) -> int:
+        """Get last known progress for a file."""
+        key = f"{torrent_hash}:{file_path}"
+        return self.state["files"].get(key, {}).get("bytes", 0)
+
+    def _save(self) -> None:
+        try:
+            # Throttle saves to once every 5 seconds to reduce I/O
+            last_save = getattr(self, "_last_save_time", 0)
+            if time.time() - last_save > 5:
+                self.file.write_text(json.dumps(self.state, indent=2))
+                self._last_save_time = time.time()
+        except IOError as e:
+            logging.error(f"Failed to save file transfer tracker file '{self.file}': {e}")

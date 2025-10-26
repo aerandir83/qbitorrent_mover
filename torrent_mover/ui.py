@@ -120,6 +120,8 @@ class UIManagerV2:
             TextColumn("[dim]{task.description}"),
             BarColumn(bar_width=30),
             TextColumn("{task.percentage:>3.0f}%"),
+            "•",
+            TransferSpeedColumn(),
             expand=True
         )
         self.active_file_tasks: Dict[str, TaskID] = {}
