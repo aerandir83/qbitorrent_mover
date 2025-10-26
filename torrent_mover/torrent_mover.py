@@ -1746,7 +1746,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
         with ui._lock: # Accessing stats safely
             completed_count = ui._stats['completed_transfers']
         ui.update_header(f"Processing complete. Moved {completed_count}/{total_count} torrent(s).")
-        ui.update_footer("All tasks finished.")
+        ui.set_final_status("All tasks finished.")
         with ui._lock: # Accessing stats safely
             completed_count = ui._stats['completed_transfers']
         logging.info(f"Processing complete. Successfully moved {completed_count}/{total_count} torrent(s).")

@@ -1,4 +1,5 @@
 from rich.console import Console, Group
+from rich.theme import Theme
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import (
@@ -27,12 +28,17 @@ class UIManagerV2:
     """
 
     def __init__(self, version: str = ""):
-        self.console = Console()
+        # Define a theme with a dark background
+        dark_theme = Theme({
+            "default": "white on #16213e" # Set default text/background
+        })
+        self.console = Console(theme=dark_theme) # <-- Apply the theme here
         self._lock = threading.RLock()
         self._live: Optional[Live] = None
         self.version = version
         self.transfer_mode = "" # For transfer mode
         self._log_buffer: Deque[Text] = deque(maxlen=20) # For log panel
+        self._current_status: Optional[str] = None
 
         # Data structures
         self._torrents: OrderedDict[str, Dict] = OrderedDict()
@@ -316,14 +322,17 @@ class UIManagerV2:
         self.layout["footer"].update(log_panel)
 
     def _update_footer_display(self):
-        """Updates the footer with the latest log messages."""
+        """Updates the footer with the latest log messages or a final status."""
         with self._lock:
-            # Join the deque of Text objects with newlines
-            log_text = Text("\n").join(list(self._log_buffer))
+            if self._current_status:
+                display_content = Align.center(Text(self._current_status, style="bold green"))
+            else:
+                # Join the deque of Text objects with newlines
+                display_content = Align.left(Text("\n").join(list(self._log_buffer)))
 
             self.layout["footer"].update(
                 Panel(
-                    Align.left(log_text),
+                    display_content,
                     title="[bold]📜 Live Log",
                     border_style="dim",
                     style="on #0a0e27"
@@ -362,6 +371,15 @@ class UIManagerV2:
             self.main_progress.stop()
             self.files_progress.stop()
             self._live.stop()
+
+    def set_final_status(self, message: str):
+        """
+        Sets a final, persistent status message in the footer.
+        """
+        with self._lock:
+            self._current_status = message
+        # Manually refresh the footer one last time
+        self._update_footer_display()
 
     def _stats_updater(self):
         """Background thread to update stats and displays."""
