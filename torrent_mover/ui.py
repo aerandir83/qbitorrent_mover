@@ -442,7 +442,7 @@ class UIManagerV2:
         self.main_progress.update(self.current_torrent_task, visible=False)
 
     def update_header(self, text: str):
-        self.header_text = Text(f"🚀 Torrent Mover v{self.version} - {text}", justify="center", style="bold magenta")
+        self.header_text = Text.from_markup(f"🚀 Torrent Mover v{self.version} - {text}", justify="center", style="bold magenta")
         self.layout["header"].update(Panel(self.header_text, border_style="magenta", style="on #1a1a2e"))
 
 
