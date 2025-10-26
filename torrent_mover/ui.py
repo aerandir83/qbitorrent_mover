@@ -52,7 +52,6 @@ class UIManagerV2:
             "peak_speed": 0.0,
             "current_speed": 0.0,
         }
-        self._speed_history: Deque[float] = deque(maxlen=30) # Last 30 seconds
 
         # Create layout with better proportions
         self.layout = Layout()
@@ -222,10 +221,18 @@ class UIManagerV2:
     def _update_stats_display(self):
         """Update the stats display with speed history."""
         with self._lock:
+            current_total_speed = 0.0
+            active_tasks = [task for task in self.files_progress.tasks if not task.finished]
+            for task in active_tasks:
+                current_total_speed += task.speed if task.speed is not None else 0.0
+
+            # Store for peak calculation and display
+            self._stats["current_speed"] = current_total_speed
+            # Use the freshly calculated speed for display
+            avg_speed = current_total_speed # Rename variable for simplicity later
+
             elapsed = time.time() - self._stats["start_time"]
             # Use average speed for a more stable "current" speed
-            self._speed_history.append(self._stats["current_speed"]) # current_speed is updated in update_torrent_progress
-            avg_speed = sum(self._speed_history) / len(self._speed_history) if self._speed_history else 0
 
             # Track peak speed
             if avg_speed > self._stats["peak_speed"]:
@@ -353,12 +360,6 @@ class UIManagerV2:
         """Background thread to update stats and displays."""
         while not self._stats_thread_stop.wait(1.0):
             with self._lock:
-                # Calculate overall speed
-                active_speed = 0.0
-                for task in self.files_progress.tasks:
-                    active_speed += task.speed if task.speed is not None else 0
-                self._stats["current_speed"] = active_speed
-
                 self._update_stats_display()
                 self._update_current_torrents()
                 self._update_footer_display() # For log panel
@@ -406,7 +407,7 @@ class UIManagerV2:
                 self.current_torrent_task,
                 description=f"[yellow]⚡ Current Torrent: {display_name}", # <-- RENAMED
                 completed=0,
-                total=total_size * transfer_multiplier,
+                total=total_size * transfer_multiplier, # <-- APPLY MULTIPLIER HERE
                 visible=True
             )
 
