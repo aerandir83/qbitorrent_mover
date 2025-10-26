@@ -79,7 +79,7 @@ class UIManagerV2:
         self.version = version
         self.header_text = Text(f"🚀 Torrent Mover v{version}", justify="center", style="bold magenta")
         self.layout["header"].update(
-            Panel(self.header_text, border_style="magenta", style="on #1a1a2e")
+            Panel(self.header_text, border_style="dim", style="on #1a1a2e")
         )
 
     def _setup_progress(self):
@@ -127,14 +127,14 @@ class UIManagerV2:
         progress_group = Group(
             Panel(
                 self.main_progress,
-                title="[bold]📈 Transfer Progress",
-                border_style="green",
+                title="[bold green]📈 Transfer Progress",
+                border_style="dim",
                 style="on #16213e"
             ),
             Panel(
                 self.files_progress,
-                title="[bold]📄 Active Files (Last 5)",
-                border_style="cyan",
+                title="[bold cyan]📄 Active Files (Last 5)",
+                border_style="dim",
                 height=9,
                 style="on #0f3460"
             )
@@ -153,8 +153,8 @@ class UIManagerV2:
         self.layout["middle"].update(
             Panel(
                 self.current_table,
-                title="[bold]🎯 Active Queue",
-                border_style="yellow",
+                title="[bold yellow]🎯 Active Queue",
+                border_style="dim",
                 style="on #16213e"
             )
         )
@@ -193,8 +193,8 @@ class UIManagerV2:
             self.layout["middle"].update(
                 Panel(
                     self.current_table,
-                    title="[bold]🎯 Active Queue",
-                    border_style="yellow",
+                    title="[bold yellow]🎯 Active Queue",
+                    border_style="dim",
                     style="on #16213e"
                 )
             )
@@ -228,16 +228,16 @@ class UIManagerV2:
             remaining_gb = total_gb - transferred_gb
             stats_table.add_row("📊 Transferred:", f"[white]{transferred_gb:.2f} / {total_gb:.2f} GB[/white]")
             stats_table.add_row("⏳ Remaining:", f"[white]{remaining_gb:.2f} GB[/white]")
-            stats_table.add_row("⚡ Speed:", f"[yellow]{current_speed / (1024**2):.2f} MB/s[/]")
-            stats_table.add_row("📈 Avg Speed:", f"[dim]{avg_speed / (1024**2):.2f} MB/s[/]")
-            stats_table.add_row("🔥 Peak Speed:", f"[dim]{self._stats['peak_speed'] / (1024**2):.2f} MB/s[/]")
+            stats_table.add_row("⚡ Speed:", f"[white]{current_speed / (1024**2):.2f} MB/s[/white]")
+            stats_table.add_row("📈 Avg Speed:", f"[dim]{avg_speed / (1024**2):.2f} MB/s[/dim]")
+            stats_table.add_row("🔥 Peak Speed:", f"[dim]{self._stats['peak_speed'] / (1024**2):.2f} MB/s[/dim]")
 
             stats_table.add_row("", "")  # Spacer
 
             # Status stats
-            stats_table.add_row("🔄 Active:", f"[yellow]{self._stats['active_transfers']}[/]")
-            stats_table.add_row("✅ Completed:", f"[green]{self._stats['completed_transfers']}[/]")
-            stats_table.add_row("❌ Failed:", f"[red]{self._stats['failed_transfers']}[/]")
+            stats_table.add_row("🔄 Active:", f"[white]{self._stats['active_transfers']}[/white]")
+            stats_table.add_row("✅ Completed:", f"[white]{self._stats['completed_transfers']}[/white]")
+            stats_table.add_row("❌ Failed:", f"[white]{self._stats['failed_transfers']}[/white]")
 
             stats_table.add_row("", "")  # Spacer
 
@@ -246,7 +246,7 @@ class UIManagerV2:
             minutes = int((elapsed % 3600) // 60)
             seconds = int(elapsed % 60)
             time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            stats_table.add_row("⏱️ Elapsed:", f"[dim]{time_str}[/]")
+            stats_table.add_row("⏱️ Elapsed:", f"[dim]{time_str}[/dim]")
 
             # ETA calculation
             if self._stats["transferred_bytes"] > 0 and self._stats["total_bytes"] > 0:
@@ -256,7 +256,7 @@ class UIManagerV2:
                     eta_hours = int(eta_seconds // 3600)
                     eta_minutes = int((eta_seconds % 3600) // 60)
                     eta_str = f"{eta_hours:02d}:{eta_minutes:02d}"
-                    stats_table.add_row("⏳ ETA:", f"[cyan]{eta_str}[/]")
+                    stats_table.add_row("⏳ ETA:", f"[dim]{eta_str}[/dim]")
 
             # Recent completions section
             if self._recent_completions:
@@ -273,11 +273,11 @@ class UIManagerV2:
                     )
 
                 stats_group = Group(
-                    Panel(stats_table, title="[bold]📊 Statistics", border_style="cyan", style="on #0f3460"),
-                    Panel(recent_table, title="[bold]🎉 Recent Completions", border_style="green", style="on #16213e")
+                    Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460"),
+                    Panel(recent_table, title="[bold green]🎉 Recent Completions", border_style="dim", style="on #16213e")
                 )
             else:
-                stats_group = Panel(stats_table, title="[bold]📊 Statistics", border_style="cyan", style="on #0f3460")
+                stats_group = Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460")
 
             self.layout["right"].update(stats_group)
 
