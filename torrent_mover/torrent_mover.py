@@ -686,6 +686,7 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                     ui.update_torrent_progress(torrent_hash, remaining)
 
                 logging.info(f"Rsync transfer completed successfully for '{os.path.basename(remote_path)}'.")
+                ui.log(f"Rsync complete: {os.path.basename(remote_path)}", style="green")
                 return
             elif process.returncode == 30:
                 logging.warning(f"Rsync timed out for '{os.path.basename(remote_path)}'. Retrying...")
@@ -697,6 +698,7 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                 else:
                     logging.error(f"Rsync failed for '{os.path.basename(remote_path)}' with non-retryable exit code {process.returncode}.\n"
                                   f"Rsync stderr: {stderr_output}")
+                ui.log(f"Rsync FAILED for {os.path.basename(remote_path)}", style="bold red")
                 raise Exception(f"Rsync transfer failed for {os.path.basename(remote_path)}")
         except FileNotFoundError:
             logging.error("FATAL: 'rsync' or 'sshpass' command not found.")
@@ -1242,6 +1244,7 @@ def _post_transfer_actions(torrent: qbittorrentapi.TorrentDictionary, source_qbi
         logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
     if not wait_for_recheck_completion(destination_qbit, hash_, dry_run=dry_run):
         logging.error(f"Failed to verify recheck for {name}. Assuming destination data is corrupt.")
+        ui.log(f"Recheck FAILED: {name}. Deleting destination data.", style="bold red")
         if not dry_run:
             logging.warning(f"Deleting destination data to force re-transfer on next run: {dest_content_path}")
             _delete_destination_content(dest_content_path, config, ssh_connection_pools)
@@ -1305,6 +1308,7 @@ def transfer_torrent(torrent: qbittorrentapi.TorrentDictionary, total_size: int,
             ssh_connection_pools, dest_content_path, destination_save_path, dry_run, test_run
         ):
             logging.info(f"SUCCESS: Successfully processed torrent: {name}")
+            ui.log(f"Success: {name}", style="bold green")
             success = True
             duration = time.time() - start_time
             return True, duration
@@ -1703,7 +1707,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
             raise RuntimeError("Destination health check failed.")
 
         logging.info("STATE: Starting transfer phase...")
-        ui.update_header(f"Transferring {len(analyzed_torrents)} torrents...")
+        ui.update_header(f"Transferring {len(analyzed_torrents)} torrents... [green]Running[/]")
         ui.log("Executing transfers...")
         try:
             with ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as executor:
