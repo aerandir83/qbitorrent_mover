@@ -100,7 +100,7 @@ class UIManagerV2:
             BarColumn(bar_width=None, complete_style="green", finished_style="bold green"),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             "•",
-            DownloadColumn(unit="GB"), # <-- Use GB for main
+            DownloadColumn(binary_units=True), # <-- Use GB for main
             "•",
             TransferSpeedColumn(),
             "•",
