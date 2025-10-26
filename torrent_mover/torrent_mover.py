@@ -1105,7 +1105,7 @@ def change_ownership(path_to_change: str, user: str, group: str, remote_config: 
         except Exception as e:
             logging.error(f"An exception occurred during local chown: {e}", exc_info=True)
 
-def _pre_transfer_setup(torrent: qbittorrentapi.TorrentDictionary, config: configparser.ConfigParser, ssh_connection_pools: Dict[str, SSHConnectionPool]) -> Tuple[List[Tuple[str, str]], str, str, str]:
+def _pre_transfer_setup(torrent: qbittorrentapi.TorrentDictionary, config: configparser.ConfigParser, ssh_connection_pools: Dict[str, SSHConnectionPool]) -> Tuple[List[Tuple[str, str]], str, str, str, int]:
     """Handles pre-transfer setup including path resolution and file listing."""
     source_pool = ssh_connection_pools.get('SOURCE_SERVER')
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
@@ -1127,7 +1127,8 @@ def _pre_transfer_setup(torrent: qbittorrentapi.TorrentDictionary, config: confi
                 all_files.append((source_content_path, dest_content_path))
     else:
         all_files.append((source_content_path, dest_content_path))
-    return all_files, source_content_path, dest_content_path, destination_save_path
+    total_files = len(all_files)
+    return all_files, source_content_path, dest_content_path, destination_save_path, total_files
 
 def _execute_transfer(torrent: qbittorrentapi.TorrentDictionary, total_size: int, config: configparser.ConfigParser, ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], all_files: List[Tuple[str, str]], source_content_path: str, dest_content_path: str, dry_run: bool, sftp_chunk_size: int) -> None:
     """Executes the file transfer based on the configured transfer mode."""
@@ -1285,11 +1286,11 @@ def transfer_torrent(torrent: qbittorrentapi.TorrentDictionary, total_size: int,
     transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
 
     try:
-        all_files, source_content_path, dest_content_path, destination_save_path = _pre_transfer_setup(
+        all_files, source_content_path, dest_content_path, destination_save_path, total_files = _pre_transfer_setup(
             torrent, config, ssh_connection_pools
         )
 
-        ui.start_torrent_transfer(hash_, name, total_size, transfer_multiplier)
+        ui.start_torrent_transfer(hash_, name, total_size, total_files, transfer_multiplier)
 
         if dry_run:
             logging.info(f"[DRY RUN] Simulating transfer for '{name}'.")
