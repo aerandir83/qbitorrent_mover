@@ -86,10 +86,10 @@ class UIManagerV2:
         )
         self.layout["header"].update(
             Panel(
-                self.header_text,
+                Align.center(self.header_text),
                 title="[bold magenta]TORRENT MOVER[/]",
                 border_style="dim",
-                style="on #1a1a2e" # <-- ADDED DARK THEME
+                style="on #1a1a2e"
             )
         )
 
@@ -100,7 +100,7 @@ class UIManagerV2:
             BarColumn(bar_width=None, complete_style="green", finished_style="bold green"),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             "•",
-            DownloadColumn(binary_units=True), # <-- Use GB for main
+            DownloadColumn(binary_units=True),
             "•",
             TransferSpeedColumn(),
             "•",
@@ -120,7 +120,7 @@ class UIManagerV2:
 
         # Current torrent progress
         self.current_torrent_task = self.main_progress.add_task(
-            "[yellow]⚡ Current Torrent: (none)", total=100, visible=False # <-- RENAMED
+            "[yellow]⚡ Current Torrent: (none)", total=100, visible=False
         )
 
         # Active files progress
@@ -129,7 +129,7 @@ class UIManagerV2:
             BarColumn(bar_width=15, complete_style="cyan"),
             TextColumn("{task.percentage:>3.0f}%"),
             "•",
-            DownloadColumn(binary_units=True), # <-- ADDED FILE SIZE
+            DownloadColumn(binary_units=True),
             "•",
             TransferSpeedColumn(),
             expand=True,
@@ -142,14 +142,14 @@ class UIManagerV2:
                 self.main_progress,
                 title="[bold green]📈 Transfer Progress",
                 border_style="dim",
-                style="on #16213e" # <-- ADDED DARK THEME
+                style="on #16213e"
             ),
             Panel(
                 self.files_progress,
                 title="[bold cyan]📄 Active Files (Last 5)",
                 border_style="dim",
                 height=9,
-                style="on #0f3460" # <-- ADDED DARK THEME
+                style="on #0f3460"
             )
         )
 
@@ -168,7 +168,7 @@ class UIManagerV2:
                 self.current_table,
                 title="[bold yellow]🎯 Active Queue",
                 border_style="dim",
-                style="on #16213e" # <-- ADDED DARK THEME
+                style="on #16213e"
             )
         )
 
@@ -485,7 +485,7 @@ class UIManagerV2:
     def update_header(self, text: str):
         mode_str = f"[dim]({self.transfer_mode.upper()})[/dim]" if self.transfer_mode else ""
         self.header_text = Text(f"🚀 Torrent Mover v{self.version} {mode_str} - {text}", justify="center", style="bold magenta")
-        self.layout["header"].update(Panel(self.header_text, title="[bold magenta]TORRENT MOVER[/]", border_style="dim", style="on #1a1a2e"))
+        self.layout["header"].update(Panel(Align.center(self.header_text), title="[bold magenta]TORRENT MOVER[/]", border_style="dim", style="on #1a1a2e"))
 
     def log(self, message: str, style: str = "dim"):
         """Adds a message to the on-screen log buffer."""
