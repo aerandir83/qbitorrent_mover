@@ -37,6 +37,7 @@ class UIManagerV2:
         self._active_torrents: Deque[str] = deque(maxlen=5)
         self._completed_hashes: set = set()
         self._recent_completions: Deque[tuple] = deque(maxlen=5)  # (name, size, duration)
+        self._log_buffer: Deque[Text] = deque(maxlen=20)
 
         # Statistics
         self._stats = {
@@ -79,7 +80,7 @@ class UIManagerV2:
         self.version = version
         self.header_text = Text(f"🚀 Torrent Mover v{version}", justify="center", style="bold magenta")
         self.layout["header"].update(
-            Panel(self.header_text, border_style="magenta", style="on #1a1a2e")
+            Panel(self.header_text, border_style="dim", style="on #1a1a2e")
         )
 
     def _setup_progress(self):
@@ -127,14 +128,14 @@ class UIManagerV2:
         progress_group = Group(
             Panel(
                 self.main_progress,
-                title="[bold]📈 Transfer Progress",
-                border_style="green",
+                title="[bold green]📈 Transfer Progress",
+                border_style="dim",
                 style="on #16213e"
             ),
             Panel(
                 self.files_progress,
-                title="[bold]📄 Active Files (Last 5)",
-                border_style="cyan",
+                title="[bold cyan]📄 Active Files (Last 5)",
+                border_style="dim",
                 height=9,
                 style="on #0f3460"
             )
@@ -153,8 +154,8 @@ class UIManagerV2:
         self.layout["middle"].update(
             Panel(
                 self.current_table,
-                title="[bold]🎯 Active Queue",
-                border_style="yellow",
+                title="[bold yellow]🎯 Active Queue",
+                border_style="dim",
                 style="on #16213e"
             )
         )
@@ -176,9 +177,10 @@ class UIManagerV2:
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
 
                     status_icon = "🔄"
+                    files_str = f"({torrent.get('completed_files', 0)}/{torrent.get('total_files', 0)} files)"
                     self.current_table.add_row(
                         f"{status_icon} {progress:.0f}%",
-                        display_name
+                        f"{display_name} [dim]{files_str}[/dim]"
                     )
 
             if active_count == 0:
@@ -193,8 +195,8 @@ class UIManagerV2:
             self.layout["middle"].update(
                 Panel(
                     self.current_table,
-                    title="[bold]🎯 Active Queue",
-                    border_style="yellow",
+                    title="[bold yellow]🎯 Active Queue",
+                    border_style="dim",
                     style="on #16213e"
                 )
             )
@@ -223,18 +225,27 @@ class UIManagerV2:
             stats_table.add_column()
 
             # Transfer stats
-            stats_table.add_row("📊 Transferred:", f"[green]{self._stats['transferred_bytes'] / (1024**3):.2f} GB[/]")
-            stats_table.add_row("⚡ Speed:", f"[yellow]{current_speed / (1024**2):.2f} MB/s[/]")
-            stats_table.add_row("📈 Avg Speed:", f"[dim]{avg_speed / (1024**2):.2f} MB/s[/]")
-            stats_table.add_row("🔥 Peak Speed:", f"[dim]{self._stats['peak_speed'] / (1024**2):.2f} MB/s[/]")
+            transferred_gb = self._stats['transferred_bytes'] / (1024**3)
+            total_gb = self._stats['total_bytes'] / (1024**3)
+            remaining_gb = total_gb - transferred_gb
+            stats_table.add_row("📊 Transferred:", f"[white]{transferred_gb:.2f} / {total_gb:.2f} GB[/white]")
+            stats_table.add_row("⏳ Remaining:", f"[white]{remaining_gb:.2f} GB[/white]")
+            stats_table.add_row("⚡ Speed:", f"[white]{current_speed / (1024**2):.2f} MB/s[/white]")
+            stats_table.add_row("📈 Avg Speed:", f"[dim]{avg_speed / (1024**2):.2f} MB/s[/dim]")
+            stats_table.add_row("🔥 Peak Speed:", f"[dim]{self._stats['peak_speed'] / (1024**2):.2f} MB/s[/dim]")
 
             stats_table.add_row("", "")  # Spacer
 
             # Status stats
-            stats_table.add_row("🔄 Active:", f"[yellow]{self._stats['active_transfers']}[/]")
-            stats_table.add_row("✅ Completed:", f"[green]{self._stats['completed_transfers']}[/]")
-            stats_table.add_row("❌ Failed:", f"[red]{self._stats['failed_transfers']}[/]")
+            stats_table.add_row("🔄 Active:", f"[white]{self._stats['active_transfers']}[/white]")
+            stats_table.add_row("✅ Completed:", f"[white]{self._stats['completed_transfers']}[/white]")
+            stats_table.add_row("❌ Failed:", f"[white]{self._stats['failed_transfers']}[/white]")
 
+            stats_table.add_row("", "")  # Spacer
+
+            total_files_overall = sum(t.get('total_files', 0) for t in self._torrents.values())
+            completed_files_overall = sum(t.get('completed_files', 0) for t in self._torrents.values())
+            stats_table.add_row("📂 Files:", f"[white]{completed_files_overall} / {total_files_overall}[/white]")
             stats_table.add_row("", "")  # Spacer
 
             # Time stats
@@ -242,7 +253,7 @@ class UIManagerV2:
             minutes = int((elapsed % 3600) // 60)
             seconds = int(elapsed % 60)
             time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            stats_table.add_row("⏱️ Elapsed:", f"[dim]{time_str}[/]")
+            stats_table.add_row("⏱️ Elapsed:", f"[dim]{time_str}[/dim]")
 
             # ETA calculation
             if self._stats["transferred_bytes"] > 0 and self._stats["total_bytes"] > 0:
@@ -252,7 +263,7 @@ class UIManagerV2:
                     eta_hours = int(eta_seconds // 3600)
                     eta_minutes = int((eta_seconds % 3600) // 60)
                     eta_str = f"{eta_hours:02d}:{eta_minutes:02d}"
-                    stats_table.add_row("⏳ ETA:", f"[cyan]{eta_str}[/]")
+                    stats_table.add_row("⏳ ETA:", f"[dim]{eta_str}[/dim]")
 
             # Recent completions section
             if self._recent_completions:
@@ -269,45 +280,38 @@ class UIManagerV2:
                     )
 
                 stats_group = Group(
-                    Panel(stats_table, title="[bold]📊 Statistics", border_style="cyan", style="on #0f3460"),
-                    Panel(recent_table, title="[bold]🎉 Recent Completions", border_style="green", style="on #16213e")
+                    Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460"),
+                    Panel(recent_table, title="[bold green]🎉 Recent Completions", border_style="dim", style="on #16213e")
                 )
             else:
-                stats_group = Panel(stats_table, title="[bold]📊 Statistics", border_style="cyan", style="on #0f3460")
+                stats_group = Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460")
 
             self.layout["right"].update(stats_group)
 
     def _setup_footer(self):
-        """Enhanced footer with system info."""
-        self._update_footer_display()
+        """Initial setup for the log panel footer."""
+        log_panel = Panel(
+            Align.left("[dim]Log display initialized...[/]"),
+            title="[bold]📜 Live Log",
+            border_style="dim",
+            style="on #0a0e27"
+        )
+        self.layout["footer"].update(log_panel)
 
     def _update_footer_display(self):
-        """Update footer with detailed status."""
+        """Updates the footer with the latest log messages."""
         with self._lock:
-            # Create a mini table for footer info
-            footer_table = Table.grid(padding=(0, 3))
-            footer_table.add_column(justify="left")
-            footer_table.add_column(justify="center")
-            footer_table.add_column(justify="right")
+            # Join the deque of Text objects with newlines
+            log_text = Text("\n").join(list(self._log_buffer))
 
-            # Left: Current operation
-            left_text = "[dim]Status:[/] [green]Running[/]"
-
-            # Center: Progress summary
-            if self._stats["total_torrents"] > 0:
-                progress_pct = (self._stats["completed_transfers"] / self._stats["total_torrents"]) * 100
-                center_text = f"[cyan]{self._stats['completed_transfers']}/{self._stats['total_torrents']} torrents[/] ([yellow]{progress_pct:.0f}%[/])"
-            else:
-                center_text = "[dim]Waiting for torrents...[/]"
-
-            # Right: Connection info
-            right_text = f"[dim]SSH Pools: Active[/]"
-
-            footer_table.add_row(left_text, center_text, right_text)
-
-            self.layout["footer"].update(
-                Panel(footer_table, border_style="dim", style="on #0a0e27")
+        self.layout["footer"].update(
+            Panel(
+                Align.left(log_text),
+                title="[bold]📜 Live Log",
+                border_style="dim",
+                style="on #0a0e27"
             )
+        )
 
     def __enter__(self):
         self._live = Live(
@@ -357,11 +361,14 @@ class UIManagerV2:
         self.main_progress.update(self.overall_task, total=total_bytes, visible=True)
 
     def start_torrent_transfer(self, torrent_hash: str, torrent_name: str,
-                               total_size: float, transfer_multiplier: int = 1):
+                               total_size: float, total_files: int,
+                               transfer_multiplier: int = 1):
         with self._lock:
             self._torrents[torrent_hash] = {
                 "name": torrent_name,
                 "size": total_size * transfer_multiplier,
+                "total_files": total_files,
+                "completed_files": 0,
                 "transferred": 0,
                 "status": "transferring",
                 "start_time": time.time()
@@ -394,9 +401,9 @@ class UIManagerV2:
         if len(self.active_file_tasks) >= 5:
             try:
                 oldest_file = next(iter(self.active_file_tasks))
-                task_id = self.active_file_tasks.pop(oldest_file)
+                task_id, _ = self.active_file_tasks.pop(oldest_file)
                 self.files_progress.remove_task(task_id)
-            except StopIteration:
+            except (StopIteration, KeyError):
                 pass
 
         # Add new file with icon
@@ -406,19 +413,23 @@ class UIManagerV2:
             f"📄 {display_name}",
             total=file_size
         )
-        self.active_file_tasks[file_path] = task_id
+        self.active_file_tasks[file_path] = (task_id, torrent_hash)
 
     def update_file_progress(self, file_path: str, bytes_transferred: int):
         if file_path in self.active_file_tasks:
+            task_id, _ = self.active_file_tasks[file_path]
             self.files_progress.update(
-                self.active_file_tasks[file_path],
+                task_id,
                 advance=bytes_transferred
             )
 
     def complete_file_transfer(self, file_path: str):
         if file_path in self.active_file_tasks:
-            task_id = self.active_file_tasks.pop(file_path)
+            task_id, torrent_hash = self.active_file_tasks.pop(file_path)
             self.files_progress.remove_task(task_id)
+            with self._lock:
+                if torrent_hash in self._torrents:
+                    self._torrents[torrent_hash]["completed_files"] += 1
 
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
         with self._lock:
@@ -444,15 +455,16 @@ class UIManagerV2:
         self.main_progress.update(self.current_torrent_task, visible=False)
 
     def update_header(self, text: str):
-        self.header_text = Text(f"🚀 Torrent Mover v{self.version} - {text}", justify="center", style="bold magenta")
+        self.header_text = Text.from_markup(f"🚀 Torrent Mover v{self.version} - {text}", justify="center", style="bold magenta")
         self.layout["header"].update(Panel(self.header_text, border_style="magenta", style="on #1a1a2e"))
 
-    def update_footer(self, text: str):
-        # Footer is now managed by _update_footer_display
-        pass
 
-    def log(self, message: str):
-        self.console.log(message)
+    def log(self, message: str, style: str = "dim"):
+        """Adds a message to the on-screen log buffer."""
+        with self._lock:
+            # Format with a timestamp
+            timestamp = time.strftime("%H:%M:%S")
+            self._log_buffer.append(Text(f"[{timestamp}] {message}", style=style))
 
     def display_stats(self, stats: Dict[str, Any]) -> None:
         """Displays final statistics."""
