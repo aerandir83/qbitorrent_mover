@@ -355,8 +355,15 @@ class UIManagerV2:
             )
 
     def __enter__(self):
+        # Create a new root panel to act as the global background
+        root_panel = Panel(
+            self.layout,
+            style="on #16213e", # <-- This sets the global background
+            border_style="dim"  # Use a dim border for the root
+        )
+
         self._live = Live(
-            self.layout,         # <-- Pass self.layout directly again
+            root_panel,         # <-- Pass the new root_panel here
             console=self.console,
             screen=True,
             redirect_stderr=False,
