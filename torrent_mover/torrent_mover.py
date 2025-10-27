@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 # Standard Lib
 import configparser
