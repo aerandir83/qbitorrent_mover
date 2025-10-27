@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.1.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.2.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.1.0 (Latest)
+### Version 2.2.0 (Latest)
+* **feat(ui)**: Add torrent name prefix to active files list.
+
+### Version 2.1.0
 * **feat**: Enhance TransferCheckpoint to track recheck failures.
 
 ### Version 2.0.0

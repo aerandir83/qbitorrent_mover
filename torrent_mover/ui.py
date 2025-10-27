@@ -476,16 +476,26 @@ class UIManagerV2:
                 except StopIteration:
                     pass
                 except Exception:
-                    pass # Failsafe
+                    pass  # Failsafe
 
-            # Add new file with icon
+            # Get torrent name
+            torrent_name = self._torrents.get(torrent_hash, {}).get("name", "UnknownTorrent")
+            # Truncate torrent name
+            trunc_torrent_name = torrent_name[:15] + "..." if len(torrent_name) > 18 else torrent_name
+
+            # Existing line for filename
             file_name = file_path.split('/')[-1]
-            display_name = file_name[:45] + "..." if len(file_name) > 45 else file_name
+            display_name = file_name[:30] + "..." if len(file_name) > 33 else file_name  # Shorten file slightly
+
+            # Updated task description
+            task_description = f"[dim]{trunc_torrent_name} /[/] 📄 {display_name}"
+
+            # Update the add_task call
             task_id = self.files_progress.add_task(
-                f"📄 {display_name}",
+                task_description,  # Use the new description
                 total=file_size
             )
-            self.active_file_tasks[file_path] = (task_id, torrent_hash) # Store hash
+            self.active_file_tasks[file_path] = (task_id, torrent_hash)  # Store hash
 
     def update_file_progress(self, file_path: str, bytes_transferred: int):
         with self._lock:
