@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 
 # Standard Lib
 import configparser
@@ -411,7 +411,6 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
         logging.info("STATE: Starting transfer phase...")
         ui.log(f"Transferring {len(analyzed_torrents)} torrents... [green]Running[/]")
         ui.log("Executing transfers...")
-        torrent_task = ui.set_torrents(analyzed_torrents)
         try:
             if args.parallel_jobs > 1:
                 with ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as executor:
@@ -444,8 +443,6 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                             logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
                             ui.complete_torrent_transfer(torrent.hash, success=False)
                             ui.increment_failed()
-                        finally:
-                            ui.update_torrent_task(torrent_task, advance=1)
             else:
                 for torrent, size in analyzed_torrents:
                     status, message = transfer_torrent(
@@ -467,7 +464,6 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                         case "dry_run":
                             logging.info(f"Dry Run: {torrent.name} - {message}")
                             ui.log(f"[cyan]Dry Run: {log_name} - {message}[/cyan]")
-                    ui.update_torrent_task(torrent_task, advance=1)
 
         except KeyboardInterrupt:
             ui.log("[bold yellow]Process interrupted by user. Transfers cancelled.[/]")
