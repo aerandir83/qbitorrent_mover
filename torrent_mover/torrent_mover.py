@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.3.1"
+__version__ = "2.3.2"
 
 # Standard Lib
 import configparser
@@ -427,10 +427,8 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                             log_name = torrent.name[:50] + "..." if len(torrent.name) > 53 else torrent.name
                             match status:
                                 case "success":
-                                    ui.increment_completed()
                                     logging.info(f"Success: {torrent.name} - {message}")
                                 case "failed":
-                                    ui.increment_failed()
                                     logging.error(f"Failed: {torrent.name} - {message}")
                                     ui.log(f"[bold red]Failed: {log_name}[/bold red] - {message}")
                                 case "skipped":
@@ -442,7 +440,6 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                         except Exception as e:
                             logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
                             ui.complete_torrent_transfer(torrent.hash, success=False)
-                            ui.increment_failed()
             else:
                 for torrent, size in analyzed_torrents:
                     status, message = transfer_torrent(
@@ -452,10 +449,8 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                     log_name = torrent.name[:50] + "..." if len(torrent.name) > 53 else torrent.name
                     match status:
                         case "success":
-                            ui.increment_completed()
                             logging.info(f"Success: {torrent.name} - {message}")
                         case "failed":
-                            ui.increment_failed()
                             logging.error(f"Failed: {torrent.name} - {message}")
                             ui.log(f"[bold red]Failed: {log_name}[/bold red] - {message}")
                         case "skipped":
