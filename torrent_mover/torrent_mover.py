@@ -411,42 +411,63 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
         logging.info("STATE: Starting transfer phase...")
         ui.log(f"Transferring {len(analyzed_torrents)} torrents... [green]Running[/]")
         ui.log("Executing transfers...")
-        ui.start_overall_progress(len(analyzed_torrents))
+        torrent_task = ui.set_torrents(analyzed_torrents)
         try:
-            with ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as executor:
-                transfer_futures = {
-                    executor.submit(
-                        transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
-                        ui, file_tracker, ssh_connection_pools, checkpoint, args.dry_run, args.test_run, sftp_chunk_size
-                    ): (t, size) for t, size in analyzed_torrents
-                }
-                for future in as_completed(transfer_futures):
-                    torrent, size = transfer_futures[future]
-                    torrent_task = ui.get_torrent_task(torrent.hash)
-                    try:
-                        status, message = future.result()
-                        log_name = torrent.name[:50] + "..." if len(torrent.name) > 53 else torrent.name
-                        match status:
-                            case "success":
-                                ui.increment_completed()
-                                logging.info(f"Success: {torrent.name} - {message}")
-                            case "failed":
-                                ui.increment_failed()
-                                logging.error(f"Failed: {torrent.name} - {message}")
-                                ui.log(f"[bold red]Failed: {log_name}[/bold red] - {message}")
-                            case "skipped":
-                                logging.info(f"Skipped: {torrent.name} - {message}")
-                                ui.log(f"[dim]Skipped: {log_name} - {message}[/dim]")
-                            case "dry_run":
-                                logging.info(f"Dry Run: {torrent.name} - {message}")
-                                ui.log(f"[cyan]Dry Run: {log_name} - {message}[/cyan]")
-                    except Exception as e:
-                        logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
-                        ui.complete_torrent_transfer(torrent.hash, success=False)
-                        ui.increment_failed()
-                    finally:
-                        if torrent_task:
+            if args.parallel_jobs > 1:
+                with ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as executor:
+                    transfer_futures = {
+                        executor.submit(
+                            transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
+                            ui, file_tracker, ssh_connection_pools, checkpoint, args.dry_run, args.test_run, sftp_chunk_size
+                        ): (t, size) for t, size in analyzed_torrents
+                    }
+                    for future in as_completed(transfer_futures):
+                        torrent, size = transfer_futures[future]
+                        try:
+                            status, message = future.result()
+                            log_name = torrent.name[:50] + "..." if len(torrent.name) > 53 else torrent.name
+                            match status:
+                                case "success":
+                                    ui.increment_completed()
+                                    logging.info(f"Success: {torrent.name} - {message}")
+                                case "failed":
+                                    ui.increment_failed()
+                                    logging.error(f"Failed: {torrent.name} - {message}")
+                                    ui.log(f"[bold red]Failed: {log_name}[/bold red] - {message}")
+                                case "skipped":
+                                    logging.info(f"Skipped: {torrent.name} - {message}")
+                                    ui.log(f"[dim]Skipped: {log_name} - {message}[/dim]")
+                                case "dry_run":
+                                    logging.info(f"Dry Run: {torrent.name} - {message}")
+                                    ui.log(f"[cyan]Dry Run: {log_name} - {message}[/cyan]")
+                        except Exception as e:
+                            logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
+                            ui.complete_torrent_transfer(torrent.hash, success=False)
+                            ui.increment_failed()
+                        finally:
                             ui.update_torrent_task(torrent_task, advance=1)
+            else:
+                for torrent, size in analyzed_torrents:
+                    status, message = transfer_torrent(
+                        torrent, size, source_qbit, destination_qbit, config, tracker_rules,
+                        ui, file_tracker, ssh_connection_pools, checkpoint, args.dry_run, args.test_run, sftp_chunk_size
+                    )
+                    log_name = torrent.name[:50] + "..." if len(torrent.name) > 53 else torrent.name
+                    match status:
+                        case "success":
+                            ui.increment_completed()
+                            logging.info(f"Success: {torrent.name} - {message}")
+                        case "failed":
+                            ui.increment_failed()
+                            logging.error(f"Failed: {torrent.name} - {message}")
+                            ui.log(f"[bold red]Failed: {log_name}[/bold red] - {message}")
+                        case "skipped":
+                            logging.info(f"Skipped: {torrent.name} - {message}")
+                            ui.log(f"[dim]Skipped: {log_name} - {message}[/dim]")
+                        case "dry_run":
+                            logging.info(f"Dry Run: {torrent.name} - {message}")
+                            ui.log(f"[cyan]Dry Run: {log_name} - {message}[/cyan]")
+                    ui.update_torrent_task(torrent_task, advance=1)
 
         except KeyboardInterrupt:
             ui.log("[bold yellow]Process interrupted by user. Transfers cancelled.[/]")
