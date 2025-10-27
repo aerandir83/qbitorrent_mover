@@ -87,11 +87,12 @@ class UIManagerV2:
         self.header_text = Text(
             f"🚀 Torrent Mover v{self.version} {mode_str} - [green]Initializing...[/]",
             justify="center",
-            style="bold magenta"
+            style="bold magenta",
+            markup=True  # <-- Explicitly enable markup
         )
         self.layout["header"].update(
             Panel(
-                Align.center(self.header_text),
+                self.header_text, # <-- Pass Text directly
                 title="[bold magenta]TORRENT MOVER[/]",
                 border_style="dim",
                 style="on #1a1a2e"
@@ -510,8 +511,20 @@ class UIManagerV2:
 
     def update_header(self, text: str):
         mode_str = f"[dim]({self.transfer_mode.upper()})[/dim]" if self.transfer_mode else ""
-        self.header_text = Text(f"🚀 Torrent Mover v{self.version} {mode_str} - {text}", justify="center", style="bold magenta")
-        self.layout["header"].update(Panel(Align.center(self.header_text), title="[bold magenta]TORRENT MOVER[/]", border_style="dim", style="on #1a1a2e"))
+        self.header_text = Text(
+            f"🚀 Torrent Mover v{self.version} {mode_str} - {text}",
+            justify="center",
+            style="bold magenta",
+            markup=True # <-- Explicitly enable markup
+        )
+        self.layout["header"].update(
+            Panel(
+                self.header_text, # <-- Pass Text directly
+                title="[bold magenta]TORRENT MOVER[/]",
+                border_style="dim",
+                style="on #1a1a2e"
+            )
+        )
 
     def log(self, message: str, style: str = "dim"):
         """Adds a message to the on-screen log buffer."""

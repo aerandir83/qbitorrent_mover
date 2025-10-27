@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.9.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **1.9.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 1.9.2 (Latest)
+### Version 1.9.3 (Latest)
+*   **Fix**: Resolved a UI rendering issue where `rich` markup tags in the header were displayed as literal text instead of being parsed as styles.
+
+### Version 1.9.2
 *   **Fix**: Corrected an `IndentationError` in the `UIManagerV2` class that occurred after replacing the UI module.
 
 ### Version 1.9.1
