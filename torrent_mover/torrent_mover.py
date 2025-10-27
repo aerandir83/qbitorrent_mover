@@ -22,7 +22,8 @@ import shlex
 import threading
 from collections import defaultdict
 import errno
-from .utils import ConfigValidator, retry, SSHConnectionPool, LockFile, _get_remote_size_du_core, batch_get_remote_sizes, RateLimitedFile, TransferCheckpoint, FileTransferTracker
+from .config_manager import update_config, load_config, ConfigValidator
+from .utils import retry, SSHConnectionPool, LockFile, _get_remote_size_du_core, batch_get_remote_sizes, RateLimitedFile, TransferCheckpoint, FileTransferTracker
 import tempfile
 import getpass
 import configupdater
@@ -84,90 +85,6 @@ def _get_ssh_command(port: int) -> str:
         multiplex_opts = f"-o ControlMaster=auto -o ControlPath={shlex.quote(SSH_CONTROL_PATH)} -o ControlPersist=60s"
         return f"{base_ssh_cmd} {multiplex_opts}"
     return base_ssh_cmd
-
-def update_config(config_path: str, template_path: str) -> None:
-    """
-    Updates the config.ini from the template, preserving existing values and comments.
-    Also creates a backup of the original config file.
-    """
-    config_file = Path(config_path)
-    template_file = Path(template_path)
-    logging.info("STATE: Checking for configuration updates...")
-
-    if not template_file.is_file():
-        logging.error(f"FATAL: Config template '{template_path}' not found.")
-        sys.exit(1)
-
-    if not config_file.is_file():
-        logging.warning(f"Configuration file not found at '{config_path}'.")
-        logging.warning("Creating a new one from the template. Please review and fill it out.")
-        try:
-            shutil.copy2(template_file, config_file)
-        except OSError as e:
-            logging.error(f"FATAL: Could not create config file: {e}")
-            sys.exit(1)
-        return
-
-    try:
-        updater = configupdater.ConfigUpdater()
-        updater.read(config_file, encoding='utf-8')
-        template_updater = configupdater.ConfigUpdater()
-        template_updater.read(template_file, encoding='utf-8')
-
-        changes_made = False
-        for section_name in template_updater.sections():
-            template_section = template_updater[section_name]
-            if not updater.has_section(section_name):
-                user_section = updater.add_section(section_name)
-                for key, opt in template_section.items():
-                    user_opt = user_section.set(key, opt.value)
-                    if hasattr(opt, 'comments') and opt.comments.above:
-                        user_opt.add_comment('\n'.join(opt.comments.above), above=True)
-                    if hasattr(opt, 'comments') and opt.comments.inline:
-                        user_opt.add_comment(opt.comments.inline, inline=True)
-                changes_made = True
-                logging.info(f"CONFIG: Added new section to config: [{section_name}]")
-            else:
-                user_section = updater[section_name]
-                for key, opt in template_section.items():
-                    if not user_section.has_option(key):
-                        user_opt = user_section.set(key, opt.value)
-                        if hasattr(opt, 'comments') and opt.comments.above:
-                            user_opt.add_comment('\n'.join(opt.comments.above), above=True)
-                        if hasattr(opt, 'comments') and opt.comments.inline:
-                            user_opt.add_comment(opt.comments.inline, inline=True)
-                        changes_made = True
-                        logging.info(f"CONFIG: Added new option in [{section_name}]: {key}")
-
-        if changes_made:
-            backup_dir = config_file.parent / 'backup'
-            backup_dir.mkdir(exist_ok=True)
-            backup_filename = f"{config_file.stem}.bak_{time.strftime('%Y%m%d-%H%M%S')}"
-            backup_path = backup_dir / backup_filename
-            shutil.copy2(config_file, backup_path)
-            logging.info(f"CONFIG: Backed up existing configuration to '{backup_path}'")
-            with config_file.open('w', encoding='utf-8') as f:
-                updater.write(f)
-            logging.info("CONFIG: Configuration file has been updated with new options.")
-        else:
-            logging.info("CONFIG: Configuration file is already up-to-date.")
-    except Exception as e:
-        logging.error(f"FATAL: An error occurred during config update: {e}", exc_info=True)
-        sys.exit(1)
-
-def load_config(config_path: str = "config.ini") -> configparser.ConfigParser:
-    """
-    Loads the configuration from the specified .ini file.
-    Exits if the file is not found.
-    """
-    config_file = Path(config_path)
-    if not config_file.is_file():
-        logging.error(f"FATAL: Configuration file not found at '{config_path}'.")
-        logging.error("Please copy 'config.ini.template' to 'config.ini' and fill in your details.")
-        sys.exit(1)
-    config = configparser.ConfigParser()
-    config.read(config_file)
-    return config
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def connect_qbit(config_section: configparser.SectionProxy, client_name: str) -> qbittorrentapi.Client:
