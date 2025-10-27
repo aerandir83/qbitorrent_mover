@@ -312,8 +312,20 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
         if skipped_count > 0:
             logging.info(f"Skipped {skipped_count} torrent(s) that were already completed in a previous run.")
 
+    if "recheck_failed" in checkpoint.state and checkpoint.state["recheck_failed"]:
+        original_count = len(eligible_torrents)
+        failed_hashes_to_skip = {h for h in checkpoint.state["recheck_failed"]}  # Use a set for faster lookups
+        torrents_before_filtering = eligible_torrents
+        eligible_torrents = [t for t in eligible_torrents if t.hash not in failed_hashes_to_skip]
+        skipped_failed_count = original_count - len(eligible_torrents)
+        if skipped_failed_count > 0:
+            logging.warning(f"Skipped {skipped_failed_count} torrent(s) marked as 'recheck_failed' from previous runs. Manual intervention may be required.")
+            skipped_names = [t.name for t in torrents_before_filtering if t.hash in failed_hashes_to_skip]
+            if skipped_names:
+                logging.warning(f"Skipped failed torrents: {', '.join(skipped_names)}")
+
     if not eligible_torrents:
-        logging.info("No torrents to move at this time.")
+        logging.info("No torrents to move after filtering completed and failed torrents.")
         return
 
     total_count = len(eligible_torrents)
