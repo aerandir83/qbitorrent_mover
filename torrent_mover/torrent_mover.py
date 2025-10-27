@@ -1652,7 +1652,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
     with UIManager(version=__version__) as ui:
         ui.set_transfer_mode(transfer_mode)
         ui.set_analysis_total(total_count)
-        ui.update_header(f"Found {total_count} torrents to process. Analyzing...")
+        ui.log(f"Found {total_count} torrents to process. Analyzing...")
         sftp_config = config['SOURCE_SERVER']
         analyzed_torrents: List[Tuple[qbittorrentapi.TorrentDictionary, int]] = []
         total_transfer_size = 0
@@ -1693,10 +1693,11 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
             raise RuntimeError(f"A critical error occurred during the analysis phase: {e}") from e
 
         logging.info("STATE: Analysis complete.")
-        ui.update_header("Analysis complete. Verifying destination...")
+        ui.complete_analysis() # <-- ADD THIS LINE
+        ui.log("Analysis complete. Verifying destination...")
 
         if not analyzed_torrents:
-            ui.update_footer("No valid, non-zero size torrents to transfer.")
+            ui.set_final_status("No valid, non-zero size torrents to transfer.")
             logging.info("No valid, non-zero size torrents to transfer.")
             time.sleep(2)
             return
@@ -1707,13 +1708,13 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
         ui.set_overall_total(total_transfer_size * transfer_multiplier)
 
         if not args.dry_run and not destination_health_check(config, total_transfer_size, ssh_connection_pools):
-            ui.update_header("[bold red]Destination health check failed. Aborting transfer process.[/]")
+            ui.log("[bold red]Destination health check failed. Aborting transfer process.[/]")
             logging.error("FATAL: Destination health check failed.")
             time.sleep(5)
             raise RuntimeError("Destination health check failed.")
 
         logging.info("STATE: Starting transfer phase...")
-        ui.update_header(f"Transferring {len(analyzed_torrents)} torrents... [green]Running[/]")
+        ui.log(f"Transferring {len(analyzed_torrents)} torrents... [green]Running[/]")
         ui.log("Executing transfers...")
         try:
             with ThreadPoolExecutor(max_workers=args.parallel_jobs, thread_name_prefix='Transfer') as executor:
@@ -1739,13 +1740,13 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                 # This task is no longer needed, as the UI doesn't have a "transfer" task bar
                 # ui.advance_transfer_progress()
         except KeyboardInterrupt:
-            ui.update_header("[bold yellow]Process interrupted by user. Transfers cancelled.[/]")
-            ui.update_footer("Shutdown requested.")
+            ui.log("[bold yellow]Process interrupted by user. Transfers cancelled.[/]")
+            ui.set_final_status("Shutdown requested.")
             raise
 
         with ui._lock: # Accessing stats safely
             completed_count = ui._stats['completed_transfers']
-        ui.update_header(f"Processing complete. Moved {completed_count}/{total_count} torrent(s).")
+        ui.log(f"Processing complete. Moved {completed_count}/{total_count} torrent(s).")
         ui.set_final_status("All tasks finished.")
         with ui._lock: # Accessing stats safely
             completed_count = ui._stats['completed_transfers']

@@ -36,6 +36,7 @@ class UIManagerV2:
         self._current_header_string_template: str = ""
         self._last_header_text_part: str = ""
         self._current_status: Optional[str] = None
+        self._analysis_complete = False # Add this flag
 
         # Data structures
         self._torrents: OrderedDict[str, Dict] = OrderedDict()
@@ -54,7 +55,11 @@ class UIManagerV2:
             "failed_transfers": 0,
             "peak_speed": 0.0,
             "current_speed": 0.0,
+            "last_bytes": 0, # Bytes at last speed check
+            "last_speed_check": time.time(), # Time of last speed check
         }
+        self._speed_history = deque(maxlen=60) # Store last 60 seconds of speed readings
+
 
         # Create layout with better proportions
         self.layout = Layout()
@@ -223,69 +228,83 @@ class UIManagerV2:
     def _update_stats_display(self):
         """Update the stats display with speed history."""
         with self._lock:
-            current_total_speed = 0.0
-            active_tasks = [task for task in self.files_progress.tasks if not task.finished]
-            for task in active_tasks:
-                current_total_speed += task.speed if task.speed is not None else 0.0
-
-            # Store for peak calculation and display
-            self._stats["current_speed"] = current_total_speed
-            # Use the freshly calculated speed for display
-            avg_speed = current_total_speed # Rename variable for simplicity later
-
             elapsed = time.time() - self._stats["start_time"]
-            # Use average speed for a more stable "current" speed
 
-            # Track peak speed
-            if avg_speed > self._stats["peak_speed"]:
-                self._stats["peak_speed"] = avg_speed
+            # --- START SPEED CALCULATION FIX ---
+            current_speed = 0.0
+            time_since_last = time.time() - self._stats["last_speed_check"]
+
+            if time_since_last >= 1.0: # Calculate roughly every second
+                bytes_since_last = self._stats["transferred_bytes"] - self._stats["last_bytes"]
+                current_speed = bytes_since_last / time_since_last
+
+                # Update trackers for next calculation
+                self._stats["last_bytes"] = self._stats["transferred_bytes"]
+                self._stats["last_speed_check"] = time.time()
+
+                # Update the stored current speed
+                self._stats["current_speed"] = current_speed
+                self._speed_history.append(current_speed) # Add to history
+            else:
+                # Use the last calculated speed if less than a second passed
+                current_speed = self._stats["current_speed"]
+
+            # Calculate average speed over the history for ETA
+            avg_speed_hist = sum(self._speed_history) / len(self._speed_history) if self._speed_history else 0.0
+            # --- END SPEED CALCULATION FIX ---
+
+
+            # Track peak speed (using instantaneous speed)
+            if current_speed > self._stats["peak_speed"]:
+                self._stats["peak_speed"] = current_speed
 
             # Create stats table
             stats_table = Table.grid(padding=(0, 2))
-            stats_table.add_column(style="bold cyan", justify="right", no_wrap=True) # <-- Standardized color
+            stats_table.add_column(style="bold cyan", justify="right", no_wrap=True)
             stats_table.add_column()
 
-            # Transfer stats - Added from Task 1
+            # Transfer stats
             transferred_gb = self._stats['transferred_bytes'] / (1024**3)
             total_gb = self._stats['total_bytes'] / (1024**3)
             remaining_gb = max(0, total_gb - transferred_gb)
 
             stats_table.add_row("📊 Transferred:", f"[white]{transferred_gb:.2f} / {total_gb:.2f} GB[/white]")
             stats_table.add_row("⏳ Remaining:", f"[white]{remaining_gb:.2f} GB[/white]")
-            stats_table.add_row("⚡ Speed:", f"[white]{avg_speed / (1024**2):.2f} MB/s[/white]")
+            # Display the calculated current speed
+            stats_table.add_row("⚡ Speed:", f"[white]{current_speed / (1024**2):.2f} MB/s[/white]")
+            stats_table.add_row("📈 Avg Speed:", f"[dim]{avg_speed_hist / (1024**2):.2f} MB/s[/dim]") # Display historical average
             stats_table.add_row("🔥 Peak Speed:", f"[dim]{self._stats['peak_speed'] / (1024**2):.2f} MB/s[/dim]")
 
             stats_table.add_row("", "") # Spacer
 
-            # Status stats
+            # Status stats (rest of the method remains similar...)
             stats_table.add_row("🔄 Active:", f"[white]{self._stats['active_transfers']}[/white]")
             stats_table.add_row("✅ Completed:", f"[white]{self._stats['completed_transfers']}[/white]")
             stats_table.add_row("❌ Failed:", f"[white]{self._stats['failed_transfers']}[/white]")
 
-            # File stats - Added from Task 6
             total_files_overall = sum(t.get('total_files', 0) for t in self._torrents.values())
             completed_files_overall = sum(t.get('completed_files', 0) for t in self._torrents.values())
             stats_table.add_row("📂 Files:", f"[white]{completed_files_overall} / {total_files_overall}[/white]")
 
             stats_table.add_row("", "") # Spacer
 
-            # Time stats
             hours = int(elapsed // 3600)
             minutes = int((elapsed % 3600) // 60)
             seconds = int(elapsed % 60)
             time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
             stats_table.add_row("⏱️ Elapsed:", f"[dim]{time_str}[/dim]")
 
-            # ETA calculation
-            if remaining_gb > 0 and avg_speed > 0:
-                eta_seconds = (remaining_gb * 1024**3) / avg_speed
+            # ETA calculation (Use avg_speed_hist for stability)
+            if remaining_gb > 0 and avg_speed_hist > 0:
+                eta_seconds = (remaining_gb * 1024**3) / avg_speed_hist
                 eta_hours = int(eta_seconds // 3600)
                 eta_minutes = int((eta_seconds % 3600) // 60)
                 eta_str = f"{eta_hours:02d}:{eta_minutes:02d}"
                 stats_table.add_row("⏳ ETA:", f"[cyan]{eta_str}[/]")
 
-            # Recent completions section
+            # ... (rest of the method for recent completions)
             if self._recent_completions:
+                # ... (recent completions table code remains the same) ...
                 recent_table = Table.grid(padding=(0, 1))
                 recent_table.add_column(style="dim", no_wrap=True)
                 recent_table.add_column(style="dim")
@@ -297,13 +316,12 @@ class UIManagerV2:
                         f"✓ {display_name}",
                         f"{speed / (1024**2):.1f} MB/s"
                     )
-
                 stats_group = Group(
                     Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460"),
                     Panel(recent_table, title="[bold green]🎉 Recent Completions", border_style="dim", style="on #16213e")
                 )
             else:
-                stats_group = Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460")
+                 stats_group = Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460")
 
             self.layout["right"].update(stats_group)
 
@@ -356,7 +374,7 @@ class UIManagerV2:
         if self._live:
             self._stats_thread_stop.set()
             if self._stats_thread.is_alive():
-                self._stats_thread.join()
+                self._stats_thread.join(timeout=2.0) # <-- ADD TIMEOUT
             self.main_progress.stop()
             self.files_progress.stop()
             self._live.stop()
@@ -393,6 +411,17 @@ class UIManagerV2:
 
     def advance_analysis(self):
         self.main_progress.update(self.analysis_task, advance=1)
+
+    def complete_analysis(self):
+        """Mark analysis as complete and hide the analysis progress bar."""
+        with self._lock:
+            self._analysis_complete = True
+            # Update the task directly to hide it
+            try:
+                self.main_progress.update(self.analysis_task, visible=False)
+            except Exception as e:
+                # Log if the task doesn't exist or another error occurs
+                logging.error(f"Error hiding analysis task: {e}")
 
     def set_overall_total(self, total_bytes: float):
         with self._lock:
@@ -496,24 +525,6 @@ class UIManagerV2:
 
                 # Hide current torrent progress
                 self.main_progress.update(self.current_torrent_task, visible=False, description="[yellow]⚡ Current Torrent: (none)")
-
-    def update_header(self, text: str):
-        with self._lock: # Ensure thread safety when accessing transfer_mode
-            mode_str = f"[dim]({self.transfer_mode.upper()})[/dim]" if self.transfer_mode else ""
-            self._last_header_text_part = text # Store the dynamic part
-            header_content = self._current_header_string_template.format(
-                version=self.version,
-                mode_str=mode_str,
-                text=self._last_header_text_part
-            )
-            self.layout["header"].update(
-                Panel(
-                    Align.center(header_content), # Pass string inside Align.center
-                    title="[bold magenta]TORRENT MOVER[/]",
-                    border_style="dim",
-                    style="on #1a1a2e"
-                )
-            )
 
     def log(self, message: str, style: str = "dim"):
         """Adds a message to the on-screen log buffer."""

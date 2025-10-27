@@ -655,8 +655,10 @@ class FileTransferTracker:
     def _save(self) -> None:
         try:
             # Throttle saves to once every 5 seconds to reduce I/O
-            last_save = getattr(self, "_last_save_time", 0)
-            if time.time() - last_save > 5:
+            if not hasattr(self, "_last_save_time"):
+                 self._last_save_time = 0 # Initialize if it doesn't exist
+
+            if time.time() - self._last_save_time > 5:
                 self.file.write_text(json.dumps(self.state, indent=2))
                 self._last_save_time = time.time()
         except IOError as e:
