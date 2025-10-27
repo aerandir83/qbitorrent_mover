@@ -70,19 +70,42 @@ class TransferCheckpoint:
     def _load(self) -> Dict[str, List[str]]:
         if self.file.exists():
             try:
-                return json.loads(self.file.read_text())
+                data = json.loads(self.file.read_text())
+                # For backwards compatibility, add recheck_failed if not present
+                if "recheck_failed" not in data:
+                    data["recheck_failed"] = []
+                return data
             except json.JSONDecodeError:
                 logging.warning(f"Could not decode checkpoint file '{self.file}'. Starting fresh.")
-                return {"completed": []}
-        return {"completed": []}
+        return {"completed": [], "recheck_failed": []}
 
     def mark_completed(self, torrent_hash: str) -> None:
         if torrent_hash not in self.state["completed"]:
             self.state["completed"].append(torrent_hash)
+            self.clear_recheck_failed(torrent_hash)  # Ensure it's not in the failed list
             self._save()
 
     def is_completed(self, torrent_hash: str) -> bool:
         return torrent_hash in self.state["completed"]
+
+    def mark_recheck_failed(self, torrent_hash: str) -> None:
+        """Mark a torrent as having failed the recheck on the destination."""
+        if torrent_hash not in self.state["recheck_failed"]:
+            self.state["recheck_failed"].append(torrent_hash)
+        # Also remove it from completed if it's there
+        if torrent_hash in self.state["completed"]:
+            self.state["completed"].remove(torrent_hash)
+        self._save()
+
+    def is_recheck_failed(self, torrent_hash: str) -> bool:
+        """Check if a torrent is in the recheck_failed list."""
+        return torrent_hash in self.state["recheck_failed"]
+
+    def clear_recheck_failed(self, torrent_hash: str) -> None:
+        """Remove a torrent from the recheck_failed list, e.g., for a manual retry."""
+        if torrent_hash in self.state["recheck_failed"]:
+            self.state["recheck_failed"].remove(torrent_hash)
+            self._save()
 
     def _save(self) -> None:
         try:
