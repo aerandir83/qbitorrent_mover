@@ -1,5 +1,4 @@
 from rich.console import Console, Group
-from rich.theme import Theme
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import (
@@ -28,16 +27,14 @@ class UIManagerV2:
     """
 
     def __init__(self, version: str = ""):
-        # Define a theme with a dark background
-        dark_theme = Theme({
-            "default": "white on #16213e" # Set default text/background
-        })
-        self.console = Console(theme=dark_theme) # <-- Apply the theme here
+        self.console = Console()
         self._lock = threading.RLock()
         self._live: Optional[Live] = None
         self.version = version
         self.transfer_mode = "" # For transfer mode
         self._log_buffer: Deque[Text] = deque(maxlen=20) # For log panel
+        self._current_header_string_template: str = ""
+        self._last_header_text_part: str = ""
         self._current_status: Optional[str] = None
 
         # Data structures
@@ -84,19 +81,18 @@ class UIManagerV2:
     def _setup_header(self):
         """Enhanced header with version and mode indicators."""
         mode_str = f"[dim]({self.transfer_mode.upper()})[/dim]" if self.transfer_mode else ""
-        self.header_text = Text(
-            f"🚀 Torrent Mover v{self.version} {mode_str} - [green]Initializing...[/]",
-            justify="center",
-            style="bold magenta"
-        )
+        header_content = f"🚀 Torrent Mover v{self.version} {mode_str} - [green]Initializing...[/]" # Raw f-string
         self.layout["header"].update(
             Panel(
-                Align.center(self.header_text),
+                Align.center(header_content), # Pass string inside Align.center
                 title="[bold magenta]TORRENT MOVER[/]",
                 border_style="dim",
                 style="on #1a1a2e"
             )
         )
+        # Store the latest raw string for update_header
+        self._current_header_string_template = "🚀 Torrent Mover v{version} {mode_str} - {text}"
+        self._last_header_text_part = "[green]Initializing...[/]"
 
     def _setup_progress(self):
         """Setup progress bars with better formatting."""
@@ -340,15 +336,8 @@ class UIManagerV2:
             )
 
     def __enter__(self):
-        # Create a new root panel to act as the global background
-        root_panel = Panel(
-            self.layout,
-            style="on #16213e", # <-- This sets the global background
-            border_style="dim"  # Optional: a faint border
-        )
-
         self._live = Live(
-            root_panel,         # <-- Pass the new root_panel here
+            self.layout,         # <-- Pass self.layout directly again
             console=self.console,
             screen=True,
             redirect_stderr=False,
@@ -509,9 +498,22 @@ class UIManagerV2:
                 self.main_progress.update(self.current_torrent_task, visible=False, description="[yellow]⚡ Current Torrent: (none)")
 
     def update_header(self, text: str):
-        mode_str = f"[dim]({self.transfer_mode.upper()})[/dim]" if self.transfer_mode else ""
-        self.header_text = Text(f"🚀 Torrent Mover v{self.version} {mode_str} - {text}", justify="center", style="bold magenta")
-        self.layout["header"].update(Panel(Align.center(self.header_text), title="[bold magenta]TORRENT MOVER[/]", border_style="dim", style="on #1a1a2e"))
+        with self._lock: # Ensure thread safety when accessing transfer_mode
+            mode_str = f"[dim]({self.transfer_mode.upper()})[/dim]" if self.transfer_mode else ""
+            self._last_header_text_part = text # Store the dynamic part
+            header_content = self._current_header_string_template.format(
+                version=self.version,
+                mode_str=mode_str,
+                text=self._last_header_text_part
+            )
+            self.layout["header"].update(
+                Panel(
+                    Align.center(header_content), # Pass string inside Align.center
+                    title="[bold magenta]TORRENT MOVER[/]",
+                    border_style="dim",
+                    style="on #1a1a2e"
+                )
+            )
 
     def log(self, message: str, style: str = "dim"):
         """Adds a message to the on-screen log buffer."""
