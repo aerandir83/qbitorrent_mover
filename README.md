@@ -10,11 +10,27 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **1.9.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.0.0-rc1**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 1.9.2 (Latest)
+### Version 2.0.0-rc1 (Latest)
+* **Feature (UI):** Overhauled the UI with a new multi-column layout for better information density.
+* **Feature (UI):** Added a "Live Log" panel to display real-time logging output directly in the UI.
+* **Feature (UI):** Added "Files Left" (e.g., `2/5 files`) to the "Active Queue" panel.
+* **Feature (UI):** Added "Transferred" and "Remaining" size (e.g., `0.5 / 5.2 GB`) to the "Statistics" panel.
+* **Feature (UI):** Added the current `transfer_mode` (e.g., `SFTP_UPLOAD`) to the header.
+* **Feature (Resume):** Implemented robust file transfer resume logic. The script now checks if a local file exists (`os.path.exists`) before resuming, preventing errors from deleted cache files.
+* **Fix (UI):** Corrected panel background colors for a consistent dark theme.
+* **Fix (UI):** Added "Downloaded / Total" size (e.g., `100.2 MiB / 1.2 GiB`) to the "Active Files" panel.
+* **Fix (UI):** Renamed the "Current" progress bar to "Current Torrent" for clarity.
+* **Fix (UI):** Corrected header markup (e.g., `[dim]`) rendering as plain text instead of being styled.
+* **Fix (Logic):** Resolved a major bug where "Overall Progress" and "Statistics" could show different total sizes.
+* **Fix (Logic):** Corrected a bug where `local_cache_sftp_upload` mode used an incorrect total size for the "Current Torrent" progress bar.
+* **Fix (Logic):** Improved the accuracy of the "Avg Speed" calculation.
+* **Fix (Code):** Resolved an `AttributeError` for `update_footer` by implementing `set_final_status`.
+
+### Version 1.9.2
 *   **Fix**: Corrected an `IndentationError` in the `UIManagerV2` class that occurred after replacing the UI module.
 
 ### Version 1.9.1
