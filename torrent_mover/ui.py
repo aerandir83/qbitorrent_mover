@@ -523,12 +523,12 @@ class UIManagerV2:
                 # Hide current torrent progress
                 self.main_progress.update(self.current_torrent_task, visible=False, description="[yellow]⚡ Current Torrent: (none)")
 
-    def log(self, message: str, style: str = "dim"):
+    def log(self, message: str):
         """Adds a message to the on-screen log buffer."""
         with self._lock:
             # Format with a timestamp
             timestamp = time.strftime("%H:%M:%S")
-            self._log_buffer.append(Text(f"[{timestamp}] {message}", style=style))
+            self._log_buffer.append(Text.from_markup(f"[{timestamp}] {message}"))
 
     def display_stats(self, stats: Dict[str, Any]) -> None:
         """Displays final statistics."""
