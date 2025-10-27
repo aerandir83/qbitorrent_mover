@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.0.0-rc2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.0.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.0.0-rc2 (Latest)
+### Version 2.0.0 (Latest)
+* **Fix (UI):** Removed the `Panel` wrapper causing a hardcoded background color, allowing the UI to use the terminal's default background.
+
+### Version 2.0.0-rc2
 * **Fix (UI):** Correctly hide analysis progress bar after completion.
 
 ### Version 2.0.0-rc1
