@@ -11,9 +11,6 @@ from pathlib import Path
 import os
 import fcntl
 import atexit
-import configparser
-import sys
-import shutil
 import json
 import socket
 import shlex
@@ -433,125 +430,6 @@ def batch_get_remote_sizes(ssh_client: paramiko.SSHClient, paths: List[str], bat
                     logging.error(f"Individual fallback for '{path}' also failed: {e_inner}")
                     results[path] = 0 # Mark as failed
     return results
-
-
-class ConfigValidator:
-    """Validates configuration file structure and values."""
-
-    REQUIRED_SECTIONS = {
-        'SOURCE_CLIENT': ['host', 'port', 'username', 'password'],
-        'DESTINATION_CLIENT': ['host', 'port', 'username', 'password'],
-        'SOURCE_SERVER': ['host', 'port', 'username', 'password'],
-        'DESTINATION_PATHS': ['destination_path'],
-        'SETTINGS': ['source_client_section', 'destination_client_section',
-                     'category_to_move', 'transfer_mode']
-    }
-
-    VALID_TRANSFER_MODES = ['sftp', 'rsync', 'sftp_upload']
-
-    def __init__(self, config: configparser.ConfigParser):
-        self.config = config
-        self.errors: List[str] = []
-        self.warnings: List[str] = []
-
-    def validate(self) -> bool:
-        """Run all validation checks. Returns True if config is valid."""
-        self._check_required_sections()
-        self._check_required_options()
-        self._check_transfer_mode()
-        self._check_paths()
-        self._check_numeric_values()
-        self._check_client_sections_exist()
-
-        if self.errors:
-            print("Configuration errors found:", file=sys.stderr)
-            for error in self.errors:
-                print(f" ❌ {error}", file=sys.stderr)
-            return False
-
-        if self.warnings:
-            print("Configuration warnings:", file=sys.stderr)
-            for warning in self.warnings:
-                print(f" ⚠️ {warning}", file=sys.stderr)
-
-        return True
-
-    def _check_required_sections(self) -> None:
-        """Ensure required sections exist."""
-        for section in self.REQUIRED_SECTIONS:
-            if not self.config.has_section(section):
-                self.errors.append(f"Missing required section: [{section}]")
-
-    def _check_required_options(self) -> None:
-        """Ensure required options exist in each section."""
-        for section, options in self.REQUIRED_SECTIONS.items():
-            if not self.config.has_section(section):
-                continue
-            for option in options:
-                if not self.config.has_option(section, option):
-                    self.errors.append(f"Missing option '{option}' in [{section}]")
-                elif not self.config.get(section, option).strip():
-                    self.errors.append(f"Option '{option}' in [{section}] is empty")
-
-    def _check_transfer_mode(self) -> None:
-        """Validate transfer mode and related requirements."""
-        if not self.config.has_section('SETTINGS'):
-            return
-
-        mode = self.config.get('SETTINGS', 'transfer_mode', fallback='sftp').lower()
-        if mode not in self.VALID_TRANSFER_MODES:
-            self.errors.append(f"Invalid transfer_mode '{mode}'. Must be one of: {', '.join(self.VALID_TRANSFER_MODES)}")
-
-        # Check mode-specific requirements
-        if mode == 'sftp_upload' and not self.config.has_section('DESTINATION_SERVER'):
-            self.errors.append("transfer_mode='sftp_upload' requires [DESTINATION_SERVER] section")
-
-        if mode == 'rsync' and not shutil.which('rsync'):
-            self.warnings.append("rsync mode selected but 'rsync' command not found in PATH")
-
-    def _check_paths(self) -> None:
-        """Validate path configurations."""
-        if not self.config.has_section('DESTINATION_PATHS'):
-            return
-
-        dest_path = self.config.get('DESTINATION_PATHS', 'destination_path', fallback='')
-        if dest_path and not Path(dest_path).is_absolute():
-            self.warnings.append(f"destination_path '{dest_path}' is not an absolute path")
-
-    def _check_numeric_values(self) -> None:
-        """Validate numeric configuration values."""
-        if not self.config.has_section('SETTINGS'):
-            return
-
-        numeric_options = {
-            'max_concurrent_downloads': (1, 20),
-            'max_concurrent_uploads': (1, 20),
-        }
-
-        for option, (min_val, max_val) in numeric_options.items():
-            if self.config.has_option('SETTINGS', option):
-                try:
-                    value = self.config.getint('SETTINGS', option)
-                    if value < min_val or value > max_val:
-                        self.warnings.append(
-                            f"{option}={value} is outside recommended range [{min_val}-{max_val}]"
-                        )
-                except ValueError:
-                    self.errors.append(f"Option '{option}' must be an integer")
-
-    def _check_client_sections_exist(self) -> None:
-        """Verify that referenced client sections exist."""
-        if not self.config.has_section('SETTINGS'):
-            return
-
-        source_section = self.config.get('SETTINGS', 'source_client_section', fallback='')
-        dest_section = self.config.get('SETTINGS', 'destination_client_section', fallback='')
-
-        if source_section and not self.config.has_section(source_section):
-            self.errors.append(f"source_client_section references non-existent section [{source_section}]")
-
-        if dest_section and not self.config.has_section(dest_section):
-            self.errors.append(f"destination_client_section references non-existent section [{dest_section}]")
 
 class RateLimitedFile:
     """Wrapper for file objects that limits read/write speed."""
