@@ -107,7 +107,7 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
             transfer_content(source_pool, all_files, hash_, ui, file_tracker, max_concurrent_downloads, dry_run, download_limit_bytes, sftp_chunk_size)
             logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
 
-def _post_transfer_actions(torrent: 'qbittorrentapi.TorrentDictionary', source_qbit: 'qbittorrentapi.Client', destination_qbit: 'qbittorrentapi.Client', config: configparser.ConfigParser, tracker_rules: Dict[str, str], ssh_connection_pools: Dict[str, SSHConnectionPool], dest_content_path: str, destination_save_path: str, dry_run: bool, test_run: bool) -> bool:
+def _post_transfer_actions(torrent: 'qbittorrentapi.TorrentDictionary', source_qbit: 'qbittorrentapi.Client', destination_qbit: 'qbittorrentapi.Client', config: configparser.ConfigParser, tracker_rules: Dict[str, str], ssh_connection_pools: Dict[str, SSHConnectionPool], dest_content_path: str, destination_save_path: str, dry_run: bool, test_run: bool, checkpoint: TransferCheckpoint, ui: UIManager) -> bool:
     """Handles all actions after a successful transfer."""
     name, hash_ = torrent.name, torrent.hash
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
@@ -144,6 +144,8 @@ def _post_transfer_actions(torrent: 'qbittorrentapi.TorrentDictionary', source_q
             _delete_destination_content(dest_content_path, config, ssh_connection_pools)
         else:
             logging.info(f"[DRY RUN] Would delete destination data: {dest_content_path}")
+        checkpoint.mark_recheck_failed(hash_)
+        logging.warning(f"Marked torrent {hash_} as recheck_failed in checkpoint.")
         return False
     if not dry_run:
         logging.info(f"CLIENT: Starting torrent on Destination: {name}")
@@ -166,7 +168,7 @@ def _post_transfer_actions(torrent: 'qbittorrentapi.TorrentDictionary', source_q
         logging.info(f"[DRY RUN] Would delete torrent and data from Source: {name}")
     return True
 
-def transfer_torrent(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, source_qbit: 'qbittorrentapi.Client', destination_qbit: 'qbittorrentapi.Client', config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], dry_run: bool = False, test_run: bool = False, sftp_chunk_size: int = 65536) -> Tuple[bool, float]:
+def transfer_torrent(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, source_qbit: 'qbittorrentapi.Client', destination_qbit: 'qbittorrentapi.Client', config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, dry_run: bool = False, test_run: bool = False, sftp_chunk_size: int = 65536) -> Tuple[bool, float]:
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
@@ -199,7 +201,8 @@ def transfer_torrent(torrent: 'qbittorrentapi.TorrentDictionary', total_size: in
 
         if _post_transfer_actions(
             torrent, source_qbit, destination_qbit, config, tracker_rules,
-            ssh_connection_pools, dest_content_path, destination_save_path, dry_run, test_run
+            ssh_connection_pools, dest_content_path, destination_save_path, dry_run, test_run,
+            checkpoint, ui
         ):
             logging.info(f"SUCCESS: Successfully processed torrent: {name}")
             ui.log(f"[bold green]Success: {name}[/bold green]")
@@ -387,7 +390,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                 transfer_futures = {
                     executor.submit(
                         transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
-                        ui, file_tracker, ssh_connection_pools, args.dry_run, args.test_run, sftp_chunk_size
+                        ui, file_tracker, ssh_connection_pools, checkpoint, args.dry_run, args.test_run, sftp_chunk_size
                     ): (t, size) for t, size in analyzed_torrents
                 }
                 for future in as_completed(transfer_futures):
