@@ -6,38 +6,25 @@
 
 __version__ = "2.0.0"
 
+# Standard Lib
 import configparser
 import sys
 import logging
 from pathlib import Path
-import paramiko
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import shutil
-import subprocess
-import re
-import shlex
-import threading
-from collections import defaultdict
-import errno
-from .config_manager import update_config, load_config, ConfigValidator
-from .utils import retry
-from .qbittorrent_manager import connect_qbit, get_eligible_torrents, wait_for_recheck_completion
-from .ssh_manager import (
-    SSHConnectionPool, setup_ssh_control_path, check_sshpass_installed,
-    _get_ssh_command, sftp_mkdir_p, get_remote_size_rsync, is_remote_dir,
-    _get_all_files_recursive, batch_get_remote_sizes
-)
-import tempfile
-import getpass
-import configupdater
 import os
 import time
 import argparse
 import argcomplete
-from rich.console import Console
-from rich.logging import RichHandler
-from .ui import UIManagerV2 as UIManager
-from typing import Optional, Dict, List, Tuple, Any, Set, TYPE_CHECKING
+from typing import Dict, List, Tuple, TYPE_CHECKING
+
+# Project Modules
+from .config_manager import update_config, load_config, ConfigValidator
+from .ssh_manager import (
+    SSHConnectionPool, check_sshpass_installed,
+    _get_all_files_recursive, get_remote_size_rsync, batch_get_remote_sizes
+)
+from .qbittorrent_manager import connect_qbit, get_eligible_torrents, wait_for_recheck_completion
 from .transfer_manager import (
     FileTransferTracker, TransferCheckpoint, transfer_content_rsync,
     transfer_content, transfer_content_sftp_upload, Timeouts
@@ -51,34 +38,15 @@ from .tracker_manager import (
     load_tracker_rules, save_tracker_rules, set_category_based_on_tracker,
     run_interactive_categorization, display_tracker_rules
 )
-
+from .ui import UIManagerV2 as UIManager
 
 if TYPE_CHECKING:
     import qbittorrentapi
 
 # --- Constants ---
-MAX_RETRY_ATTEMPTS = 2
-RETRY_DELAY_SECONDS = 5
 DEFAULT_PARALLEL_JOBS = 4
-GB_BYTES = 1024**3
 
-def get_remote_size(sftp: paramiko.SFTPClient, remote_path: str) -> int:
-    """Recursively gets the total size of a remote file or directory."""
-    total_size = 0
-    try:
-        stat = sftp.stat(remote_path)
-        if stat.st_mode & 0o40000:  # S_ISDIR
-            for item in sftp.listdir(remote_path):
-                item_path = f"{remote_path.rstrip('/')}/{item}"
-                total_size += get_remote_size(sftp, item_path)
-        else:
-            total_size = stat.st_size if stat.st_size is not None else 0
-    except FileNotFoundError:
-        logging.warning(f"Could not stat remote path for size calculation: {remote_path}")
-        return 0
-    return total_size
-
-def _pre_transfer_setup(torrent: qbittorrentapi.TorrentDictionary, config: configparser.ConfigParser, ssh_connection_pools: Dict[str, SSHConnectionPool]) -> Tuple[List[Tuple[str, str]], str, str, str, int]:
+def _pre_transfer_setup(torrent: 'qbittorrentapi.TorrentDictionary', config: configparser.ConfigParser, ssh_connection_pools: Dict[str, SSHConnectionPool]) -> Tuple[List[Tuple[str, str]], str, str, str, int]:
     """Handles pre-transfer setup including path resolution and file listing."""
     source_pool = ssh_connection_pools.get('SOURCE_SERVER')
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
@@ -103,7 +71,7 @@ def _pre_transfer_setup(torrent: qbittorrentapi.TorrentDictionary, config: confi
     total_files = len(all_files)
     return all_files, source_content_path, dest_content_path, destination_save_path, total_files
 
-def _execute_transfer(torrent: qbittorrentapi.TorrentDictionary, total_size: int, config: configparser.ConfigParser, ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], all_files: List[Tuple[str, str]], source_content_path: str, dest_content_path: str, dry_run: bool, sftp_chunk_size: int) -> None:
+def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, config: configparser.ConfigParser, ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], all_files: List[Tuple[str, str]], source_content_path: str, dest_content_path: str, dry_run: bool, sftp_chunk_size: int) -> None:
     """Executes the file transfer based on the configured transfer mode."""
     name = torrent.name
     hash_ = torrent.hash
@@ -139,7 +107,7 @@ def _execute_transfer(torrent: qbittorrentapi.TorrentDictionary, total_size: int
             transfer_content(source_pool, all_files, hash_, ui, file_tracker, max_concurrent_downloads, dry_run, download_limit_bytes, sftp_chunk_size)
             logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
 
-def _post_transfer_actions(torrent: qbittorrentapi.TorrentDictionary, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ssh_connection_pools: Dict[str, SSHConnectionPool], dest_content_path: str, destination_save_path: str, dry_run: bool, test_run: bool) -> bool:
+def _post_transfer_actions(torrent: 'qbittorrentapi.TorrentDictionary', source_qbit: 'qbittorrentapi.Client', destination_qbit: 'qbittorrentapi.Client', config: configparser.ConfigParser, tracker_rules: Dict[str, str], ssh_connection_pools: Dict[str, SSHConnectionPool], dest_content_path: str, destination_save_path: str, dry_run: bool, test_run: bool) -> bool:
     """Handles all actions after a successful transfer."""
     name, hash_ = torrent.name, torrent.hash
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
@@ -198,7 +166,7 @@ def _post_transfer_actions(torrent: qbittorrentapi.TorrentDictionary, source_qbi
         logging.info(f"[DRY RUN] Would delete torrent and data from Source: {name}")
     return True
 
-def transfer_torrent(torrent: qbittorrentapi.TorrentDictionary, total_size: int, source_qbit: qbittorrentapi.Client, destination_qbit: qbittorrentapi.Client, config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], dry_run: bool = False, test_run: bool = False, sftp_chunk_size: int = 65536) -> Tuple[bool, float]:
+def transfer_torrent(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, source_qbit: 'qbittorrentapi.Client', destination_qbit: 'qbittorrentapi.Client', config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], dry_run: bool = False, test_run: bool = False, sftp_chunk_size: int = 65536) -> Tuple[bool, float]:
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     """
@@ -265,7 +233,7 @@ def _handle_utility_commands(args: argparse.Namespace, config: configparser.Conf
         remote_config = None
         if transfer_mode == 'sftp_upload':
             if 'DESTINATION_SERVER' not in config:
-                raise ValueError("FATAL: 'transfer_mode' is 'sftp_upload' but [DESTination_server] is not defined in config.")
+                raise ValueError("FATAL: 'transfer_mode' is 'sftp_upload' but [DESTINATION_SERVER] is not defined in config.")
             remote_config = config['DESTINATION_SERVER']
         test_path_permissions(dest_path, remote_config=remote_config, ssh_connection_pools=ssh_connection_pools)
         return True
@@ -353,7 +321,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
         ui.set_analysis_total(total_count)
         ui.log(f"Found {total_count} torrents to process. Analyzing...")
         sftp_config = config['SOURCE_SERVER']
-        analyzed_torrents: List[Tuple[qbittorrentapi.TorrentDictionary, int]] = []
+        analyzed_torrents: List[Tuple['qbittorrentapi.TorrentDictionary', int]] = []
         total_transfer_size = 0
         logging.info("STATE: Starting analysis phase...")
         try:
@@ -392,7 +360,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
             raise RuntimeError(f"A critical error occurred during the analysis phase: {e}") from e
 
         logging.info("STATE: Analysis complete.")
-        ui.complete_analysis() # <-- ADD THIS LINE
+        ui.complete_analysis()
         ui.log("Analysis complete. Verifying destination...")
 
         if not analyzed_torrents:
@@ -401,7 +369,6 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
             time.sleep(2)
             return
 
-        # Corrected logic for multiplier:
         local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
         transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
         ui.set_overall_total(total_transfer_size * transfer_multiplier)
@@ -429,25 +396,19 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                         success, duration = future.result()
                         if success:
                             checkpoint.mark_completed(torrent.hash)
-                            # Stats are now handled by complete_torrent_transfer
-                        else:
-                            pass # Stats handled by complete_torrent_transfer
                     except Exception as e:
                         logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
-                        # We must still call complete_torrent_transfer to update stats
                         ui.complete_torrent_transfer(torrent.hash, success=False)
-                # This task is no longer needed, as the UI doesn't have a "transfer" task bar
-                # ui.advance_transfer_progress()
         except KeyboardInterrupt:
             ui.log("[bold yellow]Process interrupted by user. Transfers cancelled.[/]")
             ui.set_final_status("Shutdown requested.")
             raise
 
-        with ui._lock: # Accessing stats safely
+        with ui._lock:
             completed_count = ui._stats['completed_transfers']
         ui.log(f"Processing complete. Moved {completed_count}/{total_count} torrent(s).")
         ui.set_final_status("All tasks finished.")
-        with ui._lock: # Accessing stats safely
+        with ui._lock:
             completed_count = ui._stats['completed_transfers']
         logging.info(f"Processing complete. Successfully moved {completed_count}/{total_count} torrent(s).")
 

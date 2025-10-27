@@ -1,23 +1,9 @@
 import time
 import logging
 from functools import wraps
-import paramiko
-import logging
-import threading
-from queue import Queue, Empty
-from contextlib import contextmanager
-from typing import Optional, Dict, List, Tuple, Any, Callable
-from pathlib import Path
-import os
-import json
-import socket
-import shlex
+from typing import Callable, Any
 
-# Constants
-DEFAULT_RETRY_ATTEMPTS = 2
-DEFAULT_RETRY_DELAY = 5
-
-def retry(tries: int = DEFAULT_RETRY_ATTEMPTS, delay: int = DEFAULT_RETRY_DELAY, backoff: int = 1) -> Callable:
+def retry(tries: int = 2, delay: int = 5, backoff: int = 1) -> Callable:
     """
     A decorator for retrying a function call with a specified delay.
 
