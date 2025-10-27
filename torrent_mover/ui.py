@@ -355,27 +355,14 @@ class UIManagerV2:
             )
 
     def __enter__(self):
-        # Create a new root panel to act as the global background
-        root_panel = Panel(
-            self.layout,
-            style="on #16213e", # <-- This sets the global background
-            border_style="dim"  # Use a dim border for the root
-        )
-
-        self._live = Live(
-            root_panel,         # <-- Pass the new root_panel here
-            console=self.console,
-            screen=True,
-            redirect_stderr=False,
-            refresh_per_second=4
-        )
+        root_panel = Panel(self.layout, style="on #16213e")
+        self._live = Live(root_panel, console=self.console, screen=True, redirect_stderr=False, refresh_per_second=10)
         self._live.start()
 
         # Start stats update thread
         self._stats_thread_stop = threading.Event()
         self._stats_thread = threading.Thread(target=self._stats_updater, daemon=True)
         self._stats_thread.start()
-
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -473,41 +460,43 @@ class UIManagerV2:
             self.main_progress.update(self.current_torrent_task, advance=bytes_transferred)
 
     def start_file_transfer(self, torrent_hash: str, file_path: str, file_size: int):
-        # Only show last 5 files
-        if len(self.active_file_tasks) >= 5:
-            try:
-                oldest_file = next(iter(self.active_file_tasks))
-                task_id, _ = self.active_file_tasks.pop(oldest_file)
-                self.files_progress.remove_task(task_id)
-            except StopIteration:
-                pass
-            except Exception:
-                pass # Failsafe
+        with self._lock:
+            # Only show last 5 files
+            if len(self.active_file_tasks) >= 5:
+                try:
+                    oldest_file = next(iter(self.active_file_tasks))
+                    task_id, _ = self.active_file_tasks.pop(oldest_file)
+                    self.files_progress.remove_task(task_id)
+                except StopIteration:
+                    pass
+                except Exception:
+                    pass # Failsafe
 
-        # Add new file with icon
-        file_name = file_path.split('/')[-1]
-        display_name = file_name[:45] + "..." if len(file_name) > 45 else file_name
-        task_id = self.files_progress.add_task(
-            f"📄 {display_name}",
-            total=file_size
-        )
-        self.active_file_tasks[file_path] = (task_id, torrent_hash) # Store hash
+            # Add new file with icon
+            file_name = file_path.split('/')[-1]
+            display_name = file_name[:45] + "..." if len(file_name) > 45 else file_name
+            task_id = self.files_progress.add_task(
+                f"📄 {display_name}",
+                total=file_size
+            )
+            self.active_file_tasks[file_path] = (task_id, torrent_hash) # Store hash
 
     def update_file_progress(self, file_path: str, bytes_transferred: int):
-        if file_path in self.active_file_tasks:
-            task_id, _ = self.active_file_tasks[file_path]
-            self.files_progress.update(
-                task_id,
-                advance=bytes_transferred
-            )
+        with self._lock:
+            if file_path in self.active_file_tasks:
+                task_id, _ = self.active_file_tasks[file_path]
+                self.files_progress.update(
+                    task_id,
+                    advance=bytes_transferred
+                )
 
     def complete_file_transfer(self, file_path: str):
-        if file_path in self.active_file_tasks:
-            task_id, torrent_hash = self.active_file_tasks.pop(file_path)
-            # Finish the progress bar
-            self.files_progress.update(task_id, completed=self.files_progress.tasks[task_id].total)
-            self.files_progress.remove_task(task_id)
-            with self._lock:
+        with self._lock:
+            if file_path in self.active_file_tasks:
+                task_id, torrent_hash = self.active_file_tasks.pop(file_path)
+                # Finish the progress bar
+                self.files_progress.update(task_id, completed=self.files_progress.tasks[task_id].total)
+                self.files_progress.remove_task(task_id)
                 if torrent_hash in self._torrents:
                     self._torrents[torrent_hash]["completed_files"] += 1
 

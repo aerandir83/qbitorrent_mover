@@ -16,6 +16,7 @@ import sys
 import shutil
 import json
 import socket
+import shlex
 
 # Constants
 DEFAULT_KEEPALIVE_INTERVAL = 30
@@ -320,9 +321,9 @@ def _get_remote_size_du_core(ssh_client: paramiko.SSHClient, remote_path: str) -
     Core logic for getting remote size using 'du -sb'. Does not handle concurrency.
     This function is retried on failure.
     """
-    # Escape single quotes in the path to prevent command injection issues.
-    escaped_path = remote_path.replace("'", "'\\''")
-    command = f"du -sb '{escaped_path}'"
+    # Use shlex.quote for robust path escaping
+    escaped_path = shlex.quote(remote_path)
+    command = f"du -sb {escaped_path}"
 
     try:
         stdin, stdout, stderr = ssh_client.exec_command(command, timeout=SSH_EXEC_TIMEOUT)
@@ -628,6 +629,7 @@ class FileTransferTracker:
     def __init__(self, checkpoint_file: Path):
         self.file = checkpoint_file
         self.state = self._load()
+        self._lock = threading.Lock()
 
     def _load(self) -> Dict[str, Any]:
         if self.file.exists():
@@ -640,17 +642,19 @@ class FileTransferTracker:
 
     def record_file_progress(self, torrent_hash: str, file_path: str, bytes_transferred: int) -> None:
         """Record progress for a specific file."""
-        key = f"{torrent_hash}:{file_path}"
-        self.state["files"][key] = {
-            "bytes": bytes_transferred,
-            "timestamp": time.time()
-        }
-        self._save()
+        with self._lock:
+            key = f"{torrent_hash}:{file_path}"
+            self.state["files"][key] = {
+                "bytes": bytes_transferred,
+                "timestamp": time.time()
+            }
+            self._save()
 
     def get_file_progress(self, torrent_hash: str, file_path: str) -> int:
         """Get last known progress for a file."""
-        key = f"{torrent_hash}:{file_path}"
-        return self.state["files"].get(key, {}).get("bytes", 0)
+        with self._lock:
+            key = f"{torrent_hash}:{file_path}"
+            return self.state["files"].get(key, {}).get("bytes", 0)
 
     def _save(self) -> None:
         try:
