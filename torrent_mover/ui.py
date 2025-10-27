@@ -355,14 +355,20 @@ class UIManagerV2:
             )
 
     def __enter__(self):
-        root_panel = Panel(self.layout, style="on #16213e")
-        self._live = Live(root_panel, console=self.console, screen=True, redirect_stderr=False, refresh_per_second=10)
+        self._live = Live(
+            self.layout,
+            console=self.console,
+            screen=True,
+            redirect_stderr=False,
+            refresh_per_second=10
+        )
         self._live.start()
 
         # Start stats update thread
         self._stats_thread_stop = threading.Event()
         self._stats_thread = threading.Thread(target=self._stats_updater, daemon=True)
         self._stats_thread.start()
+
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
