@@ -23,7 +23,12 @@ import threading
 from collections import defaultdict
 import errno
 from .config_manager import update_config, load_config, ConfigValidator
-from .utils import retry, SSHConnectionPool, LockFile, _get_remote_size_du_core, batch_get_remote_sizes, RateLimitedFile, TransferCheckpoint, FileTransferTracker
+from .utils import retry, LockFile, RateLimitedFile, TransferCheckpoint, FileTransferTracker
+from .ssh_manager import (
+    SSHConnectionPool, setup_ssh_control_path, check_sshpass_installed,
+    _get_ssh_command, sftp_mkdir_p, get_remote_size_rsync, is_remote_dir,
+    _get_all_files_recursive, batch_get_remote_sizes
+)
 import tempfile
 import getpass
 import configupdater
@@ -50,42 +55,6 @@ RETRY_DELAY_SECONDS = 5
 DEFAULT_PARALLEL_JOBS = 4
 GB_BYTES = 1024**3
 
-SSH_CONTROL_PATH: Optional[str] = None
-
-def setup_ssh_control_path() -> None:
-    """Creates a directory for the SSH control socket."""
-    global SSH_CONTROL_PATH
-    try:
-        user = getpass.getuser()
-        control_dir = Path(tempfile.gettempdir()) / f"torrent_mover_ssh_{user}"
-        control_dir.mkdir(mode=0o700, exist_ok=True)
-        SSH_CONTROL_PATH = str(control_dir / "%r@%h:%p")
-        logging.debug(f"Using SSH control path: {SSH_CONTROL_PATH}")
-    except Exception as e:
-        logging.warning(f"Could not create SSH control path directory. Multiplexing will be disabled. Error: {e}")
-        SSH_CONTROL_PATH = None
-
-def check_sshpass_installed() -> None:
-    """
-    Checks if sshpass is installed, which is required for rsync with password auth.
-    Exits the script if it's not found.
-    """
-    if shutil.which("sshpass") is None:
-        logging.error("FATAL: 'sshpass' is not installed or not in the system's PATH.")
-        logging.error("Please install 'sshpass' to use the rsync transfer mode with a password.")
-        logging.error("e.g., 'sudo apt-get install sshpass' or 'sudo yum install sshpass'")
-        sys.exit(1)
-    logging.debug("'sshpass' dependency check passed.")
-    setup_ssh_control_path()
-
-def _get_ssh_command(port: int) -> str:
-    """Builds the SSH command for rsync, enabling connection multiplexing if available."""
-    base_ssh_cmd = f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
-    if SSH_CONTROL_PATH:
-        multiplex_opts = f"-o ControlMaster=auto -o ControlPath={shlex.quote(SSH_CONTROL_PATH)} -o ControlPersist=60s"
-        return f"{base_ssh_cmd} {multiplex_opts}"
-    return base_ssh_cmd
-
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def connect_qbit(config_section: configparser.SectionProxy, client_name: str) -> qbittorrentapi.Client:
     """
@@ -110,28 +79,6 @@ def connect_qbit(config_section: configparser.SectionProxy, client_name: str) ->
     logging.info(f"CLIENT: Successfully connected to {client_name}. Version: {client.app.version}")
     return client
 
-def sftp_mkdir_p(sftp: paramiko.SFTPClient, remote_path: str) -> None:
-    """
-    Ensures a directory exists on the remote SFTP server, creating it recursively if necessary.
-    This is similar to `mkdir -p`.
-    """
-    if not remote_path:
-        return
-    remote_path = remote_path.replace('\\', '/').rstrip('/')
-    try:
-        sftp.stat(remote_path)
-    except FileNotFoundError:
-        parent_dir = os.path.dirname(remote_path)
-        sftp_mkdir_p(sftp, parent_dir)
-        try:
-            sftp.mkdir(remote_path)
-        except IOError as e:
-            logging.error(f"Failed to create remote directory '{remote_path}': {e}")
-            try:
-                sftp.stat(remote_path)
-            except FileNotFoundError:
-                raise e
-
 def get_remote_size(sftp: paramiko.SFTPClient, remote_path: str) -> int:
     """Recursively gets the total size of a remote file or directory."""
     total_size = 0
@@ -147,90 +94,6 @@ def get_remote_size(sftp: paramiko.SFTPClient, remote_path: str) -> int:
         logging.warning(f"Could not stat remote path for size calculation: {remote_path}")
         return 0
     return total_size
-
-@retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
-def get_remote_size_rsync(sftp_config: configparser.SectionProxy, remote_path: str) -> int:
-    """
-    Gets the total size of a remote file or directory using rsync --stats, with retries.
-    This is much faster than recursive SFTP STAT calls for directories with many files.
-    """
-    host = sftp_config['host']
-    port = sftp_config.getint('port')
-    username = sftp_config['username']
-    password = sftp_config['password']
-    remote_spec = f"{username}@{host}:{shlex.quote(remote_path)}"
-    rsync_cmd = [
-        "sshpass", "-p", password,
-        "rsync",
-        "-a", "--dry-run", "--stats", f"--timeout={Timeouts.SSH_EXEC}",
-        "-e", _get_ssh_command(port),
-        remote_spec,
-        "."
-    ]
-    try:
-        result = subprocess.run(
-            rsync_cmd,
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace'
-        )
-        if result.returncode != 0 and result.returncode != 24:
-            raise Exception(f"Rsync (size check) failed with exit code {result.returncode}. Stderr: {result.stderr}")
-        match = re.search(r"Total file size: ([\d,]+) bytes", result.stdout)
-        if match:
-            size_str = match.group(1).replace(',', '')
-            return int(size_str)
-        else:
-            logging.warning(f"Could not parse rsync --stats output for torrent '{os.path.basename(remote_path)}'.")
-            logging.debug(f"Rsync stdout for size check:\n{result.stdout}")
-            raise Exception("Failed to parse rsync stats output.")
-    except FileNotFoundError:
-        logging.error("FATAL: 'rsync' or 'sshpass' command not found during size check.")
-        raise
-    except Exception as e:
-        raise e
-
-def is_remote_dir(ssh_client: paramiko.SSHClient, path: str) -> bool:
-    """Checks if a remote path is a directory using 'test -d'."""
-    try:
-        command = f"test -d {shlex.quote(path)}"
-        stdin, stdout, stderr = ssh_client.exec_command(command, timeout=Timeouts.SSH_EXEC)
-        exit_status = stdout.channel.recv_exit_status()
-        return exit_status == 0
-    except Exception as e:
-        logging.error(f"Cannot access remote path: {path}\n"
-                      f"This could mean:\n"
-                      f" • The path doesn't exist on the remote server\n"
-                      f" • You don't have permission to access it\n"
-                      f" • The SSH connection was interrupted\n"
-                      f"Technical details: {e}")
-        return False
-
-def _get_all_files_recursive(sftp: paramiko.SFTPClient, remote_path: str, base_dest_path: str, file_list: List[Tuple[str, str]]) -> None:
-    """
-    Recursively walks a remote directory to build a flat list of all files to transfer.
-    `base_dest_path` is the corresponding destination path for the initial `remote_path`.
-    """
-    remote_path_norm = remote_path.replace('\\', '/')
-    base_dest_path_norm = base_dest_path.replace('\\', '/')
-    try:
-        items = sftp.listdir(remote_path_norm)
-    except FileNotFoundError:
-        logging.warning(f"Directory not found on source, skipping: {remote_path_norm}")
-        return
-    for item in items:
-        remote_item_path = f"{remote_path_norm.rstrip('/')}/{item}"
-        dest_item_path = f"{base_dest_path_norm.rstrip('/')}/{item}"
-        try:
-            stat_info = sftp.stat(remote_item_path)
-            if stat_info.st_mode & 0o40000:  # S_ISDIR
-                _get_all_files_recursive(sftp, remote_item_path, dest_item_path, file_list)
-            else:
-                file_list.append((remote_item_path, dest_item_path))
-        except FileNotFoundError:
-            logging.warning(f"File or directory vanished during scan: {remote_item_path}")
-            continue
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: str, local_cache_path: Path, torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
