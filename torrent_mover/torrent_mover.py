@@ -221,9 +221,9 @@ def transfer_torrent(torrent: 'qbittorrentapi.TorrentDictionary', total_size: in
     finally:
         ui.complete_torrent_transfer(hash_, success=success)
 
-def _handle_utility_commands(args: argparse.Namespace, config: configparser.ConfigParser, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool]) -> bool:
+def _handle_utility_commands(args: argparse.Namespace, config: configparser.ConfigParser, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint) -> bool:
     """Handles all utility command-line arguments that exit after running."""
-    if not (args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions):
+    if not (args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions or args.clear_recheck_failure):
         return False
 
     logging.info("Executing utility command...")
@@ -270,6 +270,15 @@ def _handle_utility_commands(args: argparse.Namespace, config: configparser.Conf
             run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
         except Exception as e:
             logging.error(f"Failed to run interactive categorization: {e}", exc_info=True)
+        return True
+
+    if args.clear_recheck_failure:
+        hash_to_clear = args.clear_recheck_failure
+        if checkpoint.is_recheck_failed(hash_to_clear):
+            checkpoint.clear_recheck_failed(hash_to_clear)
+            logging.info(f"Successfully removed torrent hash '{hash_to_clear[:10]}...' from the recheck_failed list.")
+        else:
+            logging.warning(f"Torrent hash '{hash_to_clear[:10]}...' not found in the recheck_failed list.")
         return True
 
     return False # Should not be reached, but as a fallback.
@@ -455,6 +464,7 @@ def main() -> int:
     parser.add_argument('--test-permissions', action='store_true', help='Test write permissions for the configured destination_path and exit.')
     parser.add_argument('--check-config', action='store_true', help='Validate the configuration file and exit.')
     parser.add_argument('--version', action='store_true', help="Show program's version and config file path, then exit.")
+    parser.add_argument('--clear-recheck-failure', metavar='TORRENT_HASH', help='Remove a torrent hash from the recheck_failed list in the checkpoint file.')
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
     if args.version:
@@ -498,7 +508,7 @@ def main() -> int:
             logging.info(f"Initialized SSH connection pool for '{section_name}' with size {max_sessions}.")
 
         tracker_rules = load_tracker_rules(script_dir)
-        if _handle_utility_commands(args, config, tracker_rules, script_dir, ssh_connection_pools):
+        if _handle_utility_commands(args, config, tracker_rules, script_dir, ssh_connection_pools, checkpoint):
             return 0
 
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()

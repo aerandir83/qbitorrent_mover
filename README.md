@@ -114,6 +114,7 @@ The current version is **2.1.0**. To check your version, run: `python3 -m torren
 *   **Permission Testing**: A `--test-permissions` flag helps diagnose write-permission issues on the local or remote destination.
 *   **Flexible Configuration**: All settings are managed in a simple `config.ini` file.
 *   **Advanced Categorization**: Optionally, automatically assign categories on your destination client based on torrent trackers.
+*   **Robust Error Handling**: If a torrent fails the recheck after transfer, its data on the destination is deleted, and the torrent is marked internally to prevent automatic retries on subsequent runs. This usually indicates a persistent issue (e.g., disk corruption, permission problems after transfer, or a qBittorrent bug) requiring manual investigation.
 
 ## Requirements
 
@@ -252,6 +253,7 @@ To run the script automatically, set up a cron job. **You must use absolute path
 | `--list-rules` | `-l` | Lists all saved tracker-to-category rules and exits. |
 | `--add-rule [DOMAIN] [CATEGORY]` | `-a` | Adds or updates a categorization rule and exits. |
 | `--delete-rule [DOMAIN]` | `-d` | Deletes a specific categorization rule and exits. |
+| `--clear-recheck-failure [TORRENT_HASH]` | | Manually removes a torrent from the internal 'recheck_failed' list, allowing the script to process it again. Use after resolving the underlying issue. |
 | `--version` | | Displays the current version of the script and exits. |
 
 ## Advanced Usage: Tracker-Based Categorization
