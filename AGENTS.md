@@ -8,9 +8,15 @@ Torrent Mover is a Python application designed to automatically move completed t
 
 ### Core Components
 
-*   **`torrent_mover/torrent_mover.py`**: This is the main script containing the primary application logic. It handles configuration, connecting to torrent clients and servers, analyzing torrents, and coordinating the transfer process.
-*   **`torrent_mover/ui.py`**: This module manages the terminal user interface using the `rich` library. It's responsible for displaying progress bars, status updates, and tables of torrents being processed. All UI-related changes should be made here.
-*   **`torrent_mover/utils.py`**: This contains shared utilities, most notably the `SSHConnectionPool` for managing and reusing SSH/SFTP connections, and a `@retry` decorator for handling transient network errors.
+*   **`torrent_mover/torrent_mover.py`**: The main application entrypoint and orchestrator. It initializes all manager classes and orchestrates the main application flow (e.g., analyzing torrents, running health checks, and executing transfers).
+*   **`torrent_mover/ui.py`**: Handles the Rich-based terminal UI, including all progress bars, layouts, and status panels.
+*   **`torrent_mover/utils.py`**: Contains shared utilities, specifically the `@retry` decorator for handling transient network errors.
+*   **`torrent_mover/config_manager.py`**: Handles loading, updating, and validating `config.ini`.
+*   **`torrent_mover/ssh_manager.py`**: Manages all SSH/SFTP/Rsync connections and utilities (e.g., `SSHConnectionPool`, `sftp_mkdir_p`).
+*   **`torrent_mover/qbittorrent_manager.py`**: Manages all direct interactions with the qBittorrent WebAPI (e.g., `connect_qbit`, `get_eligible_torrents`).
+*   **`torrent_mover/transfer_manager.py`**: Manages the logic for all file transfer modes (e.g., `transfer_content_sftp_upload`) and transfer state (e.g., `FileTransferTracker`).
+*   **`torrent_mover/system_manager.py`**: Manages system-level tasks like logging, lockfiles, health checks, and cache cleanup (e.g., `setup_logging`, `LockFile`, `destination_health_check`).
+*   **`torrent_mover/tracker_manager.py`**: Manages all logic for tracker-based categorization (e.g., `load_tracker_rules`, `run_interactive_categorization`).
 *   **`torrent_mover/config.ini.template`**: The template for `config.ini`. When adding new configuration options, always update this file. The script will automatically update a user's `config.ini` from this template.
 
 ## Development Workflow
@@ -51,10 +57,18 @@ Key command-line flags for development and testing include:
 
 ### 4. Code Modifications
 
-*   **Maintain Separation of Concerns**: Keep application logic in `torrent_mover.py`, UI logic in `ui.py`, and reusable utilities in `utils.py`.
-*   **Configuration**: When adding a new setting, add it to `config.ini.template` with a descriptive comment. The main script handles updating the user's config file.
+*   **Maintain Separation of Concerns**: Logic is separated into specialized manager modules. Ensure your changes respect this structure:
+    *   UI changes go in `ui.py`.
+    *   qBittorrent API interactions go in `qbittorrent_manager.py`.
+    *   File transfer logic goes in `transfer_manager.py`.
+    *   SSH/SFTP connection logic goes in `ssh_manager.py`.
+    *   System-level tasks (e.g., logging, health checks) go in `system_manager.py`.
+    *   Configuration logic goes in `config_manager.py`.
+    *   Tracker-related logic goes in `tracker_manager.py`.
+    *   The main orchestration logic is in `torrent_mover.py`.
+*   **Configuration**: When adding a new setting, add it to `config.ini.template` with a descriptive comment. The `config_manager.py` module handles updating the user's config file.
 *   **Error Handling**: Wrap network operations and file I/O in `try...except` blocks. Use the `@retry` decorator from `utils.py` for functions that might fail due to transient issues.
-*   **UI Updates**: The `UIManager` in `ui.py` is thread-safe. Update it from worker threads to show real-time progress. Do not modify the UI directly from `torrent_mover.py`; call the appropriate `UIManager` methods.
+*   **UI Updates**: The `UIManagerV2` in `ui.py` is thread-safe. Update it from worker threads to show real-time progress. Do not modify the UI directly from other modules; call the appropriate `UIManagerV2` methods.
 *   **Concurrency**: The script uses a `ThreadPoolExecutor` for concurrent file transfers and torrent analysis. Ensure that any functions called within the executor are thread-safe. The `SSHConnectionPool` is designed for this purpose.
 
 ### 5. Versioning (Mandatory)
