@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.0.0-rc1**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.0.0-rc2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.0.0-rc1 (Latest)
+### Version 2.0.0-rc2 (Latest)
+* **Fix (UI):** Correctly hide analysis progress bar after completion.
+
+### Version 2.0.0-rc1
 * **Feature (UI):** Overhauled the UI with a new multi-column layout for better information density.
 * **Feature (UI):** Added a "Live Log" panel to display real-time logging output directly in the UI.
 * **Feature (UI):** Added "Files Left" (e.g., `2/5 files`) to the "Active Queue" panel.

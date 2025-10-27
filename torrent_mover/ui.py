@@ -13,9 +13,10 @@ TaskID,
 from rich.table import Table
 from rich.text import Text
 from rich.align import Align
+import logging
 import threading
 from collections import OrderedDict, deque
-from typing import Dict, Any, Optional, Deque
+from typing import Dict, Any, Optional, Deque, Tuple
 from rich.layout import Layout
 import time
 
