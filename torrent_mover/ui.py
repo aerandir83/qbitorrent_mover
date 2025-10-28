@@ -67,6 +67,8 @@ class UIManagerV2:
             "current_ul_speed": 0.0,
             "last_dl_bytes": 0,
             "last_ul_bytes": 0,
+            "transferred_dl_bytes": 0,
+            "transferred_ul_bytes": 0,
         }
         self._speed_history = deque(maxlen=60) # Store last 60 seconds of speed readings
 
@@ -124,9 +126,9 @@ class UIManagerV2:
             "•",
             DownloadColumn(binary_units=True),
             "•",
-            TextColumn("DL:[green]{task.fields[dl_speed]:>8}[/]"),
+            TextColumn("DL:[green]{task.fields.get('dl_speed', '0.00 MB/s'):>10}[/]"),
             "•",
-            TextColumn("UL:[yellow]{task.fields[ul_speed]:>8}[/]"),
+            TextColumn("UL:[yellow]{task.fields.get('ul_speed', '0.00 MB/s'):>10}[/]"),
             "•",
             TimeRemainingColumn(),
             expand=True,
@@ -141,9 +143,7 @@ class UIManagerV2:
         self.overall_task = self.main_progress.add_task(
             "[green]📦 Overall Progress",
             total=100,
-            visible=False,
-            dl_speed="0.00 MB/s",
-            ul_speed="0.00 MB/s"
+            visible=False
         )
 
         # Create Panel JUST for the main progress bars
