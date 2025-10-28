@@ -391,6 +391,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                         else:
                             pass
                     except Exception as e:
+                        logging.exception(f"Error calculating size for '{torrent.name}'")
                         ui.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
                     finally:
                         ui.advance_analysis()
@@ -403,15 +404,15 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                     paths = [t.content_path for t in eligible_torrents]
                     sizes = batch_get_remote_sizes(ssh, paths)
                     for torrent in eligible_torrents:
-                        size = sizes.get(torrent.content_path)
-                        if size is not None and size > 0:
-                            analyzed_torrents.append((torrent, size))
-                            total_transfer_size += size
-                        elif size == 0:
-                            pass
-                        else:
-                            pass
-                        ui.advance_analysis()
+                        try:
+                            size = sizes.get(torrent.content_path)
+                            if size is not None and size > 0:
+                                analyzed_torrents.append((torrent, size))
+                                total_transfer_size += size
+                        except Exception as e:
+                            logging.exception(f"Error during torrent analysis for '{torrent.name}'")
+                        finally:
+                            ui.advance_analysis()
         except Exception as e:
             raise RuntimeError(f"A critical error occurred during the analysis phase: {e}") from e
 

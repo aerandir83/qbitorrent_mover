@@ -77,7 +77,7 @@ def get_eligible_torrents(client: qbittorrentapi.Client, category: str, size_thr
         logging.info(f"Selected {len(torrents_to_move)} torrent(s) to meet the threshold (Total size: {size_of_selected_torrents / GB_BYTES:.2f} GB).")
         return torrents_to_move
     except Exception as e:
-        logging.error(f"Could not retrieve torrents from client: {e}")
+        logging.exception(f"Could not retrieve torrents from client: {e}")
         return []
 
 def wait_for_recheck_completion(client: qbittorrentapi.Client, torrent_hash: str, timeout_seconds: int = Timeouts.RECHECK, dry_run: bool = False) -> bool:
