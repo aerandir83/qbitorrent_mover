@@ -10,15 +10,12 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.3.6**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.3.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.3.6 (Latest)
-* **fix(log)**: Remove buggy exc_info from logging.exception calls.
-
-### Version 2.3.5
-* **fix(main)**: Correct is_remote_dir call argument.
+### Version 2.3.3 (Latest)
+* **fix(main)**: Correct is_remote_dir call and enhance debug logs.
 
 ### Version 2.3.2
 * **fix(main)**: Remove calls to non-existent `increment_failed` and `increment_completed` UI methods.

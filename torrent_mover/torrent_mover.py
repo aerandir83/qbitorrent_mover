@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.3.6"
+__version__ = "2.3.3"
 
 # Standard Lib
 import configparser
@@ -57,41 +57,30 @@ def _pre_transfer_setup(torrent: 'qbittorrentapi.TorrentDictionary', config: con
     content_name = os.path.basename(source_content_path)
     dest_content_path = os.path.join(dest_base_path, content_name)
 
-# Check if destination content path already exists
+    # Check if destination content path already exists
     destination_exists = False
     is_remote_check = (transfer_mode == 'sftp_upload') # Check is remote only for sftp_upload
+    check_pool = None
+    if is_remote_check:
+        dest_server_section = config['SETTINGS'].get('destination_server_section', 'DESTINATION_SERVER')
+        check_pool = ssh_connection_pools.get(dest_server_section)
+        if not check_pool:
+            raise ValueError(f"Error: SSH connection pool for server section '{dest_server_section}' not found for remote check.")
 
     logging.debug(f"Checking existence of destination path: {dest_content_path} (Remote Check: {is_remote_check})")
-
     if dry_run:
         logging.info(f"[DRY RUN] Would check if destination path exists: {dest_content_path}")
-    else:
-        if is_remote_check:
-            # Remote check using DESTINATION_SERVER pool
-            dest_server_section = config['SETTINGS'].get('destination_server_section', 'DESTINATION_SERVER')
-            check_pool = ssh_connection_pools.get(dest_server_section)
-            if not check_pool:
-                # Use args.debug directly if args is accessible, otherwise pass it or use logging.exception
-                # Assuming args is accessible here for simplicity based on previous context
-                logging.exception(f"SSH connection pool for server section '{dest_server_section}' not found.")
-                # Fail safe: Assume exists to prevent potential overwrite
-                return False, f"SSH pool '{dest_server_section}' not found.", None, None, None, None, None
-            try:
-                with check_pool.get_connection() as (sftp, ssh):
-                    # Correct call to is_remote_dir (no dry_run argument)
-                    destination_exists = is_remote_dir(ssh, dest_content_path)
-            except Exception as e:
-                logging.exception(f"Failed to check remote destination path '{dest_content_path}': {e}")
-                # Fail safe: Assume exists
-                return False, f"Failed to check remote path: {e}", None, None, None, None, None
-        else:
-            # Local check for rsync/sftp modes
-            try:
-                destination_exists = os.path.isdir(dest_content_path)
-            except Exception as e:
-                logging.exception(f"Failed to check local destination path '{dest_content_path}': {e}")
-                # Fail safe: Assume exists
-                return False, f"Failed to check local path: {e}", None, None, None, None, None
+    elif is_remote_check and check_pool:
+        try:
+            with check_pool.get_connection() as (sftp, ssh):
+                destination_exists = is_remote_dir(ssh, dest_content_path)
+        except Exception as e:
+            is_debug_enabled = logging.getLogger().isEnabledFor(logging.DEBUG)
+            logging.error(f"Failed to check remote destination path '{dest_content_path}': {e}", exc_info=is_debug_enabled) # Show traceback only in debug
+            # Fail safe - assume it might exist to prevent overwrite errors later
+            return False, f"Failed to check remote destination path: {e}", None, None, None, None, None
+    elif not is_remote_check: # Local check for rsync/sftp modes
+         destination_exists = os.path.isdir(dest_content_path) # Check local path
 
     if destination_exists:
         msg = f"Destination path already exists: {dest_content_path}"
