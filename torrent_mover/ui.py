@@ -1,3 +1,4 @@
+import os
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
@@ -16,7 +17,7 @@ from rich.align import Align
 import logging
 import threading
 from collections import OrderedDict, deque
-from typing import Dict, Any, Optional, Deque, Tuple
+from typing import Dict, Any, Optional, Deque, Tuple, List
 from rich.layout import Layout
 import time
 
@@ -152,54 +153,104 @@ class UIManagerV2:
         self.layout["middle"].update(
             Panel(
                 self.current_table,
-                title="[bold yellow]🎯 Active Queue",
+                title="[bold yellow]🎯 Active Torrents",
                 border_style="dim",
                 style="on #16213e"
             )
         )
 
     def _update_current_torrents(self):
-        """Update the current torrents display."""
+        """Update the current torrents display with an expanded file list."""
         with self._lock:
-            self.current_table = Table.grid(padding=(0, 1))
-            self.current_table.add_column(style="bold", no_wrap=True, width=12)
-            self.current_table.add_column(style="dim")
-
+            active_torrents_content = []
             active_count = 0
+
             for hash_, torrent in self._torrents.items():
                 if torrent["status"] == "transferring":
                     active_count += 1
                     name = torrent["name"]
-                    # Truncate long names
-                    display_name = name[:30] + "..." if len(name) > 33 else name
+                    display_name = name[:40] + "..." if len(name) > 43 else name
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
 
-                    # Added file counts from Task 6
-                    files_str = f"({torrent.get('completed_files', 0)}/{torrent.get('total_files', 0)} files)"
+                    # --- Main Torrent Info ---
+                    torrent_table = Table.grid(padding=(0, 1), expand=True)
+                    torrent_table.add_column(style="bold", no_wrap=True, width=12)
+                    torrent_table.add_column()
 
-                    status_icon = "🔄"
-                    self.current_table.add_row(
-                        f"{status_icon} {progress:.0f}%",
-                        f"{display_name} [dim]{files_str}[/dim]" # <-- ADDED
+                    # Add Torrent Name and Progress
+                    files_str = f"({torrent.get('completed_files', 0)}/{torrent.get('total_files', 0)} files)"
+                    torrent_table.add_row(
+                        f"🔄 {progress:.0f}%",
+                        f"{display_name} [dim]{files_str}[/dim]"
                     )
 
-            if active_count == 0:
-                self.current_table.add_row("[dim]⏸️ Idle", "[dim]Waiting for torrents...")
+                    # --- File List ---
+                    file_list = self._file_lists.get(hash_, [])
+                    file_status = self._file_status.get(hash_, {})
 
-            # Add queued count
-            queued = self._stats["total_torrents"] - self._stats["completed_transfers"] - self._stats["failed_transfers"] - active_count
-            if queued > 0:
-                self.current_table.add_row("", "")
-                self.current_table.add_row("[bold]⏳ Queued:", f"[yellow]{queued} torrent(s)[/]")
+                    completed_files = []
+                    active_files = []
+                    queued_files = []
+
+                    # Max files to show to avoid flooding the UI
+                    MAX_FILES_DISPLAY = 3
+
+                    for file_name in file_list:
+                        status = file_status.get(file_name, "queued")
+                        base_name = os.path.basename(file_name)
+                        short_name = base_name[:35] + "..." if len(base_name) > 38 else base_name
+
+                        if status == "completed":
+                            completed_files.append(short_name)
+                        elif status == "downloading":
+                            active_files.append(f"[blue]⬇ {short_name}[/blue]")
+                        elif status == "uploading":
+                            active_files.append(f"[yellow]⬆ {short_name}[/yellow]")
+                        elif status == "failed":
+                            active_files.append(f"[red]✖ {short_name}[/red]")
+                        else: # queued
+                            queued_files.append(short_name)
+
+                    # --- Add File Lists to Table ---
+
+                    # 1. Completed Files (Show count)
+                    if completed_files:
+                        torrent_table.add_row("  [green]✓[/green]", f"[green]{len(completed_files)} completed[/green]")
+
+                    # 2. Active Files (Show first 3)
+                    for i, file_str in enumerate(active_files):
+                        if i >= MAX_FILES_DISPLAY:
+                            torrent_table.add_row("  [dim]...[/dim]", f"[dim]{len(active_files) - MAX_FILES_DISPLAY} more active[/dim]")
+                            break
+                        torrent_table.add_row("  [dim]└─[/dim]", file_str)
+
+                    # 3. Queued Files (Show count)
+                    if queued_files and not active_files: # Only show queue if nothing is active
+                        torrent_table.add_row("  [dim]▫[/dim]", f"[dim]{len(queued_files)} queued[/dim]")
+
+                    active_torrents_content.append(Panel(torrent_table, style="on #16213e", border_style="dim"))
+
+            if active_count == 0:
+                active_torrents_content.append(Panel(Align.center("[dim]⏸️ Waiting for torrents...[/dim]"), style="on #16213e", border_style="dim"))
+
+            # --- Add Queued Torrents Summary ---
+            queued_count = self._stats["total_torrents"] - self._stats["completed_transfers"] - self._stats["failed_transfers"] - active_count
+            if queued_count > 0:
+                queued_table = Table.grid(padding=(0, 1))
+                queued_table.add_column(style="bold", width=12)
+                queued_table.add_column()
+                queued_table.add_row("[bold]⏳ Queued:[/]", f"[yellow]{queued_count} torrent(s)[/]")
+                active_torrents_content.append(Panel(queued_table, style="on #16213e", border_style="dim"))
 
             self.layout["middle"].update(
                 Panel(
-                    self.current_table,
-                    title="[bold yellow]🎯 Active Queue",
+                    Group(*active_torrents_content),
+                    title="[bold yellow]🎯 Active Torrents",
                     border_style="dim",
-                    style="on #16213e" # <-- ADDED DARK THEME
+                    style="on #16213e"
                 )
             )
+
 
     def _setup_stats_panel(self):
         """Enhanced stats panel with graphs and recent completions."""
