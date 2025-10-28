@@ -33,7 +33,7 @@ from .transfer_manager import (
 )
 from .system_manager import (
     LockFile, setup_logging, destination_health_check, change_ownership,
-    _delete_destination_content, test_path_permissions, cleanup_orphaned_cache,
+    delete_destination_content, test_path_permissions, cleanup_orphaned_cache,
     recover_cached_torrents
 )
 from .tracker_manager import (
@@ -183,12 +183,17 @@ def _post_transfer_actions(torrent: 'qbittorrentapi.TorrentDictionary', source_q
         ui.log(f"[bold red]Recheck FAILED: {name}. Deleting destination data.[/bold red]")
         if not dry_run:
             logging.warning(f"Deleting destination data to force re-transfer on next run: {dest_content_path}")
-            _delete_destination_content(dest_content_path, config, ssh_connection_pools)
+            try:
+                delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+            except Exception as e:
+                msg = f"Recheck failed, AND failed to delete corrupt data: {e}"
+                logging.error(msg)
+                checkpoint.mark_recheck_failed(hash_)
+                return False, msg
         else:
             logging.info(f"[DRY RUN] Would delete destination data: {dest_content_path}")
         checkpoint.mark_recheck_failed(hash_)
-        logging.warning(f"Marked torrent {hash_} as recheck_failed in checkpoint.")
-        return False, "Post-transfer recheck failed. Marked for manual review."
+        return False, f"Recheck failed for {name}. Destination data deleted."
     if not dry_run:
         logging.info(f"CLIENT: Starting torrent on Destination: {name}")
         destination_qbit.torrents_resume(torrent_hashes=hash_)

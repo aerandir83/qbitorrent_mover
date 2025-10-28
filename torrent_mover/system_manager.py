@@ -13,6 +13,8 @@ import errno
 import typing
 from typing import Optional, Dict, List, Tuple, Any, Set, TYPE_CHECKING
 import configparser
+import paramiko
+from . import ssh_manager
 
 from .ssh_manager import SSHConnectionPool
 from .transfer_manager import Timeouts
@@ -258,53 +260,6 @@ def change_ownership(path_to_change: str, user: str, group: str, remote_config: 
         except Exception as e:
             logging.error(f"An exception occurred during local chown: {e}", exc_info=True)
 
-def _delete_destination_content(dest_content_path: str, config: configparser.ConfigParser, ssh_connection_pools: Dict[str, SSHConnectionPool]) -> None:
-    """Deletes the content from the destination path, either locally or remotely."""
-    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-    is_remote = (transfer_mode == 'sftp_upload')
-
-    logging.warning(f"Attempting to delete destination content: {dest_content_path}")
-    try:
-        if is_remote:
-            # Remote deletion
-            dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
-            if not dest_pool:
-                logging.error("Cannot delete remote content: Destination SSH pool not found.")
-                return
-
-            with dest_pool.get_connection() as (sftp, ssh):
-                # Check if it's a directory or file
-                try:
-                    stat = sftp.stat(dest_content_path)
-                    if stat.st_mode & 0o40000: # S_ISDIR
-                        logging.debug("Destination is a directory. Using 'rm -rf'.")
-                        command = f"rm -rf {shlex.quote(dest_content_path)}"
-                        stdin, stdout, stderr = ssh.exec_command(command, timeout=Timeouts.SSH_EXEC)
-                        exit_status = stdout.channel.recv_exit_status()
-                        if exit_status != 0:
-                            logging.error(f"Failed to delete remote directory: {stderr.read().decode()}")
-                    else:
-                        logging.debug("Destination is a file. Using 'sftp.remove'.")
-                        sftp.remove(dest_content_path)
-                except FileNotFoundError:
-                    logging.warning(f"Destination content not found (already deleted?): {dest_content_path}")
-        else:
-            # Local deletion
-            p = Path(dest_content_path)
-            if p.is_dir():
-                logging.debug("Destination is a directory. Using 'shutil.rmtree'.")
-                shutil.rmtree(p)
-            elif p.is_file():
-                logging.debug("Destination is a file. Using 'os.remove'.")
-                p.unlink()
-            else:
-                logging.warning(f"Destination content not found (already deleted?): {dest_content_path}")
-
-        logging.info(f"Successfully deleted destination content: {dest_content_path}")
-
-    except Exception as e:
-        logging.error(f"An error occurred while deleting destination content: {e}", exc_info=True)
-
 def setup_logging(script_dir: Path, dry_run: bool, test_run: bool, debug: bool) -> None:
     """Configures logging to both console and a file."""
     log_dir = script_dir / 'logs'
@@ -403,3 +358,56 @@ def test_path_permissions(path_to_test: str, remote_config: Optional[configparse
         except Exception as e:
             logging.error(f"[bold red]FAILURE:[/] An unexpected error occurred during local permission test: {e}", exc_info=True)
             return False
+
+def delete_destination_content(
+    dest_content_path: str,
+    transfer_mode: str,
+    ssh_connection_pools: Dict[str, SSHConnectionPool]
+) -> None:
+    """
+    Deletes the content from the destination path, either locally or remotely.
+    """
+    is_remote = (transfer_mode == 'sftp_upload')
+
+    logging.warning(f"Attempting to delete destination content: {dest_content_path}")
+    try:
+        if is_remote:
+            # Remote deletion
+            dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
+            if not dest_pool:
+                logging.error("Cannot delete remote content: Destination SSH pool not found.")
+                return
+
+            with dest_pool.get_connection() as (sftp, ssh):
+                # Check if it's a directory or file
+                try:
+                    stat = sftp.stat(dest_content_path)
+                    if stat.st_mode & 0o40000: # S_ISDIR
+                        logging.debug("Destination is a directory. Using 'rm -rf'.")
+                        command = f"rm -rf {shlex.quote(dest_content_path)}"
+                        stdin, stdout, stderr = ssh.exec_command(command, timeout=ssh_manager.Timeouts.SSH_EXEC)
+                        exit_status = stdout.channel.recv_exit_status()
+                        if exit_status != 0:
+                            logging.error(f"Failed to delete remote directory: {stderr.read().decode()}")
+                    else:
+                        logging.debug("Destination is a file. Using 'sftp.remove'.")
+                        sftp.remove(dest_content_path)
+                except FileNotFoundError:
+                    logging.warning(f"Destination content not found (already deleted?): {dest_content_path}")
+        else:
+            # Local deletion
+            p = Path(dest_content_path)
+            if p.is_dir():
+                logging.debug("Destination is a directory. Using 'shutil.rmtree'.")
+                shutil.rmtree(p)
+            elif p.is_file():
+                logging.debug("Destination is a file. Using 'p.unlink()'.")
+                p.unlink()
+            else:
+                logging.warning(f"Destination content not found (already deleted?): {dest_content_path}")
+
+        logging.info(f"Successfully deleted destination content: {dest_content_path}")
+
+    except Exception as e:
+        logging.error(f"An error occurred while deleting destination content: {e}", exc_info=True)
+        raise # Re-raise the exception to be caught by the calling function
