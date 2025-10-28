@@ -23,7 +23,7 @@ from typing import Dict, List, Tuple, TYPE_CHECKING, Optional
 from .config_manager import update_config, load_config, ConfigValidator
 from .ssh_manager import (
     SSHConnectionPool, check_sshpass_installed,
-    _get_all_files_recursive, get_remote_size_rsync, batch_get_remote_sizes,
+    _get_all_files_recursive, batch_get_remote_sizes,
     is_remote_dir
 )
 from .qbittorrent_manager import connect_qbit, get_eligible_torrents, wait_for_recheck_completion
@@ -386,40 +386,55 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
         total_transfer_size = 0
         logging.info("STATE: Starting analysis phase...")
         try:
-            if transfer_mode == 'rsync':
+            source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
+            source_pool = ssh_connection_pools.get(source_server_section)
+            if not source_pool:
+                raise ValueError(f"Error: SSH connection pool for server section '{source_server_section}' not found.")
+
+            # Unified logic: Get all paths first
+            paths_to_check = []
+            for torrent in eligible_torrents:
+                if checkpoint.is_recheck_failed(torrent.hash):
+                    logging.warning(f"Skipping torrent marked with recheck failure: {torrent.name}")
+                    ui.log(f"[yellow]Skipped (recheck fail): {torrent.name}[/yellow]")
+                    ui.advance_analysis()
+                    continue
+                paths_to_check.append(torrent.content_path)
+
+            if not paths_to_check:
+                logging.info("No new torrents to analyze.")
+            else:
+                # Get all sizes in one go
+                with source_pool.get_connection() as (sftp, ssh):
+                    logging.debug(f"Batch analyzing size for {len(paths_to_check)} torrents...")
+                    sizes = batch_get_remote_sizes(ssh, paths_to_check)
+
+                # Process the results
                 for torrent in eligible_torrents:
+                    if torrent.content_path not in paths_to_check:
+                        continue # Was skipped due to recheck failure
+
                     try:
-                        size = get_remote_size_rsync(sftp_config, torrent.content_path)
-                        if size > 0:
+                        size = sizes.get(torrent.content_path)
+                        if size is not None and size > 0:
                             analyzed_torrents.append((torrent, size))
                             total_transfer_size += size
-                        else:
-                            pass
+                            logging.debug(f"Analyzed '{torrent.name}': {size} bytes")
+                        elif size == 0:
+                            logging.warning(f"Skipping zero-byte torrent: {torrent.name}")
+                        else: # size is None
+                            logging.error(f"Failed to calculate size for: {torrent.name}. It may not exist on source.")
                     except Exception as e:
-                        logging.exception(f"Error calculating size for '{torrent.name}'")
-                        ui.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
+                        logging.exception(f"Error during torrent analysis for '{torrent.name}'")
+                        ui.log(f"[bold red]Error analyzing {torrent.name}: {e}[/bold red]")
                     finally:
                         ui.advance_analysis()
-            else:
-                source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
-                source_pool = ssh_connection_pools.get(source_server_section)
-                if not source_pool:
-                    raise ValueError(f"Error: SSH connection pool for server section '{source_server_section}' not found. Check config.")
-                with source_pool.get_connection() as (sftp, ssh):
-                    paths = [t.content_path for t in eligible_torrents]
-                    sizes = batch_get_remote_sizes(ssh, paths)
-                    for torrent in eligible_torrents:
-                        try:
-                            size = sizes.get(torrent.content_path)
-                            if size is not None and size > 0:
-                                analyzed_torrents.append((torrent, size))
-                                total_transfer_size += size
-                        except Exception as e:
-                            logging.exception(f"Error during torrent analysis for '{torrent.name}'")
-                        finally:
-                            ui.advance_analysis()
+
         except Exception as e:
-            raise RuntimeError(f"A critical error occurred during the analysis phase: {e}") from e
+            logging.exception(f"A critical error occurred during the analysis phase: {e}")
+            ui.set_final_status(f"Analysis failed: {e}")
+            time.sleep(5)
+            raise
 
         logging.info("STATE: Analysis complete.")
         ui.complete_analysis()

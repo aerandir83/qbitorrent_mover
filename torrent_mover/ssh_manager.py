@@ -83,49 +83,6 @@ def sftp_mkdir_p(sftp: paramiko.SFTPClient, remote_path: str) -> None:
             except FileNotFoundError:
                 raise e
 
-@retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
-def get_remote_size_rsync(sftp_config: 'configparser.SectionProxy', remote_path: str) -> int:
-    """
-    Gets the total size of a remote file or directory using rsync --stats, with retries.
-    This is much faster than recursive SFTP STAT calls for directories with many files.
-    """
-    host = sftp_config['host']
-    port = sftp_config.getint('port')
-    username = sftp_config['username']
-    password = sftp_config['password']
-    remote_spec = f"{username}@{host}:{shlex.quote(remote_path)}"
-    rsync_cmd = [
-        "sshpass", "-p", password,
-        "rsync",
-        "-a", "--dry-run", "--stats", f"--timeout={SSH_EXEC_TIMEOUT}",
-        "-e", _get_ssh_command(port),
-        remote_spec,
-        "."
-    ]
-    try:
-        result = subprocess.run(
-            rsync_cmd,
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace'
-        )
-        if result.returncode != 0 and result.returncode != 24:
-            raise Exception(f"Rsync (size check) failed with exit code {result.returncode}. Stderr: {result.stderr}")
-        match = re.search(r"Total file size: ([\d,]+) bytes", result.stdout)
-        if match:
-            size_str = match.group(1).replace(',', '')
-            return int(size_str)
-        else:
-            logging.warning(f"Could not parse rsync --stats output for torrent '{os.path.basename(remote_path)}'.")
-            logging.debug(f"Rsync stdout for size check:\n{result.stdout}")
-            raise Exception("Failed to parse rsync stats output.")
-    except FileNotFoundError:
-        logging.error("FATAL: 'rsync' or 'sshpass' command not found during size check.")
-        raise
-    except Exception as e:
-        raise e
-
 def is_remote_dir(ssh_client: paramiko.SSHClient, path: str) -> bool:
     """Checks if a remote path is a directory using 'test -d'."""
     logging.debug(f"Checking if remote path is directory: {path}")
