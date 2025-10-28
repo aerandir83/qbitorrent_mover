@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.3.2"
+__version__ = "2.3.3"
 
 # Standard Lib
 import configparser
@@ -58,10 +58,36 @@ def _pre_transfer_setup(torrent: 'qbittorrentapi.TorrentDictionary', config: con
     dest_content_path = os.path.join(dest_base_path, content_name)
 
     # Check if destination content path already exists
-    if is_remote_dir(ssh_connection_pools, config, dest_content_path, dry_run=dry_run):
+    destination_exists = False
+    is_remote_check = (transfer_mode == 'sftp_upload') # Check is remote only for sftp_upload
+    check_pool = None
+    if is_remote_check:
+        dest_server_section = config['SETTINGS'].get('destination_server_section', 'DESTINATION_SERVER')
+        check_pool = ssh_connection_pools.get(dest_server_section)
+        if not check_pool:
+            raise ValueError(f"Error: SSH connection pool for server section '{dest_server_section}' not found for remote check.")
+
+    logging.debug(f"Checking existence of destination path: {dest_content_path} (Remote Check: {is_remote_check})")
+    if dry_run:
+        logging.info(f"[DRY RUN] Would check if destination path exists: {dest_content_path}")
+    elif is_remote_check and check_pool:
+        try:
+            with check_pool.get_connection() as (sftp, ssh):
+                destination_exists = is_remote_dir(ssh, dest_content_path)
+        except Exception as e:
+            is_debug_enabled = logging.getLogger().isEnabledFor(logging.DEBUG)
+            logging.error(f"Failed to check remote destination path '{dest_content_path}': {e}", exc_info=is_debug_enabled) # Show traceback only in debug
+            # Fail safe - assume it might exist to prevent overwrite errors later
+            return False, f"Failed to check remote destination path: {e}", None, None, None, None, None
+    elif not is_remote_check: # Local check for rsync/sftp modes
+         destination_exists = os.path.isdir(dest_content_path) # Check local path
+
+    if destination_exists:
         msg = f"Destination path already exists: {dest_content_path}"
         logging.error(msg)
         return False, msg, None, None, None, None, None
+    else:
+        logging.debug(f"Destination path does not exist or is not a directory: {dest_content_path}")
 
     remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
     destination_save_path = remote_dest_base_path
@@ -239,8 +265,9 @@ def transfer_torrent(torrent: 'qbittorrentapi.TorrentDictionary', total_size: in
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as e:
-        logging.debug(traceback.format_exc())
-        logging.error(f"An unexpected error occurred while processing {name}: {e}")
+        log_message = f"An unexpected error occurred while processing {name}: {e}"
+        # Use logging.exception to include traceback automatically
+        logging.exception(log_message)
         return "failed", f"Unexpected error: {e}"
     finally:
         ui.complete_torrent_transfer(hash_, success=success)
