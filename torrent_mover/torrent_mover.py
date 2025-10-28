@@ -199,85 +199,116 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
         return False, "Transfer function failed."
 
 def _post_transfer_actions(
-    torrent: 'qbittorrentapi.TorrentDictionary',
-    source_qbit: 'qbittorrentapi.Client',
-    destination_qbit: 'qbittorrentapi.Client',
+    torrent: qbittorrentapi.TorrentDictionary,
+    source_qbit: qbittorrentapi.Client,
+    destination_qbit: qbittorrentapi.Client,
     config: configparser.ConfigParser,
     tracker_rules: Dict[str, str],
     ssh_connection_pools: Dict[str, SSHConnectionPool],
     dest_content_path: str,
     destination_save_path: str,
-    transfer_executed: bool,
-    dry_run: bool,
-    test_run: bool
+    transfer_executed: bool, # <-- NEW ARGUMENT
+    dry_run: bool = False,
+    test_run: bool = False
 ) -> Tuple[bool, str]:
-    """Handles all actions after a transfer."""
+    """Handles all actions after a transfer (or skip) decision."""
     name, hash_ = torrent.name, torrent.hash
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-    chown_user = config['SETTINGS'].get('chown_user', '').strip()
-    chown_group = config['SETTINGS'].get('chown_group', '').strip()
-    if chown_user or chown_group:
-        remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' else None
-        change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
+
+    # --- 1. Change Ownership (if transfer was executed) ---
+    if transfer_executed and not dry_run:
+        chown_user = config['SETTINGS'].get('chown_user', '').strip()
+        chown_group = config['SETTINGS'].get('chown_group', '').strip()
+        if chown_user or chown_group:
+            remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' else None
+            change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
+
     destination_save_path_str = str(destination_save_path).replace("\\", "/")
-    if transfer_executed or dry_run:
-        if not dry_run:
-            logging.debug(f"Exporting .torrent file for {name}")
-            torrent_file_content = source_qbit.torrents_export(torrent_hash=hash_)
-            logging.info(f"CLIENT: Adding torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
-            destination_qbit.torrents_add(
-                torrent_files=torrent_file_content,
-                save_path=destination_save_path_str,
-                is_paused=True,
-                category=torrent.category,
-                use_auto_torrent_management=True
-            )
-            time.sleep(5)
-        else:
-            logging.info(f"[DRY RUN] Would export and add torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
-        if not dry_run:
-            logging.info(f"CLIENT: Triggering force recheck on Destination for: {name}")
-            destination_qbit.torrents_recheck(torrent_hashes=hash_)
-        else:
-            logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
-        if not wait_for_recheck_completion(destination_qbit, hash_, dry_run=dry_run):
-            logging.error(f"Failed to verify recheck for {name}. Assuming destination data is corrupt.")
-            # ui.log is no longer available here, logging is sufficient
+
+    # --- 2. Add Torrent to Destination (if not already there) ---
+    try:
+        dest_torrent = destination_qbit.torrents_info(torrent_hashes=hash_)
+        if not dest_torrent:
+            logging.info(f"Torrent {name} not found on destination. Adding it.")
             if not dry_run:
-                logging.warning(f"Deleting destination data to force re-transfer on next run: {dest_content_path}")
+                logging.debug(f"Exporting .torrent file for {name}")
+                torrent_file_content = source_qbit.torrents_export(torrent_hash=hash_)
+                logging.info(f"CLIENT: Adding torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
+                destination_qbit.torrents_add(
+                    torrent_files=torrent_file_content,
+                    save_path=destination_save_path_str,
+                    is_paused=True,
+                    category=torrent.category,
+                    use_auto_torrent_management=True
+                )
+                time.sleep(5) # Give client time to add it
+            else:
+                logging.info(f"[DRY RUN] Would add torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
+        else:
+            logging.info(f"Torrent {name} already exists on destination. Proceeding to recheck.")
+
+    except Exception as e:
+        logging.exception(f"Failed to add torrent {name} to destination")
+        return False, f"Failed to add torrent to destination: {e}"
+
+    # --- 3. Force Recheck ---
+    if not dry_run:
+        logging.info(f"CLIENT: Triggering force recheck on Destination for: {name}")
+        try:
+            destination_qbit.torrents_recheck(torrent_hashes=hash_)
+        except qbittorrentapi.exceptions.NotFound404Error:
+            msg = f"Failed to start recheck: Torrent {name} disappeared from destination client."
+            logging.error(msg)
+            return False, msg
+    else:
+        logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
+
+    # --- 4. Wait for Recheck and Handle Failure ---
+    if not wait_for_recheck_completion(destination_qbit, hash_, dry_run=dry_run):
+        # RECHECK FAILED!
+        msg = f"Recheck FAILED for {name}. Destination data is corrupt or incomplete."
+        logging.error(msg)
+
+        # If we didn't just transfer, this is the "existing file" scenario.
+        # We must delete the bad data so it re-transfers next time.
+        if not transfer_executed:
+            logging.warning(f"Deleting corrupt destination data for {name} to force re-transfer on next run.")
+            if not dry_run:
                 try:
                     delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
                 except Exception as e:
                     msg = f"Recheck failed, AND failed to delete corrupt data: {e}"
-                    logging.error(msg)
-                    # checkpoint is no longer available here
+                    logging.exception(msg)
                     return False, msg
             else:
-                logging.info(f"[DRY RUN] Would delete destination data: {dest_content_path}")
-            # checkpoint is no longer available here
-            return False, f"Recheck failed for {name}. Destination data deleted."
+                logging.info(f"[DRY RUN] Would delete corrupt destination data at: {dest_content_path}")
+
+        # Mark recheck as failed so it's skipped in future runs until checkpoint is cleared
+        # (This logic is handled by transfer_torrent returning 'failed')
+        return False, msg
+
+    # --- 5. Recheck Succeeded: Finalize Torrent ---
     if not dry_run:
         logging.info(f"CLIENT: Starting torrent on Destination: {name}")
         destination_qbit.torrents_resume(torrent_hashes=hash_)
     else:
         logging.info(f"[DRY RUN] Would start torrent on Destination: {name}")
+
     logging.info(f"CLIENT: Attempting to categorize torrent on Destination: {name}")
     set_category_based_on_tracker(destination_qbit, hash_, tracker_rules, dry_run=dry_run)
+
+    # --- 6. Delete from Source ---
     if not dry_run and not test_run:
         logging.info(f"CLIENT: Pausing torrent on Source before deletion: {name}")
         source_qbit.torrents_pause(torrent_hashes=hash_)
-    else:
-        logging.info(f"[DRY RUN/TEST RUN] Would pause torrent on Source: {name}")
-    if test_run:
-        logging.info(f"[TEST RUN] Skipping deletion of torrent from Source: {name}")
-    elif not dry_run:
         logging.info(f"CLIENT: Deleting torrent and data from Source: {name}")
         source_qbit.torrents_delete(torrent_hashes=hash_, delete_files=True)
+    elif test_run:
+        logging.info(f"[TEST RUN] Skipping deletion of torrent from Source: {name}")
     else:
-        logging.info(f"[DRY RUN] Would delete torrent and data from Source: {name}")
-    if dry_run:
-        return True, "Post-transfer actions simulated (Dry Run)."
-    return True, "Recheck successful and source torrent deleted."
+        logging.info(f"[DRY RUN] Would pause and delete torrent and data from Source: {name}")
+
+    return True, "Successfully transferred and verified."
 
 def transfer_torrent(
     torrent: qbittorrentapi.TorrentDictionary,
@@ -372,7 +403,7 @@ def transfer_torrent(
         post_transfer_success, post_transfer_msg = _post_transfer_actions(
             torrent, source_qbit, destination_qbit, config, tracker_rules,
             ssh_connection_pools, dest_content_path, destination_save_path,
-            transfer_executed, # Pass whether we actually transferred
+            transfer_executed, # <-- This is the argument we added
             dry_run, test_run
         )
 
