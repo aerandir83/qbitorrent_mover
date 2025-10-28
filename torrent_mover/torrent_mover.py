@@ -365,7 +365,7 @@ def transfer_torrent(
             # Placeholder for rsync or cases where file list is deferred
             file_names_for_ui = [f"file {i+1}" for i in range(total_files)]
         ui.start_torrent_transfer(
-            hash_, name, total_size, total_files,
+            hash_, name, total_size,
             file_names_for_ui,
             transfer_multiplier
         )
