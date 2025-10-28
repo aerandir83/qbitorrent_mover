@@ -45,6 +45,10 @@ class UIManagerV2:
         self._completed_hashes: set = set()
         self._recent_completions: Deque[tuple] = deque(maxlen=5) # (name, size, duration)
 
+        # Data structures for file-level tracking
+        self._file_lists: Dict[str, List[str]] = {} # torrent_hash -> [file_name_1, file_name_2, ...]
+        self._file_status: Dict[str, Dict[str, str]] = {} # torrent_hash -> {file_name -> "queued" | "downloading" | "uploading" | "completed"}
+
         # Statistics
         self._stats = {
             "total_torrents": 0,
@@ -405,6 +409,7 @@ class UIManagerV2:
 
     def start_torrent_transfer(self, torrent_hash: str, torrent_name: str,
                                total_size: float, total_files: int,
+                               all_files: List[str],
                                transfer_multiplier: int = 1):
         with self._lock:
             self._torrents[torrent_hash] = {
@@ -416,6 +421,9 @@ class UIManagerV2:
                 "status": "transferring",
                 "start_time": time.time()
             }
+            # Initialize file tracking for this torrent
+            self._file_lists[torrent_hash] = all_files
+            self._file_status[torrent_hash] = {file_name: "queued" for file_name in all_files}
             self._active_torrents.append(torrent_hash)
             self._stats["active_transfers"] += 1
 
@@ -431,22 +439,29 @@ class UIManagerV2:
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
         with self._lock:
             if torrent_hash in self._torrents:
-                torrent = self._torrents[torrent_hash]
-                torrent["status"] = "completed" if success else "failed"
-                self._completed_hashes.add(torrent_hash)
-                self._stats["active_transfers"] = max(0, self._stats["active_transfers"] - 1)
+                try:
+                    torrent = self._torrents[torrent_hash]
+                    torrent["status"] = "completed" if success else "failed"
+                    self._completed_hashes.add(torrent_hash)
+                    self._stats["active_transfers"] = max(0, self._stats["active_transfers"] - 1)
 
-                if success:
-                    self._stats["completed_transfers"] += 1
-                    # Add to recent completions
-                    duration = time.time() - torrent.get("start_time", time.time())
-                    self._recent_completions.append((
-                        torrent["name"],
-                        torrent["size"],
-                        duration
-                    ))
-                else:
-                    self._stats["failed_transfers"] += 1
+                    if success:
+                        self._stats["completed_transfers"] += 1
+                        # Add to recent completions
+                        duration = time.time() - torrent.get("start_time", time.time())
+                        self._recent_completions.append((
+                            torrent["name"],
+                            torrent["size"],
+                            duration
+                        ))
+                    else:
+                        self._stats["failed_transfers"] += 1
+                finally:
+                    # Clean up file tracking data
+                    if torrent_hash in self._file_lists:
+                        del self._file_lists[torrent_hash]
+                    if torrent_hash in self._file_status:
+                        del self._file_status[torrent_hash]
 
     def log(self, message: str):
         """Adds a message to the on-screen log buffer."""
