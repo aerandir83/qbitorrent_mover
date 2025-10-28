@@ -33,8 +33,8 @@ from .transfer_manager import (
 )
 from .system_manager import (
     LockFile, setup_logging, destination_health_check, change_ownership,
-    delete_destination_content, test_path_permissions, cleanup_orphaned_cache,
-    recover_cached_torrents
+    test_path_permissions, cleanup_orphaned_cache,
+    recover_cached_torrents, delete_destination_content
 )
 from .tracker_manager import (
     load_tracker_rules, save_tracker_rules, set_category_based_on_tracker,
@@ -198,8 +198,20 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
         logging.error(f"Transfer function failed for '{name}'. See above logs for details.")
         return False, "Transfer function failed."
 
-def _post_transfer_actions(torrent: 'qbittorrentapi.TorrentDictionary', source_qbit: 'qbittorrentapi.Client', destination_qbit: 'qbittorrentapi.Client', config: configparser.ConfigParser, tracker_rules: Dict[str, str], ssh_connection_pools: Dict[str, SSHConnectionPool], dest_content_path: str, destination_save_path: str, dry_run: bool, test_run: bool, checkpoint: TransferCheckpoint, ui: UIManager) -> Tuple[bool, str]:
-    """Handles all actions after a successful transfer."""
+def _post_transfer_actions(
+    torrent: 'qbittorrentapi.TorrentDictionary',
+    source_qbit: 'qbittorrentapi.Client',
+    destination_qbit: 'qbittorrentapi.Client',
+    config: configparser.ConfigParser,
+    tracker_rules: Dict[str, str],
+    ssh_connection_pools: Dict[str, SSHConnectionPool],
+    dest_content_path: str,
+    destination_save_path: str,
+    transfer_executed: bool,
+    dry_run: bool,
+    test_run: bool
+) -> Tuple[bool, str]:
+    """Handles all actions after a transfer."""
     name, hash_ = torrent.name, torrent.hash
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
     chown_user = config['SETTINGS'].get('chown_user', '').strip()
@@ -208,41 +220,42 @@ def _post_transfer_actions(torrent: 'qbittorrentapi.TorrentDictionary', source_q
         remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' else None
         change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
     destination_save_path_str = str(destination_save_path).replace("\\", "/")
-    if not dry_run:
-        logging.debug(f"Exporting .torrent file for {name}")
-        torrent_file_content = source_qbit.torrents_export(torrent_hash=hash_)
-        logging.info(f"CLIENT: Adding torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
-        destination_qbit.torrents_add(
-            torrent_files=torrent_file_content,
-            save_path=destination_save_path_str,
-            is_paused=True,
-            category=torrent.category,
-            use_auto_torrent_management=True
-        )
-        time.sleep(5)
-    else:
-        logging.info(f"[DRY RUN] Would export and add torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
-    if not dry_run:
-        logging.info(f"CLIENT: Triggering force recheck on Destination for: {name}")
-        destination_qbit.torrents_recheck(torrent_hashes=hash_)
-    else:
-        logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
-    if not wait_for_recheck_completion(destination_qbit, hash_, dry_run=dry_run):
-        logging.error(f"Failed to verify recheck for {name}. Assuming destination data is corrupt.")
-        ui.log(f"[bold red]Recheck FAILED: {name}. Deleting destination data.[/bold red]")
+    if transfer_executed or dry_run:
         if not dry_run:
-            logging.warning(f"Deleting destination data to force re-transfer on next run: {dest_content_path}")
-            try:
-                delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-            except Exception as e:
-                msg = f"Recheck failed, AND failed to delete corrupt data: {e}"
-                logging.error(msg)
-                checkpoint.mark_recheck_failed(hash_)
-                return False, msg
+            logging.debug(f"Exporting .torrent file for {name}")
+            torrent_file_content = source_qbit.torrents_export(torrent_hash=hash_)
+            logging.info(f"CLIENT: Adding torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
+            destination_qbit.torrents_add(
+                torrent_files=torrent_file_content,
+                save_path=destination_save_path_str,
+                is_paused=True,
+                category=torrent.category,
+                use_auto_torrent_management=True
+            )
+            time.sleep(5)
         else:
-            logging.info(f"[DRY RUN] Would delete destination data: {dest_content_path}")
-        checkpoint.mark_recheck_failed(hash_)
-        return False, f"Recheck failed for {name}. Destination data deleted."
+            logging.info(f"[DRY RUN] Would export and add torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
+        if not dry_run:
+            logging.info(f"CLIENT: Triggering force recheck on Destination for: {name}")
+            destination_qbit.torrents_recheck(torrent_hashes=hash_)
+        else:
+            logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
+        if not wait_for_recheck_completion(destination_qbit, hash_, dry_run=dry_run):
+            logging.error(f"Failed to verify recheck for {name}. Assuming destination data is corrupt.")
+            # ui.log is no longer available here, logging is sufficient
+            if not dry_run:
+                logging.warning(f"Deleting destination data to force re-transfer on next run: {dest_content_path}")
+                try:
+                    delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                except Exception as e:
+                    msg = f"Recheck failed, AND failed to delete corrupt data: {e}"
+                    logging.error(msg)
+                    # checkpoint is no longer available here
+                    return False, msg
+            else:
+                logging.info(f"[DRY RUN] Would delete destination data: {dest_content_path}")
+            # checkpoint is no longer available here
+            return False, f"Recheck failed for {name}. Destination data deleted."
     if not dry_run:
         logging.info(f"CLIENT: Starting torrent on Destination: {name}")
         destination_qbit.torrents_resume(torrent_hashes=hash_)
@@ -266,89 +279,120 @@ def _post_transfer_actions(torrent: 'qbittorrentapi.TorrentDictionary', source_q
         return True, "Post-transfer actions simulated (Dry Run)."
     return True, "Recheck successful and source torrent deleted."
 
-def transfer_torrent(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, source_qbit: 'qbittorrentapi.Client', destination_qbit: 'qbittorrentapi.Client', config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, args: argparse.Namespace, sftp_chunk_size: int = 65536) -> Tuple[str, str]:
+def transfer_torrent(
+    torrent: qbittorrentapi.TorrentDictionary,
+    total_size: int,
+    source_qbit: qbittorrentapi.Client,
+    destination_qbit: qbittorrentapi.Client,
+    config: configparser.ConfigParser,
+    tracker_rules: Dict[str, str],
+    ui: UIManager,
+    file_tracker: FileTransferTracker,
+    ssh_connection_pools: Dict[str, SSHConnectionPool],
+    checkpoint: TransferCheckpoint, # Added checkpoint
+    args: argparse.Namespace # Added args
+) -> Tuple[str, str]:
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
-    Returns a status string and a message.
+    Returns (status, message)
     """
     name, hash_ = torrent.name, torrent.hash
-    success = False
+    start_time = time.time()
     dry_run = args.dry_run
     test_run = args.test_run
-
-    if checkpoint.is_completed(hash_):
-        return "skipped", "Already completed in checkpoint."
-
-    if checkpoint.is_recheck_failed(hash_):
-        return "skipped", "Skipped (marked as recheck_failed)."
-
-    local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
+    sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-    transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
 
     try:
-        status_code, status_message, all_files, source_content_path, dest_content_path, destination_save_path, total_files = _pre_transfer_setup(
-            torrent, total_size, config, ssh_connection_pools, args
-        )
+        # --- 1. Pre-Transfer Setup & Status Check ---
+        (
+            pre_transfer_status, pre_transfer_msg, all_files,
+            source_content_path, dest_content_path,
+            destination_save_path, total_files
+        ) = _pre_transfer_setup(torrent, total_size, config, ssh_connection_pools, args)
 
-        if status_code == "failed":
-            return "failed", status_message
+        if pre_transfer_status == "failed":
+            return "failed", pre_transfer_msg
 
-        ui.start_torrent_transfer(hash_, name, total_size, total_files, transfer_multiplier)
+        if not all_files and not dry_run:
+            # This can happen if file list failed but pre-check didn't, or for rsync dry run
+            if transfer_mode == 'rsync':
+                 logging.debug("Rsync mode, file list not pre-populated.")
+            else:
+                logging.warning(f"No files found to transfer for '{name}'. Skipping.")
+                return "skipped", "No files found to transfer"
 
-        # Handle different scenarios based on pre-transfer check
-        if status_code == "exists_same_size":
-            # Skip transfer, but proceed to post-actions to ensure torrent is in destination client
-            logging.info(f"Skipping transfer for '{name}' as content exists with same size.")
-            # We must mark the full progress since we're skipping the transfer part
-            ui.update_torrent_progress(hash_, total_size * transfer_multiplier)
-        else:
-            # This covers "not_exists" and "exists_different_size"
-            if status_code == "exists_different_size":
-                logging.warning(f"Deleting existing, mismatched content at '{dest_content_path}' before transfer.")
-                if not dry_run:
-                    try:
-                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                        logging.info(f"Successfully deleted mismatched content for '{name}'.")
-                    except Exception as e:
-                        return "failed", f"Failed to delete mismatched content: {e}"
-                else:
-                    logging.info(f"[DRY RUN] Would delete mismatched content at: {dest_content_path}")
+        # --- 2. Setup UI & Transfer Multiplier ---
+        local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
+        transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
+        ui.start_torrent_transfer(hash_, name, total_size, total_files if total_files else 0, transfer_multiplier)
 
-            if dry_run:
-                ui.update_torrent_progress(hash_, total_size * transfer_multiplier)
-                return "dry_run", "Simulated transfer."
+        # --- 3. Handle Transfer Logic based on Status ---
+        transfer_executed = False
 
-            # Execute the actual transfer
-            exec_success, exec_msg = _execute_transfer(
+        if dry_run:
+            logging.info(f"[DRY RUN] Simulating transfer for '{name}'. Status: {pre_transfer_status}")
+            ui.log(f"[dim]Dry Run: {name} (Status: {pre_transfer_status})[/dim]")
+            ui.update_torrent_progress(hash_, total_size * transfer_multiplier) # Show progress
+
+        elif pre_transfer_status == "exists_different_size":
+            # Destination exists but is bad. Delete it first.
+            ui.log(f"[yellow]Mismatch size for {name}. Deleting destination content...[/yellow]")
+            logging.warning(f"Deleting mismatched destination content: {dest_content_path}")
+            try:
+                delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                ui.log(f"[green]Deleted mismatched content for {name}.[/green]")
+            except Exception as e:
+                logging.exception(f"Failed to delete mismatched content for {name}")
+                return "failed", f"Failed to delete mismatched content: {e}"
+
+            # Now, execute the transfer
+            _execute_transfer(
                 torrent, total_size, config, ui, file_tracker, ssh_connection_pools,
                 all_files, source_content_path, dest_content_path, dry_run, sftp_chunk_size
             )
-            if not exec_success:
-                return "failed", exec_msg
+            transfer_executed = True
 
-        # Post-transfer actions are always run unless pre-transfer failed
-        post_success, post_msg = _post_transfer_actions(
+        elif pre_transfer_status == "not_exists":
+            # Destination is clear. Execute the transfer.
+            _execute_transfer(
+                torrent, total_size, config, ui, file_tracker, ssh_connection_pools,
+                all_files, source_content_path, dest_content_path, dry_run, sftp_chunk_size
+            )
+            transfer_executed = True
+
+        elif pre_transfer_status == "exists_same_size":
+            # Destination exists and is good. Skip transfer.
+            ui.log(f"[green]Content exists for {name}. Skipping transfer.[/green]")
+            # Mark progress as complete for this torrent
+            ui.update_torrent_progress(hash_, total_size * transfer_multiplier)
+            transfer_executed = False # No transfer occurred
+
+        # --- 4. Post-Transfer Actions ---
+        post_transfer_success, post_transfer_msg = _post_transfer_actions(
             torrent, source_qbit, destination_qbit, config, tracker_rules,
-            ssh_connection_pools, dest_content_path, destination_save_path, dry_run, test_run,
-            checkpoint, ui
+            ssh_connection_pools, dest_content_path, destination_save_path,
+            transfer_executed, # Pass whether we actually transferred
+            dry_run, test_run
         )
-        if not post_success:
-            return "failed", post_msg
 
-        checkpoint.mark_completed(hash_)
-        success = True
-        return "success", "Transfer and recheck completed."
+        if post_transfer_success:
+            logging.info(f"SUCCESS: Successfully processed torrent: {name} (Message: {post_transfer_msg})")
+            ui.log(f"[bold green]Success: {name}[/bold green]")
+            return "success", post_transfer_msg
+        else:
+            # Post-transfer actions (like recheck) failed
+            logging.error(f"Post-transfer actions FAILED for {name}: {post_transfer_msg}")
+            return "failed", post_transfer_msg
 
-    except (KeyboardInterrupt, SystemExit):
-        raise
     except Exception as e:
         log_message = f"An unexpected error occurred while processing {name}: {e}"
-        # Use logging.exception to include traceback automatically
         logging.exception(log_message)
         return "failed", f"Unexpected error: {e}"
     finally:
-        ui.complete_torrent_transfer(hash_, success=success)
+        # We must complete the torrent in the UI regardless of outcome
+        # The 'success' state for the UI just means it's 'finished', not necessarily successful
+        ui.complete_torrent_transfer(hash_, success=True)
 
 def _handle_utility_commands(args: argparse.Namespace, config: configparser.ConfigParser, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint) -> bool:
     """Handles all utility command-line arguments that exit after running."""
