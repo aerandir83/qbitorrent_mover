@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.5.0"
+__version__ = "2.5.2"
 
 # Standard Lib
 import configparser
@@ -390,19 +390,17 @@ def transfer_torrent(
                 return "failed", f"Failed to delete mismatched content: {e}"
 
             # Now, execute the transfer
-            _execute_transfer(
+            transfer_executed, _ = _execute_transfer(
                 torrent, total_size, config, ui, file_tracker, ssh_connection_pools,
                 all_files, source_content_path, dest_content_path, dry_run, sftp_chunk_size
             )
-            transfer_executed = True
 
         elif pre_transfer_status == "not_exists":
             # Destination is clear. Execute the transfer.
-            _execute_transfer(
+            transfer_executed, _ = _execute_transfer(
                 torrent, total_size, config, ui, file_tracker, ssh_connection_pools,
                 all_files, source_content_path, dest_content_path, dry_run, sftp_chunk_size
             )
-            transfer_executed = True
 
         elif pre_transfer_status == "exists_same_size":
             # Destination exists and is good. Skip transfer.
