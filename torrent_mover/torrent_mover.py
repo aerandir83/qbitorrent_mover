@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.3.3"
+__version__ = "2.4.0"
 
 # Standard Lib
 import configparser
@@ -48,63 +48,112 @@ if TYPE_CHECKING:
 # --- Constants ---
 DEFAULT_PARALLEL_JOBS = 4
 
-def _pre_transfer_setup(torrent: 'qbittorrentapi.TorrentDictionary', config: configparser.ConfigParser, ssh_connection_pools: Dict[str, SSHConnectionPool], dry_run: bool) -> Tuple[bool, Optional[str], Optional[List[Tuple[str, str]]], Optional[str], Optional[str], Optional[str], Optional[int]]:
-    """Handles pre-transfer setup including path resolution and file listing."""
-    source_pool = ssh_connection_pools.get('SOURCE_SERVER')
+def _pre_transfer_setup(
+    torrent: qbittorrentapi.TorrentDictionary,
+    total_size: int, # Pass in the pre-calculated total_size
+    config: configparser.ConfigParser,
+    ssh_connection_pools: Dict[str, SSHConnectionPool],
+    args: argparse.Namespace
+) -> Tuple[str, str, Optional[List[Tuple[str, str]]], Optional[str], Optional[str], Optional[str], Optional[int]]:
+    """
+    Handles pre-transfer setup: path resolution, file listing, and checking destination status.
+
+    Returns a tuple:
+    (status_code, message, all_files, source_content_path, dest_content_path, destination_save_path, total_files)
+
+    Status Codes:
+    - "not_exists": Destination path is clear. Proceed with transfer.
+    - "exists_same_size": Destination path exists and size matches source. Skip transfer, proceed to recheck.
+    - "exists_different_size": Destination path exists, size mismatches. Proceed with delete & transfer.
+    - "failed": An error occurred.
+    """
+    source_pool = ssh_connection_pools.get(config['SETTINGS']['source_server_section'])
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
     source_content_path = torrent.content_path.rstrip('/\\')
     dest_base_path = config['DESTINATION_PATHS']['destination_path']
     content_name = os.path.basename(source_content_path)
     dest_content_path = os.path.join(dest_base_path, content_name)
-
-    # Check if destination content path already exists
-    destination_exists = False
-    is_remote_check = (transfer_mode == 'sftp_upload') # Check is remote only for sftp_upload
-    check_pool = None
-    if is_remote_check:
-        dest_server_section = config['SETTINGS'].get('destination_server_section', 'DESTINATION_SERVER')
-        check_pool = ssh_connection_pools.get(dest_server_section)
-        if not check_pool:
-            raise ValueError(f"Error: SSH connection pool for server section '{dest_server_section}' not found for remote check.")
-
-    logging.debug(f"Checking existence of destination path: {dest_content_path} (Remote Check: {is_remote_check})")
-    if dry_run:
-        logging.info(f"[DRY RUN] Would check if destination path exists: {dest_content_path}")
-    elif is_remote_check and check_pool:
-        try:
-            with check_pool.get_connection() as (sftp, ssh):
-                destination_exists = is_remote_dir(ssh, dest_content_path)
-        except Exception as e:
-            is_debug_enabled = logging.getLogger().isEnabledFor(logging.DEBUG)
-            logging.error(f"Failed to check remote destination path '{dest_content_path}': {e}", exc_info=is_debug_enabled) # Show traceback only in debug
-            # Fail safe - assume it might exist to prevent overwrite errors later
-            return False, f"Failed to check remote destination path: {e}", None, None, None, None, None
-    elif not is_remote_check: # Local check for rsync/sftp modes
-         destination_exists = os.path.isdir(dest_content_path) # Check local path
-
-    if destination_exists:
-        msg = f"Destination path already exists: {dest_content_path}"
-        logging.error(msg)
-        return False, msg, None, None, None, None, None
-    else:
-        logging.debug(f"Destination path does not exist or is not a directory: {dest_content_path}")
-
     remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
     destination_save_path = remote_dest_base_path
     all_files: List[Tuple[str, str]] = []
-    if transfer_mode != 'rsync':
-        if not source_pool:
-            raise ValueError("Source SSH connection pool not initialized.")
-        with source_pool.get_connection() as (sftp, ssh):
-            source_stat = sftp.stat(source_content_path)
-            if source_stat.st_mode & 0o40000:  # S_ISDIR
-                _get_all_files_recursive(sftp, source_content_path, dest_content_path, all_files)
-            else:
-                all_files.append((source_content_path, dest_content_path))
+    is_remote_dest = (transfer_mode == 'sftp_upload')
+
+    # --- 1. Check Destination Path ---
+    destination_exists = False
+    destination_size = -1
+
+    if args.dry_run:
+        logging.info(f"[DRY RUN] Would check for existing content at: {dest_content_path}")
     else:
+        try:
+            if is_remote_dest:
+                # Remote check for 'sftp_upload'
+                dest_server_section = config['SETTINGS'].get('destination_server_section', 'DESTINATION_SERVER')
+                dest_pool = ssh_connection_pools.get(dest_server_section)
+                if not dest_pool:
+                    return "failed", f"SSH pool '{dest_server_section}' not found.", None, None, None, None, None
+
+                logging.debug(f"Checking remote destination size for: {dest_content_path}")
+                with dest_pool.get_connection() as (sftp, ssh):
+                    # Use batch_get_remote_sizes for a single path; it's robust.
+                    size_map = batch_get_remote_sizes(ssh, [dest_content_path])
+                    if dest_content_path in size_map:
+                        destination_size = size_map[dest_content_path]
+                        destination_exists = True
+            else:
+                # Local check for 'sftp' or 'rsync'
+                logging.debug(f"Checking local destination size for: {dest_content_path}")
+                if os.path.exists(dest_content_path):
+                    destination_exists = True
+                    if os.path.isdir(dest_content_path):
+                        # Calculate local directory size (this can be slow, but necessary)
+                        destination_size = sum(f.stat().st_size for f in Path(dest_content_path).glob('**/*') if f.is_file())
+                    else:
+                        destination_size = os.path.getsize(dest_content_path)
+
+        except Exception as e:
+            logging.exception(f"Failed to check destination path '{dest_content_path}'")
+            return "failed", f"Failed to check destination path: {e}", None, None, None, None, None
+
+    # --- 2. Compare Sizes and Determine Status ---
+    status_code = "not_exists"
+    status_message = "Destination path is clear."
+
+    if destination_exists:
+        if total_size == destination_size:
+            status_code = "exists_same_size"
+            status_message = f"Destination content exists and size matches source ({total_size} bytes). Skipping transfer."
+            logging.warning(status_message)
+        else:
+            status_code = "exists_different_size"
+            status_message = f"Destination content exists but size mismatches (Source: {total_size} vs Dest: {destination_size}). Will delete and re-transfer."
+            logging.warning(status_message)
+    else:
+        logging.debug(f"Destination path does not exist: {dest_content_path}")
+
+    # --- 3. Get File List (only if we plan to transfer) ---
+    # We need the file list for 'sftp' and 'sftp_upload'. 'rsync' only needs the top-level path.
+    if status_code in ["not_exists", "exists_different_size"] and transfer_mode != 'rsync':
+        if not source_pool:
+            return "failed", "Source SSH connection pool not initialized.", None, None, None, None, None
+        try:
+            logging.debug(f"Getting file list for: {source_content_path}")
+            with source_pool.get_connection() as (sftp, ssh):
+                source_stat = sftp.stat(source_content_path)
+                if source_stat.st_mode & 0o40000:  # S_ISDIR
+                    _get_all_files_recursive(sftp, source_content_path, dest_content_path, all_files)
+                else:
+                    all_files.append((source_content_path, dest_content_path))
+        except Exception as e:
+            logging.exception(f"Failed to get file list from source path '{source_content_path}'")
+            return "failed", f"Failed to get source file list: {e}", None, None, None, None, None
+    elif transfer_mode == 'rsync':
+        # rsync just needs the source and dest paths
         all_files.append((source_content_path, dest_content_path))
-    total_files = len(all_files)
-    return True, None, all_files, source_content_path, dest_content_path, destination_save_path, total_files
+
+    total_files = len(all_files) if all_files else 0
+
+    return status_code, status_message, all_files, source_content_path, dest_content_path, destination_save_path, total_files
 
 def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, config: configparser.ConfigParser, ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], all_files: List[Tuple[str, str]], source_content_path: str, dest_content_path: str, dry_run: bool, sftp_chunk_size: int) -> Tuple[bool, str]:
     """Executes the file transfer based on the configured transfer mode."""
@@ -217,13 +266,15 @@ def _post_transfer_actions(torrent: 'qbittorrentapi.TorrentDictionary', source_q
         return True, "Post-transfer actions simulated (Dry Run)."
     return True, "Recheck successful and source torrent deleted."
 
-def transfer_torrent(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, source_qbit: 'qbittorrentapi.Client', destination_qbit: 'qbittorrentapi.Client', config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, dry_run: bool = False, test_run: bool = False, sftp_chunk_size: int = 65536) -> Tuple[str, str]:
+def transfer_torrent(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, source_qbit: 'qbittorrentapi.Client', destination_qbit: 'qbittorrentapi.Client', config: configparser.ConfigParser, tracker_rules: Dict[str, str], ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, args: argparse.Namespace, sftp_chunk_size: int = 65536) -> Tuple[str, str]:
     """
     Executes the transfer and management process for a single, pre-analyzed torrent.
     Returns a status string and a message.
     """
     name, hash_ = torrent.name, torrent.hash
     success = False
+    dry_run = args.dry_run
+    test_run = args.test_run
 
     if checkpoint.is_completed(hash_):
         return "skipped", "Already completed in checkpoint."
@@ -236,25 +287,47 @@ def transfer_torrent(torrent: 'qbittorrentapi.TorrentDictionary', total_size: in
     transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
 
     try:
-        pre_success, pre_msg, all_files, source_content_path, dest_content_path, destination_save_path, total_files = _pre_transfer_setup(
-            torrent, config, ssh_connection_pools, dry_run
+        status_code, status_message, all_files, source_content_path, dest_content_path, destination_save_path, total_files = _pre_transfer_setup(
+            torrent, total_size, config, ssh_connection_pools, args
         )
-        if not pre_success:
-            return "failed", pre_msg
+
+        if status_code == "failed":
+            return "failed", status_message
 
         ui.start_torrent_transfer(hash_, name, total_size, total_files, transfer_multiplier)
 
-        if dry_run:
+        # Handle different scenarios based on pre-transfer check
+        if status_code == "exists_same_size":
+            # Skip transfer, but proceed to post-actions to ensure torrent is in destination client
+            logging.info(f"Skipping transfer for '{name}' as content exists with same size.")
+            # We must mark the full progress since we're skipping the transfer part
             ui.update_torrent_progress(hash_, total_size * transfer_multiplier)
-            return "dry_run", "Simulated transfer."
+        else:
+            # This covers "not_exists" and "exists_different_size"
+            if status_code == "exists_different_size":
+                logging.warning(f"Deleting existing, mismatched content at '{dest_content_path}' before transfer.")
+                if not dry_run:
+                    try:
+                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                        logging.info(f"Successfully deleted mismatched content for '{name}'.")
+                    except Exception as e:
+                        return "failed", f"Failed to delete mismatched content: {e}"
+                else:
+                    logging.info(f"[DRY RUN] Would delete mismatched content at: {dest_content_path}")
 
-        exec_success, exec_msg = _execute_transfer(
-            torrent, total_size, config, ui, file_tracker, ssh_connection_pools,
-            all_files, source_content_path, dest_content_path, dry_run, sftp_chunk_size
-        )
-        if not exec_success:
-            return "failed", exec_msg
+            if dry_run:
+                ui.update_torrent_progress(hash_, total_size * transfer_multiplier)
+                return "dry_run", "Simulated transfer."
 
+            # Execute the actual transfer
+            exec_success, exec_msg = _execute_transfer(
+                torrent, total_size, config, ui, file_tracker, ssh_connection_pools,
+                all_files, source_content_path, dest_content_path, dry_run, sftp_chunk_size
+            )
+            if not exec_success:
+                return "failed", exec_msg
+
+        # Post-transfer actions are always run unless pre-transfer failed
         post_success, post_msg = _post_transfer_actions(
             torrent, source_qbit, destination_qbit, config, tracker_rules,
             ssh_connection_pools, dest_content_path, destination_save_path, dry_run, test_run,
@@ -465,7 +538,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                     transfer_futures = {
                         executor.submit(
                             transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
-                            ui, file_tracker, ssh_connection_pools, checkpoint, args.dry_run, args.test_run, sftp_chunk_size
+                            ui, file_tracker, ssh_connection_pools, checkpoint, args, sftp_chunk_size
                         ): (t, size) for t, size in analyzed_torrents
                     }
                     for future in as_completed(transfer_futures):
@@ -492,7 +565,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                 for torrent, size in analyzed_torrents:
                     status, message = transfer_torrent(
                         torrent, size, source_qbit, destination_qbit, config, tracker_rules,
-                        ui, file_tracker, ssh_connection_pools, checkpoint, args.dry_run, args.test_run, sftp_chunk_size
+                        ui, file_tracker, ssh_connection_pools, checkpoint, args, sftp_chunk_size
                     )
                     log_name = torrent.name[:50] + "..." if len(torrent.name) > 53 else torrent.name
                     match status:
