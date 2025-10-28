@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.5.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.5.4**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.5.3 (Latest)
+### Version 2.5.4 (Latest)
+* **fix(system)**: Corrected an `AttributeError` in `delete_destination_content` by importing the `Timeouts` class from `transfer_manager` instead of `ssh_manager`.
+
+### Version 2.5.3
 * **refactor(ui)**: Rearranged layout panels: Moved "Active Torrents" to the left column and "Recent Completions" to the middle column based on user feedback.
 
 ### Version 2.5.2
