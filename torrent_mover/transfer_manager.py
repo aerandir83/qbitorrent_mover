@@ -421,59 +421,45 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
                 # ui.advance_overall_progress(remaining_size)
                 return
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                mode = 'ab' if local_size > 0 else 'wb'
-                with sftp.open(remote_file, 'rb') as remote_f_raw:
-                    remote_f_raw.seek(local_size)
-                    remote_f_raw.prefetch()
-                    remote_f = RateLimitedFile(remote_f_raw, download_limit_bytes_per_sec)
-                    with open(local_path, mode) as local_f:
-                        while True:
-                            chunk = remote_f.read(sftp_chunk_size)
-                            if not chunk: break
-                            local_f.write(chunk)
-                            increment = len(chunk)
-                            local_size += increment
-                            ui.update_torrent_progress(torrent_hash, increment)
-                            # ui.advance_overall_progress(increment)
-                            file_tracker.record_file_progress(torrent_hash, remote_file, local_size)
-                final_local_size = local_path.stat().st_size
-                if final_local_size != total_size:
-                    raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_local_size}")
-            except PermissionError:
-                logging.error(f"Permission denied while trying to write to local path: {local_path.parent}\n"
-                              "Please check that the user running the script has write permissions for this directory.\n"
-                              "If you intended to transfer to another remote server, use 'transfer_mode = sftp_upload' in your config.")
-                raise
-            except FileNotFoundError as e:
-                logging.error(f"Source file not found: {remote_file}")
-                logging.error("This can happen if the file was moved or deleted on the source before transfer.")
-                raise e
-            except (socket.timeout, TimeoutError) as e:
-                logging.error(f"Network timeout during download of file: {file_name}")
-                logging.error("The script will retry, but check your network stability if this persists.")
-                raise e
-            except PermissionError:
-                ui.fail_file_transfer(torrent_hash, remote_file)
-                logging.error(f"Permission denied while trying to write to local path: {local_path.parent}\n"
-                              "Please check that the user running the script has write permissions for this directory.\n"
-                              "If you intended to transfer to another remote server, use 'transfer_mode = sftp_upload' in your config.")
-                raise
-            except FileNotFoundError as e:
-                ui.fail_file_transfer(torrent_hash, remote_file)
-                logging.error(f"Source file not found: {remote_file}")
-                logging.error("This can happen if the file was moved or deleted on the source before transfer.")
-                raise e
-            except (socket.timeout, TimeoutError) as e:
-                ui.fail_file_transfer(torrent_hash, remote_file)
-                logging.error(f"Network timeout during download of file: {file_name}")
-                logging.error("The script will retry, but check your network stability if this persists.")
-                raise e
-            except Exception as e:
-                ui.fail_file_transfer(torrent_hash, remote_file)
-                logging.error(f"Download failed for {file_name}: {e}")
-                raise
+            mode = 'ab' if local_size > 0 else 'wb'
+            with sftp.open(remote_file, 'rb') as remote_f_raw:
+                remote_f_raw.seek(local_size)
+                remote_f_raw.prefetch()
+                remote_f = RateLimitedFile(remote_f_raw, download_limit_bytes_per_sec)
+                with open(local_path, mode) as local_f:
+                    while True:
+                        chunk = remote_f.read(sftp_chunk_size)
+                        if not chunk: break
+                        local_f.write(chunk)
+                        increment = len(chunk)
+                        local_size += increment
+                        ui.update_torrent_progress(torrent_hash, increment)
+                        # ui.advance_overall_progress(increment)
+                        file_tracker.record_file_progress(torrent_hash, remote_file, local_size)
+            final_local_size = local_path.stat().st_size
+            if final_local_size != total_size:
+                raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_local_size}")
         ui.complete_file_transfer(torrent_hash, remote_file)
+    except PermissionError:
+        ui.fail_file_transfer(torrent_hash, remote_file)
+        logging.error(f"Permission denied while trying to write to local path: {local_path.parent}\n"
+                      "Please check that the user running the script has write permissions for this directory.\n"
+                      "If you intended to transfer to another remote server, use 'transfer_mode = sftp_upload' in your config.")
+        raise
+    except FileNotFoundError as e:
+        ui.fail_file_transfer(torrent_hash, remote_file)
+        logging.error(f"Source file not found: {remote_file}")
+        logging.error("This can happen if the file was moved or deleted on the source before transfer.")
+        raise e
+    except (socket.timeout, TimeoutError) as e:
+        ui.fail_file_transfer(torrent_hash, remote_file)
+        logging.error(f"Network timeout during download of file: {file_name}")
+        logging.error("The script will retry, but check your network stability if this persists.")
+        raise e
+    except Exception as e:
+        ui.fail_file_transfer(torrent_hash, remote_file)
+        logging.error(f"Download failed for {file_name}: {e}")
+        raise
 
 def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: str, local_path: str, torrent_hash: str, ui: UIManager, dry_run: bool = False) -> None:
     """

@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.5.1**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.5.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.5.1 (Latest)
+### Version 2.5.2 (Latest)
+* **fix(transfer)**: Correct indentation of `try...except` blocks in `_sftp_download_file` to resolve a critical `SyntaxError`.
+
+### Version 2.5.1
 * **fix(main)**: Correctly capture transfer success/failure status from `_execute_transfer` to prevent rechecks on partial or failed transfers.
 * **fix(transfer)**: Correct indentation of `try...except` blocks in `_sftp_upload_file` to resolve a `SyntaxError`.
 
