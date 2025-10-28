@@ -10,11 +10,15 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.4.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.5.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.4.2 (Latest)
+### Version 2.5.0 (Latest)
+* **feat(ui)**: Overhauled the "Active Queue" panel to display a detailed, color-coded file list (completed, downloading, uploading, queued) for each active torrent.
+* **refactor(ui)**: Removed the redundant "Current Torrent" progress bar and the separate "Active Files" panel to create a cleaner, more integrated layout.
+
+### Version 2.4.2
 * **fix(main)**: Correct arguments in transfer_torrent call.
 
 ### Version 2.4.1
