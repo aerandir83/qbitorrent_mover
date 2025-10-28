@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.3.5"
+__version__ = "2.3.6"
 
 # Standard Lib
 import configparser
@@ -73,7 +73,7 @@ def _pre_transfer_setup(torrent: 'qbittorrentapi.TorrentDictionary', config: con
             if not check_pool:
                 # Use args.debug directly if args is accessible, otherwise pass it or use logging.exception
                 # Assuming args is accessible here for simplicity based on previous context
-                logging.error(f"SSH connection pool for server section '{dest_server_section}' not found.", exc_info=True)
+                logging.exception(f"SSH connection pool for server section '{dest_server_section}' not found.")
                 # Fail safe: Assume exists to prevent potential overwrite
                 return False, f"SSH pool '{dest_server_section}' not found.", None, None, None, None, None
             try:
@@ -81,7 +81,7 @@ def _pre_transfer_setup(torrent: 'qbittorrentapi.TorrentDictionary', config: con
                     # Correct call to is_remote_dir (no dry_run argument)
                     destination_exists = is_remote_dir(ssh, dest_content_path)
             except Exception as e:
-                logging.error(f"Failed to check remote destination path '{dest_content_path}': {e}", exc_info=True)
+                logging.exception(f"Failed to check remote destination path '{dest_content_path}': {e}")
                 # Fail safe: Assume exists
                 return False, f"Failed to check remote path: {e}", None, None, None, None, None
         else:
@@ -89,7 +89,7 @@ def _pre_transfer_setup(torrent: 'qbittorrentapi.TorrentDictionary', config: con
             try:
                 destination_exists = os.path.isdir(dest_content_path)
             except Exception as e:
-                logging.error(f"Failed to check local destination path '{dest_content_path}': {e}", exc_info=True)
+                logging.exception(f"Failed to check local destination path '{dest_content_path}': {e}")
                 # Fail safe: Assume exists
                 return False, f"Failed to check local path: {e}", None, None, None, None, None
 
@@ -402,6 +402,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                         else:
                             pass
                     except Exception as e:
+                        logging.exception(f"Error calculating size for '{torrent.name}'")
                         ui.log(f"[bold red]Error calculating size for '{torrent.name}': {e}[/]")
                     finally:
                         ui.advance_analysis()
@@ -414,15 +415,15 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                     paths = [t.content_path for t in eligible_torrents]
                     sizes = batch_get_remote_sizes(ssh, paths)
                     for torrent in eligible_torrents:
-                        size = sizes.get(torrent.content_path)
-                        if size is not None and size > 0:
-                            analyzed_torrents.append((torrent, size))
-                            total_transfer_size += size
-                        elif size == 0:
-                            pass
-                        else:
-                            pass
-                        ui.advance_analysis()
+                        try:
+                            size = sizes.get(torrent.content_path)
+                            if size is not None and size > 0:
+                                analyzed_torrents.append((torrent, size))
+                                total_transfer_size += size
+                        except Exception as e:
+                            logging.exception(f"Error during torrent analysis for '{torrent.name}'")
+                        finally:
+                            ui.advance_analysis()
         except Exception as e:
             raise RuntimeError(f"A critical error occurred during the analysis phase: {e}") from e
 
