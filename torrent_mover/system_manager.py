@@ -385,7 +385,7 @@ def delete_destination_content(
                     if stat.st_mode & 0o40000: # S_ISDIR
                         logging.debug("Destination is a directory. Using 'rm -rf'.")
                         command = f"rm -rf {shlex.quote(dest_content_path)}"
-                        stdin, stdout, stderr = ssh.exec_command(command, timeout=ssh_manager.Timeouts.SSH_EXEC)
+                        stdin, stdout, stderr = ssh.exec_command(command, timeout=Timeouts.SSH_EXEC) # <-- Corrected reference
                         exit_status = stdout.channel.recv_exit_status()
                         if exit_status != 0:
                             logging.error(f"Failed to delete remote directory: {stderr.read().decode()}")
