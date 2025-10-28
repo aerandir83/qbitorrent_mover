@@ -10,11 +10,16 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.5.4**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.5.5**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.5.4 (Latest)
+### Version 2.5.5 (Latest)
+* **feat(ui)**: Added separate Download (DL) and Upload (UL) speed indicators to the "Overall Progress" bar.
+* **fix(ui)**: Prevented completed file count from exceeding total file count by adding checks in `complete_file_transfer`.
+* **fix(log)**: Enhanced logging in transfer functions to explicitly record the filename and error details upon transfer failure.
+
+### Version 2.5.4
 * **fix(system)**: Corrected an `AttributeError` in `delete_destination_content` by importing the `Timeouts` class from `transfer_manager` instead of `ssh_manager`.
 
 ### Version 2.5.3
