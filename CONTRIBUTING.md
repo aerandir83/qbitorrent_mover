@@ -84,9 +84,17 @@ If you have an idea for a new feature or an improvement to an existing one, plea
 
 ### Project Structure
 
-*   `torrent_mover/torrent_mover.py`: The main application logic.
+The project is organized into a modular structure to enforce separation of concerns:
+
+*   `torrent_mover/torrent_mover.py`: The main application entrypoint and orchestrator.
 *   `torrent_mover/ui.py`: Handles the Rich-based terminal UI.
-*   `torrent_mover/utils.py`: Contains helper functions and classes used across the application.
+*   `torrent_mover/utils.py`: Contains shared utilities, specifically the `@retry` decorator.
+*   `torrent_mover/config_manager.py`: Handles loading, updating, and validating `config.ini`.
+*   `torrent_mover/ssh_manager.py`: Manages all SSH/SFTP/Rsync connections and utilities.
+*   `torrent_mover/qbittorrent_manager.py`: Manages all direct interactions with the qBittorrent WebAPI.
+*   `torrent_mover/transfer_manager.py`: Manages the logic for all file transfer modes and transfer state (including `recheck_failed` states).
+*   `torrent_mover/system_manager.py`: Manages system-level tasks like logging, lockfiles, and health checks.
+*   `torrent_mover/tracker_manager.py`: Manages logic for tracker-based categorization.
 *   `torrent_mover/config.ini.template`: The template for the configuration file.
 *   `torrent_mover/requirements.txt`: A list of Python dependencies.
 

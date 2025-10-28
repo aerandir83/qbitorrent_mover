@@ -10,11 +10,38 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.0.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.4.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.0.0 (Latest)
+### Version 2.4.2 (Latest)
+* **fix(main)**: Correct arguments in transfer_torrent call.
+
+### Version 2.4.1
+* **fix(main)**: Add missing qbittorrentapi import.
+
+### Version 2.4.0
+* **feat(main)**: Implement pre-transfer destination size check.
+
+### Version 2.3.3
+* **fix(main)**: Correct is_remote_dir call and enhance debug logs.
+
+### Version 2.3.2
+* **fix(main)**: Remove calls to non-existent `increment_failed` and `increment_completed` UI methods.
+
+### Version 2.3.1
+* **fix(main)**: Remove calls to non-existent UI methods.
+
+### Version 2.3.0
+* **feat**: Implement detailed failure reporting to the UI, including reasons like "Destination path already exists."
+
+### Version 2.2.0
+* **feat(ui)**: Add torrent name prefix to active files list.
+
+### Version 2.1.0
+* **feat**: Enhance TransferCheckpoint to track recheck failures.
+
+### Version 2.0.0
 * **Fix (UI):** Removed the `Panel` wrapper causing a hardcoded background color, allowing the UI to use the terminal's default background.
 
 ### Version 2.0.0-rc2
@@ -111,6 +138,7 @@ The current version is **2.0.0**. To check your version, run: `python3 -m torren
 *   **Permission Testing**: A `--test-permissions` flag helps diagnose write-permission issues on the local or remote destination.
 *   **Flexible Configuration**: All settings are managed in a simple `config.ini` file.
 *   **Advanced Categorization**: Optionally, automatically assign categories on your destination client based on torrent trackers.
+*   **Robust Error Handling**: If a torrent fails the recheck after transfer, its data on the destination is deleted, and the torrent is marked internally to prevent automatic retries on subsequent runs. This usually indicates a persistent issue (e.g., disk corruption, permission problems after transfer, or a qBittorrent bug) requiring manual investigation.
 
 ## Requirements
 
@@ -249,6 +277,7 @@ To run the script automatically, set up a cron job. **You must use absolute path
 | `--list-rules` | `-l` | Lists all saved tracker-to-category rules and exits. |
 | `--add-rule [DOMAIN] [CATEGORY]` | `-a` | Adds or updates a categorization rule and exits. |
 | `--delete-rule [DOMAIN]` | `-d` | Deletes a specific categorization rule and exits. |
+| `--clear-recheck-failure [TORRENT_HASH]` | | Manually removes a torrent from the internal 'recheck_failed' list, allowing the script to process it again. Use after resolving the underlying issue. |
 | `--version` | | Displays the current version of the script and exits. |
 
 ## Advanced Usage: Tracker-Based Categorization
