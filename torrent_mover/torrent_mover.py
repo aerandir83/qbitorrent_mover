@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.4.1"
+__version__ = "2.4.2"
 
 # Standard Lib
 import configparser
@@ -615,7 +615,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                     transfer_futures = {
                         executor.submit(
                             transfer_torrent, t, size, source_qbit, destination_qbit, config, tracker_rules,
-                            ui, file_tracker, ssh_connection_pools, checkpoint, args, sftp_chunk_size
+                            ui, file_tracker, ssh_connection_pools, checkpoint, args
                         ): (t, size) for t, size in analyzed_torrents
                     }
                     for future in as_completed(transfer_futures):
@@ -642,7 +642,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                 for torrent, size in analyzed_torrents:
                     status, message = transfer_torrent(
                         torrent, size, source_qbit, destination_qbit, config, tracker_rules,
-                        ui, file_tracker, ssh_connection_pools, checkpoint, args, sftp_chunk_size
+                        ui, file_tracker, ssh_connection_pools, checkpoint, args
                     )
                     log_name = torrent.name[:50] + "..." if len(torrent.name) > 53 else torrent.name
                     match status:
