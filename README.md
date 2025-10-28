@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.5.5**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.5.6**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.5.5 (Latest)
+### Version 2.5.6 (Latest)
+* **fix(ui)**: Resolved a race condition that caused the Rich UI to crash on startup by providing default values for DL/UL speed fields.
+
+### Version 2.5.5
 * **feat(ui)**: Added separate Download (DL) and Upload (UL) speed indicators to the "Overall Progress" bar.
 * **fix(ui)**: Prevented completed file count from exceeding total file count by adding checks in `complete_file_transfer`.
 * **fix(log)**: Enhanced logging in transfer functions to explicitly record the filename and error details upon transfer failure.
