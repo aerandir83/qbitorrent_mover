@@ -96,6 +96,11 @@ def wait_for_recheck_completion(client: qbittorrentapi.Client, torrent_hash: str
             if torrent.progress == 1:
                 logging.info(f"Recheck completed for torrent {torrent_hash[:10]}.")
                 return True
+
+            if torrent.state in ['error', 'missingFiles']:
+                 logging.error(f"Recheck FAILED for torrent {torrent_hash[:10]}. State is '{torrent.state}'.")
+                 return False
+
             time.sleep(10)
         except Exception as e:
             logging.error(f"Error while waiting for recheck on {torrent_hash[:10]}: {e}")
