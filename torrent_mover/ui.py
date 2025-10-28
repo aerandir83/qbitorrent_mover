@@ -407,15 +407,13 @@ class UIManagerV2:
             self._stats["total_bytes"] = total_bytes
             self.main_progress.update(self.overall_task, total=total_bytes, visible=True)
 
-    def start_torrent_transfer(self, torrent_hash: str, torrent_name: str,
-                               total_size: float, total_files: int,
-                               all_files: List[str],
-                               transfer_multiplier: int = 1):
+    def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1):
         with self._lock:
+            total_files = len(all_files)
             self._torrents[torrent_hash] = {
                 "name": torrent_name,
                 "size": total_size * transfer_multiplier,
-                "total_files": total_files,
+                "total_files": total_files, # <-- Use derived total_files
                 "completed_files": 0,
                 "transferred": 0,
                 "status": "transferring",
@@ -435,6 +433,27 @@ class UIManagerV2:
 
             # Update progress bars
             self.main_progress.update(self.overall_task, advance=bytes_transferred)
+
+    def start_file_transfer(self, torrent_hash: str, file_path: str, status: str):
+        """Mark a file as actively transferring."""
+        with self._lock:
+            if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
+                self._file_status[torrent_hash][file_path] = status # e.g., "downloading" or "uploading"
+
+    def complete_file_transfer(self, torrent_hash: str, file_path: str):
+        """Mark a file as completed."""
+        with self._lock:
+            if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
+                self._file_status[torrent_hash][file_path] = "completed"
+                # Update the completed_files count on the main torrent object
+                if torrent_hash in self._torrents:
+                    self._torrents[torrent_hash]["completed_files"] += 1
+
+    def fail_file_transfer(self, torrent_hash: str, file_path: str):
+        """Mark a file as failed."""
+        with self._lock:
+            if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
+                self._file_status[torrent_hash][file_path] = "failed"
 
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
         with self._lock:
