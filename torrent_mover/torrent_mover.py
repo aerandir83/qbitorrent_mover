@@ -358,7 +358,17 @@ def transfer_torrent(
         # --- 2. Setup UI & Transfer Multiplier ---
         local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
         transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
-        ui.start_torrent_transfer(hash_, name, total_size, total_files if total_files else 0, transfer_multiplier)
+        file_names_for_ui: List[str] = []
+        if all_files:
+            file_names_for_ui = [source_path for source_path, dest_path in all_files]
+        elif total_files > 0:
+            # Placeholder for rsync or cases where file list is deferred
+            file_names_for_ui = [f"file {i+1}" for i in range(total_files)]
+        ui.start_torrent_transfer(
+            hash_, name, total_size, total_files,
+            file_names_for_ui,
+            transfer_multiplier
+        )
 
         # --- 3. Handle Transfer Logic based on Status ---
         transfer_executed = False
