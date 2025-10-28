@@ -125,24 +125,6 @@ class UIManagerV2:
             "[green]📦 Overall Progress", total=100, visible=False
         )
 
-        # Current torrent progress
-        self.current_torrent_task = self.main_progress.add_task(
-            "[yellow]⚡ Current Torrent: (none)", total=100, visible=False
-        )
-
-        # Active files progress
-        self.files_progress = Progress(
-            TextColumn(" [dim]└─[/] {task.description}", justify="left"),
-            BarColumn(bar_width=15, complete_style="cyan"),
-            TextColumn("{task.percentage:>3.0f}%"),
-            "•",
-            DownloadColumn(binary_units=True),
-            "•",
-            TransferSpeedColumn(),
-            expand=True,
-        )
-        self.active_file_tasks: Dict[str, Tuple[TaskID, str]] = {} # Store (task_id, torrent_hash)
-
         # Combine into left panel
         progress_group = Group(
             Panel(
@@ -150,13 +132,6 @@ class UIManagerV2:
                 title="[bold green]📈 Transfer Progress",
                 border_style="dim",
                 style="on #16213e"
-            ),
-            Panel(
-                self.files_progress,
-                title="[bold cyan]📄 Active Files (Last 5)",
-                border_style="dim",
-                height=9,
-                style="on #0f3460"
             )
         )
 
@@ -377,7 +352,6 @@ class UIManagerV2:
             if self._stats_thread.is_alive():
                 self._stats_thread.join(timeout=2.0) # <-- ADD TIMEOUT
             self.main_progress.stop()
-            self.files_progress.stop()
             self._live.stop()
 
     def set_final_status(self, message: str):
@@ -445,16 +419,6 @@ class UIManagerV2:
             self._active_torrents.append(torrent_hash)
             self._stats["active_transfers"] += 1
 
-            # Update current torrent progress bar
-            display_name = torrent_name[:40] + "..." if len(torrent_name) > 40 else torrent_name
-            self.main_progress.update(
-                self.current_torrent_task,
-                description=f"[yellow]⚡ Current Torrent: {display_name}", # <-- RENAMED
-                completed=0,
-                total=total_size * transfer_multiplier, # <-- APPLY MULTIPLIER HERE
-                visible=True
-            )
-
     def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float):
         with self._lock:
             if torrent_hash in self._torrents:
@@ -463,58 +427,6 @@ class UIManagerV2:
 
             # Update progress bars
             self.main_progress.update(self.overall_task, advance=bytes_transferred)
-            self.main_progress.update(self.current_torrent_task, advance=bytes_transferred)
-
-    def start_file_transfer(self, torrent_hash: str, file_path: str, file_size: int):
-        with self._lock:
-            # Only show last 5 files
-            if len(self.active_file_tasks) >= 5:
-                try:
-                    oldest_file = next(iter(self.active_file_tasks))
-                    task_id, _ = self.active_file_tasks.pop(oldest_file)
-                    self.files_progress.remove_task(task_id)
-                except StopIteration:
-                    pass
-                except Exception:
-                    pass  # Failsafe
-
-            # Get torrent name
-            torrent_name = self._torrents.get(torrent_hash, {}).get("name", "UnknownTorrent")
-            # Truncate torrent name
-            trunc_torrent_name = torrent_name[:15] + "..." if len(torrent_name) > 18 else torrent_name
-
-            # Existing line for filename
-            file_name = file_path.split('/')[-1]
-            display_name = file_name[:30] + "..." if len(file_name) > 33 else file_name  # Shorten file slightly
-
-            # Updated task description
-            task_description = f"[dim]{trunc_torrent_name} /[/] 📄 {display_name}"
-
-            # Update the add_task call
-            task_id = self.files_progress.add_task(
-                task_description,  # Use the new description
-                total=file_size
-            )
-            self.active_file_tasks[file_path] = (task_id, torrent_hash)  # Store hash
-
-    def update_file_progress(self, file_path: str, bytes_transferred: int):
-        with self._lock:
-            if file_path in self.active_file_tasks:
-                task_id, _ = self.active_file_tasks[file_path]
-                self.files_progress.update(
-                    task_id,
-                    advance=bytes_transferred
-                )
-
-    def complete_file_transfer(self, file_path: str):
-        with self._lock:
-            if file_path in self.active_file_tasks:
-                task_id, torrent_hash = self.active_file_tasks.pop(file_path)
-                # Finish the progress bar
-                self.files_progress.update(task_id, completed=self.files_progress.tasks[task_id].total)
-                self.files_progress.remove_task(task_id)
-                if torrent_hash in self._torrents:
-                    self._torrents[torrent_hash]["completed_files"] += 1
 
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
         with self._lock:
@@ -535,9 +447,6 @@ class UIManagerV2:
                     ))
                 else:
                     self._stats["failed_transfers"] += 1
-
-                # Hide current torrent progress
-                self.main_progress.update(self.current_torrent_task, visible=False, description="[yellow]⚡ Current Torrent: (none)")
 
     def log(self, message: str):
         """Adds a message to the on-screen log buffer."""
