@@ -143,7 +143,8 @@ class UIManagerV2:
         self.overall_task = self.main_progress.add_task(
             "[green]📦 Overall Progress",
             total=100,
-            visible=False
+            visible=False,
+            fields={} # Add this
         )
 
         # Create Panel JUST for the main progress bars
@@ -181,11 +182,13 @@ class UIManagerV2:
             active_count = 0
 
             for hash_, torrent in self._torrents.items():
-                if torrent["status"] == "transferring":
+                if torrent.get("status") == "transferring":
                     active_count += 1
-                    name = torrent["name"]
+                    name = torrent.get("name", "Unknown Torrent")
                     display_name = name[:40] + "..." if len(name) > 43 else name
-                    progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
+                    size = torrent.get("size", 0)
+                    transferred = torrent.get("transferred", 0)
+                    progress = transferred / size * 100 if size > 0 else 0
 
                     # --- Main Torrent Info ---
                     torrent_table = Table.grid(padding=(0, 1), expand=True)
@@ -329,8 +332,10 @@ class UIManagerV2:
             try:
                 self.main_progress.update(
                     self.overall_task,
-                    dl_speed=dl_speed_str,
-                    ul_speed=ul_speed_str
+                    fields={ # Update the whole dictionary
+                        'dl_speed': dl_speed_str,
+                        'ul_speed': ul_speed_str
+                    }
                 )
             except Exception as e:
                 logging.debug(f"Could not update overall task speeds: {e}")
