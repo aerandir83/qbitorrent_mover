@@ -541,10 +541,13 @@ class UIManagerV2:
         """Mark a file as completed."""
         with self._lock:
             if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
-                self._file_status[torrent_hash][file_path] = "completed"
-                # Update the completed_files count on the main torrent object
-                if torrent_hash in self._torrents:
-                    self._torrents[torrent_hash]["completed_files"] += 1
+                if self._file_status[torrent_hash][file_path] != "completed":
+                    self._file_status[torrent_hash][file_path] = "completed"
+                    # Update the completed_files count on the main torrent object
+                    if torrent_hash in self._torrents:
+                        if "completed_files" not in self._torrents[torrent_hash]:
+                            self._torrents[torrent_hash]["completed_files"] = 0
+                        self._torrents[torrent_hash]["completed_files"] += 1
 
     def fail_file_transfer(self, torrent_hash: str, file_path: str):
         """Mark a file as failed."""
