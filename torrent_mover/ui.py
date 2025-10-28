@@ -139,7 +139,11 @@ class UIManagerV2:
 
         # Overall transfer progress
         self.overall_task = self.main_progress.add_task(
-            "[green]📦 Overall Progress", total=100, visible=False
+            "[green]📦 Overall Progress",
+            total=100,
+            visible=False,
+            dl_speed="0.00 MB/s",
+            ul_speed="0.00 MB/s"
         )
 
         # Create Panel JUST for the main progress bars
