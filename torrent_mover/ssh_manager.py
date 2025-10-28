@@ -128,6 +128,7 @@ def get_remote_size_rsync(sftp_config: 'configparser.SectionProxy', remote_path:
 
 def is_remote_dir(ssh_client: paramiko.SSHClient, path: str) -> bool:
     """Checks if a remote path is a directory using 'test -d'."""
+    logging.debug(f"Checking if remote path is directory: {path}")
     try:
         command = f"test -d {shlex.quote(path)}"
         stdin, stdout, stderr = ssh_client.exec_command(command, timeout=SSH_EXEC_TIMEOUT)
