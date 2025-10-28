@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.4.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.4.1**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.4.0 (Latest)
+### Version 2.4.1 (Latest)
+* **fix(main)**: Add missing qbittorrentapi import.
+
+### Version 2.4.0
 * **feat(main)**: Implement pre-transfer destination size check.
 
 ### Version 2.3.3
