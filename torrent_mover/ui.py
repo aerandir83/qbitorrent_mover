@@ -75,11 +75,17 @@ class UIManagerV2:
             Layout(name="footer", size=7) # Increased for log
         )
 
-        # Split body into three columns
+        # Split body into three columns - NEW LAYOUT
         self.layout["body"].split_row(
-            Layout(name="left", ratio=2), # Progress bars
-            Layout(name="middle", ratio=1), # Current torrents
-            Layout(name="right", ratio=1) # Stats + Recent
+            Layout(name="left", ratio=2),      # Will contain Overall Progress + Active Torrents
+            Layout(name="middle", ratio=1),    # Will contain Recent Completions
+            Layout(name="right", ratio=1)     # Will contain Statistics
+        )
+
+        # Split the new 'left' column vertically
+        self.layout["left"].split(
+            Layout(name="overall_progress", size=5), # Space for Overall Progress bar + Panel Title
+            Layout(name="active_torrents", ratio=1)   # Space for Active Torrents list
         )
 
         # Initialize components
@@ -130,17 +136,16 @@ class UIManagerV2:
             "[green]📦 Overall Progress", total=100, visible=False
         )
 
-        # Combine into left panel
-        progress_group = Group(
-            Panel(
-                self.main_progress,
-                title="[bold green]📈 Transfer Progress",
-                border_style="dim",
-                style="on #16213e"
-            )
+        # Create Panel JUST for the main progress bars
+        main_progress_panel = Panel(
+            self.main_progress,
+            title="[bold green]📈 Transfer Progress",
+            border_style="dim",
+            style="on #16213e"
         )
 
-        self.layout["left"].update(progress_group)
+        # Assign ONLY the main progress panel to the new dedicated layout area
+        self.layout["overall_progress"].update(main_progress_panel)
 
     def _setup_current_torrents(self):
         """Setup middle panel showing current torrent queue."""
@@ -150,7 +155,7 @@ class UIManagerV2:
 
         self._update_current_torrents()
 
-        self.layout["middle"].update(
+        self.layout["active_torrents"].update(
             Panel(
                 self.current_table,
                 title="[bold yellow]🎯 Active Torrents",
@@ -242,7 +247,7 @@ class UIManagerV2:
                 queued_table.add_row("[bold]⏳ Queued:[/]", f"[yellow]{queued_count} torrent(s)[/]")
                 active_torrents_content.append(Panel(queued_table, style="on #16213e", border_style="dim"))
 
-            self.layout["middle"].update(
+            self.layout["active_torrents"].update(
                 Panel(
                     Group(*active_torrents_content),
                     title="[bold yellow]🎯 Active Torrents",
@@ -333,9 +338,12 @@ class UIManagerV2:
                 eta_str = f"{eta_hours:02d}:{eta_minutes:02d}"
                 stats_table.add_row("⏳ ETA:", f"[cyan]{eta_str}[/]")
 
-            # ... (rest of the method for recent completions)
+            # Create and update Statistics Panel (Right Column)
+            stats_panel = Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460")
+            self.layout["right"].update(stats_panel)
+
+            # Create and update Recent Completions Panel (Middle Column)
             if self._recent_completions:
-                # ... (recent completions table code remains the same) ...
                 recent_table = Table.grid(padding=(0, 1))
                 recent_table.add_column(style="dim", no_wrap=True)
                 recent_table.add_column(style="dim")
@@ -347,14 +355,12 @@ class UIManagerV2:
                         f"✓ {display_name}",
                         f"{speed / (1024**2):.1f} MB/s"
                     )
-                stats_group = Group(
-                    Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460"),
-                    Panel(recent_table, title="[bold green]🎉 Recent Completions", border_style="dim", style="on #16213e")
-                )
+                recent_panel = Panel(recent_table, title="[bold green]🎉 Recent Completions", border_style="dim", style="on #16213e")
             else:
-                 stats_group = Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460")
+                # Placeholder if no recent completions yet
+                recent_panel = Panel(Align.center("[dim]No completions yet.[/dim]"), title="[bold green]🎉 Recent Completions", border_style="dim", style="on #16213e")
 
-            self.layout["right"].update(stats_group)
+            self.layout["middle"].update(recent_panel)
 
     def _setup_footer(self):
         """Initial setup for the log panel footer."""
