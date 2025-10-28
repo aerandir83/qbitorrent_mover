@@ -63,6 +63,10 @@ class UIManagerV2:
             "current_speed": 0.0,
             "last_bytes": 0, # Bytes at last speed check
             "last_speed_check": time.time(), # Time of last speed check
+            "current_dl_speed": 0.0,
+            "current_ul_speed": 0.0,
+            "last_dl_bytes": 0,
+            "last_ul_bytes": 0,
         }
         self._speed_history = deque(maxlen=60) # Store last 60 seconds of speed readings
 
@@ -120,7 +124,9 @@ class UIManagerV2:
             "•",
             DownloadColumn(binary_units=True),
             "•",
-            TransferSpeedColumn(),
+            TextColumn("DL:[green]{task.fields[dl_speed]:>8}[/]"),
+            "•",
+            TextColumn("UL:[yellow]{task.fields[ul_speed]:>8}[/]"),
             "•",
             TimeRemainingColumn(),
             expand=True,
@@ -266,33 +272,64 @@ class UIManagerV2:
         with self._lock:
             elapsed = time.time() - self._stats["start_time"]
 
-            # --- START SPEED CALCULATION FIX ---
+            # --- START SPEED CALCULATION ---
             current_speed = 0.0
+            current_dl_speed = 0.0
+            current_ul_speed = 0.0
             time_since_last = time.time() - self._stats["last_speed_check"]
 
-            if time_since_last >= 1.0: # Calculate roughly every second
+            if time_since_last >= 1.0:  # Calculate roughly every second
+                # Combined speed (for history/peak)
                 bytes_since_last = self._stats["transferred_bytes"] - self._stats["last_bytes"]
                 current_speed = bytes_since_last / time_since_last
-
-                # Update trackers for next calculation
                 self._stats["last_bytes"] = self._stats["transferred_bytes"]
+
+                # Download speed
+                transferred_dl_bytes = self._stats.get("transferred_dl_bytes", 0)
+                bytes_since_last_dl = transferred_dl_bytes - self._stats["last_dl_bytes"]
+                current_dl_speed = bytes_since_last_dl / time_since_last
+                self._stats["last_dl_bytes"] = transferred_dl_bytes
+
+                # Upload speed
+                transferred_ul_bytes = self._stats.get("transferred_ul_bytes", 0)
+                bytes_since_last_ul = transferred_ul_bytes - self._stats["last_ul_bytes"]
+                current_ul_speed = bytes_since_last_ul / time_since_last
+                self._stats["last_ul_bytes"] = transferred_ul_bytes
+
+                # Update trackers
                 self._stats["last_speed_check"] = time.time()
 
-                # Update the stored current speed
+                # Update the stored current speeds
                 self._stats["current_speed"] = current_speed
-                self._speed_history.append(current_speed) # Add to history
+                self._stats["current_dl_speed"] = current_dl_speed
+                self._stats["current_ul_speed"] = current_ul_speed
+                self._speed_history.append(current_speed)
             else:
-                # Use the last calculated speed if less than a second passed
+                # Use the last calculated speeds if less than a second has passed
                 current_speed = self._stats["current_speed"]
+                current_dl_speed = self._stats["current_dl_speed"]
+                current_ul_speed = self._stats["current_ul_speed"]
 
             # Calculate average speed over the history for ETA
             avg_speed_hist = sum(self._speed_history) / len(self._speed_history) if self._speed_history else 0.0
-            # --- END SPEED CALCULATION FIX ---
-
+            # --- END SPEED CALCULATION ---
 
             # Track peak speed (using instantaneous speed)
             if current_speed > self._stats["peak_speed"]:
                 self._stats["peak_speed"] = current_speed
+
+            # --- UPDATE PROGRESS BAR WITH SPEEDS ---
+            dl_speed_str = f"{current_dl_speed / (1024**2):.2f} MB/s"
+            ul_speed_str = f"{current_ul_speed / (1024**2):.2f} MB/s"
+
+            try:
+                self.main_progress.update(
+                    self.overall_task,
+                    dl_speed=dl_speed_str,
+                    ul_speed=ul_speed_str
+                )
+            except Exception as e:
+                logging.debug(f"Could not update overall task speeds: {e}")
 
             # Create stats table
             stats_table = Table.grid(padding=(0, 2))
@@ -306,9 +343,7 @@ class UIManagerV2:
 
             stats_table.add_row("📊 Transferred:", f"[white]{transferred_gb:.2f} / {total_gb:.2f} GB[/white]")
             stats_table.add_row("⏳ Remaining:", f"[white]{remaining_gb:.2f} GB[/white]")
-            # Display the calculated current speed
-            stats_table.add_row("⚡ Speed:", f"[white]{current_speed / (1024**2):.2f} MB/s[/white]")
-            stats_table.add_row("📈 Avg Speed:", f"[dim]{avg_speed_hist / (1024**2):.2f} MB/s[/dim]") # Display historical average
+            stats_table.add_row("📈 Avg Speed:", f"[dim]{avg_speed_hist / (1024**2):.2f} MB/s[/dim]")
             stats_table.add_row("🔥 Peak Speed:", f"[dim]{self._stats['peak_speed'] / (1024**2):.2f} MB/s[/dim]")
 
             stats_table.add_row("", "") # Spacer
@@ -482,11 +517,16 @@ class UIManagerV2:
             self._active_torrents.append(torrent_hash)
             self._stats["active_transfers"] += 1
 
-    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float):
+    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str):
         with self._lock:
             if torrent_hash in self._torrents:
                 self._torrents[torrent_hash]["transferred"] += bytes_transferred
-                self._stats["transferred_bytes"] += bytes_transferred
+                if transfer_type == "download":
+                    self._stats["transferred_dl_bytes"] = self._stats.get("transferred_dl_bytes", 0) + bytes_transferred
+                elif transfer_type == "upload":
+                    self._stats["transferred_ul_bytes"] = self._stats.get("transferred_ul_bytes", 0) + bytes_transferred
+
+                self._stats["transferred_bytes"] = self._stats.get("transferred_dl_bytes", 0) + self._stats.get("transferred_ul_bytes", 0)
 
             # Update progress bars
             self.main_progress.update(self.overall_task, advance=bytes_transferred)
