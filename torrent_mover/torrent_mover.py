@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.4.2"
+__version__ = "2.5.4"
 
 # Standard Lib
 import configparser
@@ -358,7 +358,17 @@ def transfer_torrent(
         # --- 2. Setup UI & Transfer Multiplier ---
         local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
         transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
-        ui.start_torrent_transfer(hash_, name, total_size, total_files if total_files else 0, transfer_multiplier)
+        file_names_for_ui: List[str] = []
+        if all_files:
+            file_names_for_ui = [source_path for source_path, dest_path in all_files]
+        elif total_files > 0:
+            # Placeholder for rsync or cases where file list is deferred
+            file_names_for_ui = [f"file {i+1}" for i in range(total_files)]
+        ui.start_torrent_transfer(
+            hash_, name, total_size,
+            file_names_for_ui,
+            transfer_multiplier
+        )
 
         # --- 3. Handle Transfer Logic based on Status ---
         transfer_executed = False
@@ -380,19 +390,17 @@ def transfer_torrent(
                 return "failed", f"Failed to delete mismatched content: {e}"
 
             # Now, execute the transfer
-            _execute_transfer(
+            transfer_executed, _ = _execute_transfer(
                 torrent, total_size, config, ui, file_tracker, ssh_connection_pools,
                 all_files, source_content_path, dest_content_path, dry_run, sftp_chunk_size
             )
-            transfer_executed = True
 
         elif pre_transfer_status == "not_exists":
             # Destination is clear. Execute the transfer.
-            _execute_transfer(
+            transfer_executed, _ = _execute_transfer(
                 torrent, total_size, config, ui, file_tracker, ssh_connection_pools,
                 all_files, source_content_path, dest_content_path, dry_run, sftp_chunk_size
             )
-            transfer_executed = True
 
         elif pre_transfer_status == "exists_same_size":
             # Destination exists and is good. Skip transfer.

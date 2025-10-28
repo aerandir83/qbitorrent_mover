@@ -185,10 +185,10 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
     Downloads a file from SFTP to a local cache path, with resume support and progress reporting.
     """
     try:
+        ui.start_file_transfer(torrent_hash, source_file_path, "downloading")
         with source_pool.get_connection() as (sftp, ssh):
             remote_stat = sftp.stat(source_file_path)
             total_size = remote_stat.st_size
-            ui.start_file_transfer(torrent_hash, source_file_path, total_size)
             # ui.update_file_status(torrent_hash, source_file_path, "Downloading")
             local_size = 0
             if local_cache_path.exists():
@@ -202,7 +202,6 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {os.path.basename(source_file_path)}")
                 ui.update_torrent_progress(torrent_hash, total_size - local_size)
-                ui.update_file_progress(source_file_path, total_size)
                 return
             elif local_size > total_size:
                 logging.warning(f"Local file '{os.path.basename(source_file_path)}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
@@ -224,13 +223,12 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
                         local_size += increment
                         ui.update_torrent_progress(torrent_hash, increment)
                         # ui.advance_overall_progress(increment)
-                        ui.update_file_progress(source_file_path, increment)
                         file_tracker.record_file_progress(torrent_hash, source_file_path, local_size)
+        ui.complete_file_transfer(torrent_hash, source_file_path)
     except Exception as e:
+        ui.fail_file_transfer(torrent_hash, source_file_path)
         logging.error(f"Failed to download to cache for {source_file_path}: {e}")
         raise
-    finally:
-        ui.complete_file_transfer(source_file_path)
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path, source_file_path: str, dest_file_path: str, torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, upload_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
@@ -241,11 +239,10 @@ def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path
     if not local_cache_path.is_file():
         logging.error(f"Cannot upload '{file_name}' from cache: File does not exist.")
         # ui.update_file_status(torrent_hash, source_file_path, "[red]Cache file missing[/red]")
-        ui.complete_file_transfer(source_file_path)
         raise FileNotFoundError(f"Local cache file not found: {local_cache_path}")
     try:
+        ui.start_file_transfer(torrent_hash, source_file_path, "uploading")
         total_size = local_cache_path.stat().st_size
-        ui.start_file_transfer(torrent_hash, source_file_path, total_size)
         # ui.update_file_status(torrent_hash, source_file_path, "Uploading")
         with dest_pool.get_connection() as (sftp, ssh):
             dest_size = 0
@@ -257,12 +254,10 @@ def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path
                 logging.info(f"Skipping upload (exists and size matches): {file_name}")
                 ui.update_torrent_progress(torrent_hash, total_size)
                 # ui.advance_overall_progress(total_size)
-                ui.update_file_progress(source_file_path, total_size)
                 return
             if dest_size > 0:
                 ui.update_torrent_progress(torrent_hash, dest_size)
                 # ui.advance_overall_progress(dest_size)
-                ui.update_file_progress(source_file_path, dest_size)
             dest_dir = os.path.dirname(dest_file_path)
             sftp_mkdir_p(sftp, dest_dir)
             with open(local_cache_path, 'rb') as source_f_raw:
@@ -276,16 +271,15 @@ def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path
                         increment = len(chunk)
                         ui.update_torrent_progress(torrent_hash, increment)
                         # ui.advance_overall_progress(increment)
-                        ui.update_file_progress(source_file_path, increment)
             if sftp.stat(dest_file_path).st_size != total_size:
                 raise Exception("Final size mismatch during cached upload.")
             # ui.update_file_status(torrent_hash, source_file_path, "[green]Completed[/green]")
+        ui.complete_file_transfer(torrent_hash, source_file_path)
     except Exception as e:
+        ui.fail_file_transfer(torrent_hash, source_file_path)
         # ui.update_file_status(torrent_hash, source_file_path, "[red]Upload Failed[/red]")
         logging.error(f"Upload from cache failed for {file_name}: {e}")
         raise
-    finally:
-        ui.complete_file_transfer(source_file_path)
 
 def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPool, source_file_path: str, dest_file_path: str, torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, upload_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
     """
@@ -294,6 +288,7 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
     """
     file_name = os.path.basename(source_file_path)
     try:
+        ui.start_file_transfer(torrent_hash, source_file_path, "uploading")
         with source_pool.get_connection() as (source_sftp, source_ssh), dest_pool.get_connection() as (dest_sftp, dest_ssh):
             start_time = time.time()
             try:
@@ -333,53 +328,53 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
                 return
             dest_dir = os.path.dirname(dest_file_path)
             sftp_mkdir_p(dest_sftp, dest_dir)
-            try:
-                ui.start_file_transfer(torrent_hash, source_file_path, total_size)
-                with source_sftp.open(source_file_path, 'rb') as source_f_raw:
-                    source_f_raw.seek(dest_size)
-                    source_f_raw.prefetch()
-                    source_f = RateLimitedFile(source_f_raw, download_limit_bytes_per_sec)
-                    with dest_sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f_raw:
-                        dest_f = RateLimitedFile(dest_f_raw, upload_limit_bytes_per_sec)
-                        while True:
-                            chunk = source_f.read(sftp_chunk_size)
-                            if not chunk: break
-                            dest_f.write(chunk)
-                            increment = len(chunk)
-                            dest_size += increment
-                            ui.update_torrent_progress(torrent_hash, increment)
-                            # ui.advance_overall_progress(increment)
-                            ui.update_file_progress(source_file_path, increment)
-                            file_tracker.record_file_progress(torrent_hash, source_file_path, dest_size)
-                final_dest_size = dest_sftp.stat(dest_file_path).st_size
-                if final_dest_size == total_size:
-                    end_time = time.time()
-                    duration = end_time - start_time
-                    logging.debug(f"Upload of '{file_name}' completed.")
-                    if duration > 0:
-                        speed_mbps = (total_size * 8) / (duration * 1024 * 1024)
-                        logging.debug(f"PERF: '{file_name}' ({total_size / 1024**2:.2f} MiB) took {duration:.2f} seconds. Average speed: {speed_mbps:.2f} Mbps.")
-                    else:
-                        logging.debug(f"PERF: '{file_name}' completed in < 1 second.")
+            with source_sftp.open(source_file_path, 'rb') as source_f_raw:
+                source_f_raw.seek(dest_size)
+                source_f_raw.prefetch()
+                source_f = RateLimitedFile(source_f_raw, download_limit_bytes_per_sec)
+                with dest_sftp.open(dest_file_path, 'ab' if dest_size > 0 else 'wb') as dest_f_raw:
+                    dest_f = RateLimitedFile(dest_f_raw, upload_limit_bytes_per_sec)
+                    while True:
+                        chunk = source_f.read(sftp_chunk_size)
+                        if not chunk: break
+                        dest_f.write(chunk)
+                        increment = len(chunk)
+                        dest_size += increment
+                        ui.update_torrent_progress(torrent_hash, increment)
+                        # ui.advance_overall_progress(increment)
+                        file_tracker.record_file_progress(torrent_hash, source_file_path, dest_size)
+            final_dest_size = dest_sftp.stat(dest_file_path).st_size
+            if final_dest_size == total_size:
+                end_time = time.time()
+                duration = end_time - start_time
+                logging.debug(f"Upload of '{file_name}' completed.")
+                if duration > 0:
+                    speed_mbps = (total_size * 8) / (duration * 1024 * 1024)
+                    logging.debug(f"PERF: '{file_name}' ({total_size / 1024**2:.2f} MiB) took {duration:.2f} seconds. Average speed: {speed_mbps:.2f} Mbps.")
                 else:
-                    raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_dest_size}")
-            except PermissionError:
-                logging.error(f"Permission denied on destination server for path: {dest_file_path}\n"
-                              "Please check that the destination user has write access to that directory.")
-                raise
-            except FileNotFoundError as e:
-                logging.error(f"Source file not found: {source_file_path}")
-                logging.error("This can happen if the file was moved or deleted on the source before transfer.")
-                raise e
-            except (socket.timeout, TimeoutError) as e:
-                logging.error(f"Network timeout during upload of file: {file_name}")
-                logging.error("The script will retry, but check your network stability if this persists.")
-                raise e
-            except Exception as e:
-                logging.error(f"Upload failed for {file_name}: {e}")
-                raise
-    finally:
-        ui.complete_file_transfer(source_file_path)
+                    logging.debug(f"PERF: '{file_name}' completed in < 1 second.")
+            else:
+                raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_dest_size}")
+        ui.complete_file_transfer(torrent_hash, source_file_path)
+    except PermissionError:
+        ui.fail_file_transfer(torrent_hash, source_file_path)
+        logging.error(f"Permission denied on destination server for path: {dest_file_path}\n"
+                      "Please check that the destination user has write access to that directory.")
+        raise
+    except FileNotFoundError as e:
+        ui.fail_file_transfer(torrent_hash, source_file_path)
+        logging.error(f"Source file not found: {source_file_path}")
+        logging.error("This can happen if the file was moved or deleted on the source before transfer.")
+        raise e
+    except (socket.timeout, TimeoutError) as e:
+        ui.fail_file_transfer(torrent_hash, source_file_path)
+        logging.error(f"Network timeout during upload of file: {file_name}")
+        logging.error("The script will retry, but check your network stability if this persists.")
+        raise e
+    except Exception as e:
+        ui.fail_file_transfer(torrent_hash, source_file_path)
+        logging.error(f"Upload failed for {file_name}: {e}")
+        raise
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: str, torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
@@ -390,6 +385,7 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
     local_path = Path(local_file)
     file_name = os.path.basename(remote_file)
     try:
+        ui.start_file_transfer(torrent_hash, remote_file, "downloading")
         with pool.get_connection() as (sftp, ssh_client):
             remote_stat = sftp.stat(remote_file)
             total_size = remote_stat.st_size
@@ -408,7 +404,6 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
                 ui.update_torrent_progress(torrent_hash, total_size - local_size)
-                ui.update_file_progress(remote_file, total_size)
                 return
             elif local_size > total_size:
                 logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
@@ -426,50 +421,54 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
                 # ui.advance_overall_progress(remaining_size)
                 return
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                ui.start_file_transfer(torrent_hash, remote_file, total_size)
-                mode = 'ab' if local_size > 0 else 'wb'
-                with sftp.open(remote_file, 'rb') as remote_f_raw:
-                    remote_f_raw.seek(local_size)
-                    remote_f_raw.prefetch()
-                    remote_f = RateLimitedFile(remote_f_raw, download_limit_bytes_per_sec)
-                    with open(local_path, mode) as local_f:
-                        while True:
-                            chunk = remote_f.read(sftp_chunk_size)
-                            if not chunk: break
-                            local_f.write(chunk)
-                            increment = len(chunk)
-                            local_size += increment
-                            ui.update_torrent_progress(torrent_hash, increment)
-                            # ui.advance_overall_progress(increment)
-                            ui.update_file_progress(remote_file, increment)
-                            file_tracker.record_file_progress(torrent_hash, remote_file, local_size)
-                final_local_size = local_path.stat().st_size
-                if final_local_size != total_size:
-                    raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_local_size}")
-            except PermissionError:
-                logging.error(f"Permission denied while trying to write to local path: {local_path.parent}\n"
-                              "Please check that the user running the script has write permissions for this directory.\n"
-                              "If you intended to transfer to another remote server, use 'transfer_mode = sftp_upload' in your config.")
-                raise
-            except FileNotFoundError as e:
-                logging.error(f"Source file not found: {remote_file}")
-                logging.error("This can happen if the file was moved or deleted on the source before transfer.")
-                raise e
-            except (socket.timeout, TimeoutError) as e:
-                logging.error(f"Network timeout during download of file: {file_name}")
-                logging.error("The script will retry, but check your network stability if this persists.")
-                raise e
-            except Exception as e:
-                logging.error(f"Download failed for {file_name}: {e}")
-                raise
-    finally:
-        ui.complete_file_transfer(remote_file)
+            mode = 'ab' if local_size > 0 else 'wb'
+            with sftp.open(remote_file, 'rb') as remote_f_raw:
+                remote_f_raw.seek(local_size)
+                remote_f_raw.prefetch()
+                remote_f = RateLimitedFile(remote_f_raw, download_limit_bytes_per_sec)
+                with open(local_path, mode) as local_f:
+                    while True:
+                        chunk = remote_f.read(sftp_chunk_size)
+                        if not chunk: break
+                        local_f.write(chunk)
+                        increment = len(chunk)
+                        local_size += increment
+                        ui.update_torrent_progress(torrent_hash, increment)
+                        # ui.advance_overall_progress(increment)
+                        file_tracker.record_file_progress(torrent_hash, remote_file, local_size)
+            final_local_size = local_path.stat().st_size
+            if final_local_size != total_size:
+                raise Exception(f"Final size mismatch for {file_name}. Expected {total_size}, got {final_local_size}")
+        ui.complete_file_transfer(torrent_hash, remote_file)
+    except PermissionError:
+        ui.fail_file_transfer(torrent_hash, remote_file)
+        logging.error(f"Permission denied while trying to write to local path: {local_path.parent}\n"
+                      "Please check that the user running the script has write permissions for this directory.\n"
+                      "If you intended to transfer to another remote server, use 'transfer_mode = sftp_upload' in your config.")
+        raise
+    except FileNotFoundError as e:
+        ui.fail_file_transfer(torrent_hash, remote_file)
+        logging.error(f"Source file not found: {remote_file}")
+        logging.error("This can happen if the file was moved or deleted on the source before transfer.")
+        raise e
+    except (socket.timeout, TimeoutError) as e:
+        ui.fail_file_transfer(torrent_hash, remote_file)
+        logging.error(f"Network timeout during download of file: {file_name}")
+        logging.error("The script will retry, but check your network stability if this persists.")
+        raise e
+    except Exception as e:
+        ui.fail_file_transfer(torrent_hash, remote_file)
+        logging.error(f"Download failed for {file_name}: {e}")
+        raise
 
 def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: str, local_path: str, torrent_hash: str, ui: UIManager, dry_run: bool = False) -> None:
     """
     Transfers a remote file or directory to a local path using rsync, with retries.
     """
+    # For rsync, we treat the whole torrent as one "file"
+    # The file_path is the source_content_path
+    rsync_file_name = os.path.basename(remote_path)
+    ui.start_file_transfer(torrent_hash, rsync_file_name, "downloading")
     host = sftp_config['host']
     port = sftp_config.getint('port')
     username = sftp_config['username']
@@ -551,6 +550,7 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
 
                 logging.info(f"Rsync transfer completed successfully for '{os.path.basename(remote_path)}'.")
                 ui.log(f"[green]Rsync complete: {os.path.basename(remote_path)}[/green]")
+                ui.complete_file_transfer(torrent_hash, rsync_file_name)
                 return
             elif process.returncode == 30:
                 logging.warning(f"Rsync timed out for '{os.path.basename(remote_path)}'. Retrying...")
@@ -563,9 +563,11 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                     logging.error(f"Rsync failed for '{os.path.basename(remote_path)}' with non-retryable exit code {process.returncode}.\n"
                                   f"Rsync stderr: {stderr_output}")
                 ui.log(f"[bold red]Rsync FAILED for {os.path.basename(remote_path)}[/bold red]")
+                ui.fail_file_transfer(torrent_hash, rsync_file_name)
                 raise Exception(f"Rsync transfer failed for {os.path.basename(remote_path)}")
         except FileNotFoundError:
             logging.error("FATAL: 'rsync' or 'sshpass' command not found.")
+            ui.fail_file_transfer(torrent_hash, rsync_file_name)
             raise
         except Exception as e:
             logging.error(f"An exception occurred during rsync for '{os.path.basename(remote_path)}': {e}")
@@ -575,7 +577,9 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                 logging.warning("Retrying...")
                 continue
             else:
+                ui.fail_file_transfer(torrent_hash, rsync_file_name)
                 raise e
+    ui.fail_file_transfer(torrent_hash, rsync_file_name)
     raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {MAX_RETRY_ATTEMPTS} attempts.")
 
 def transfer_content(pool: SSHConnectionPool, all_files: List[tuple[str, str]], torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, max_concurrent_downloads: int, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:

@@ -1,3 +1,4 @@
+import os
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
@@ -16,7 +17,7 @@ from rich.align import Align
 import logging
 import threading
 from collections import OrderedDict, deque
-from typing import Dict, Any, Optional, Deque, Tuple
+from typing import Dict, Any, Optional, Deque, Tuple, List
 from rich.layout import Layout
 import time
 
@@ -45,6 +46,10 @@ class UIManagerV2:
         self._completed_hashes: set = set()
         self._recent_completions: Deque[tuple] = deque(maxlen=5) # (name, size, duration)
 
+        # Data structures for file-level tracking
+        self._file_lists: Dict[str, List[str]] = {} # torrent_hash -> [file_name_1, file_name_2, ...]
+        self._file_status: Dict[str, Dict[str, str]] = {} # torrent_hash -> {file_name -> "queued" | "downloading" | "uploading" | "completed"}
+
         # Statistics
         self._stats = {
             "total_torrents": 0,
@@ -70,11 +75,17 @@ class UIManagerV2:
             Layout(name="footer", size=7) # Increased for log
         )
 
-        # Split body into three columns
+        # Split body into three columns - NEW LAYOUT
         self.layout["body"].split_row(
-            Layout(name="left", ratio=2), # Progress bars
-            Layout(name="middle", ratio=1), # Current torrents
-            Layout(name="right", ratio=1) # Stats + Recent
+            Layout(name="left", ratio=2),      # Will contain Overall Progress + Active Torrents
+            Layout(name="middle", ratio=1),    # Will contain Recent Completions
+            Layout(name="right", ratio=1)     # Will contain Statistics
+        )
+
+        # Split the new 'left' column vertically
+        self.layout["left"].split(
+            Layout(name="overall_progress", size=5), # Space for Overall Progress bar + Panel Title
+            Layout(name="active_torrents", ratio=1)   # Space for Active Torrents list
         )
 
         # Initialize components
@@ -125,42 +136,16 @@ class UIManagerV2:
             "[green]📦 Overall Progress", total=100, visible=False
         )
 
-        # Current torrent progress
-        self.current_torrent_task = self.main_progress.add_task(
-            "[yellow]⚡ Current Torrent: (none)", total=100, visible=False
+        # Create Panel JUST for the main progress bars
+        main_progress_panel = Panel(
+            self.main_progress,
+            title="[bold green]📈 Transfer Progress",
+            border_style="dim",
+            style="on #16213e"
         )
 
-        # Active files progress
-        self.files_progress = Progress(
-            TextColumn(" [dim]└─[/] {task.description}", justify="left"),
-            BarColumn(bar_width=15, complete_style="cyan"),
-            TextColumn("{task.percentage:>3.0f}%"),
-            "•",
-            DownloadColumn(binary_units=True),
-            "•",
-            TransferSpeedColumn(),
-            expand=True,
-        )
-        self.active_file_tasks: Dict[str, Tuple[TaskID, str]] = {} # Store (task_id, torrent_hash)
-
-        # Combine into left panel
-        progress_group = Group(
-            Panel(
-                self.main_progress,
-                title="[bold green]📈 Transfer Progress",
-                border_style="dim",
-                style="on #16213e"
-            ),
-            Panel(
-                self.files_progress,
-                title="[bold cyan]📄 Active Files (Last 5)",
-                border_style="dim",
-                height=9,
-                style="on #0f3460"
-            )
-        )
-
-        self.layout["left"].update(progress_group)
+        # Assign ONLY the main progress panel to the new dedicated layout area
+        self.layout["overall_progress"].update(main_progress_panel)
 
     def _setup_current_torrents(self):
         """Setup middle panel showing current torrent queue."""
@@ -170,57 +155,107 @@ class UIManagerV2:
 
         self._update_current_torrents()
 
-        self.layout["middle"].update(
+        self.layout["active_torrents"].update(
             Panel(
                 self.current_table,
-                title="[bold yellow]🎯 Active Queue",
+                title="[bold yellow]🎯 Active Torrents",
                 border_style="dim",
                 style="on #16213e"
             )
         )
 
     def _update_current_torrents(self):
-        """Update the current torrents display."""
+        """Update the current torrents display with an expanded file list."""
         with self._lock:
-            self.current_table = Table.grid(padding=(0, 1))
-            self.current_table.add_column(style="bold", no_wrap=True, width=12)
-            self.current_table.add_column(style="dim")
-
+            active_torrents_content = []
             active_count = 0
+
             for hash_, torrent in self._torrents.items():
                 if torrent["status"] == "transferring":
                     active_count += 1
                     name = torrent["name"]
-                    # Truncate long names
-                    display_name = name[:30] + "..." if len(name) > 33 else name
+                    display_name = name[:40] + "..." if len(name) > 43 else name
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
 
-                    # Added file counts from Task 6
-                    files_str = f"({torrent.get('completed_files', 0)}/{torrent.get('total_files', 0)} files)"
+                    # --- Main Torrent Info ---
+                    torrent_table = Table.grid(padding=(0, 1), expand=True)
+                    torrent_table.add_column(style="bold", no_wrap=True, width=12)
+                    torrent_table.add_column()
 
-                    status_icon = "🔄"
-                    self.current_table.add_row(
-                        f"{status_icon} {progress:.0f}%",
-                        f"{display_name} [dim]{files_str}[/dim]" # <-- ADDED
+                    # Add Torrent Name and Progress
+                    files_str = f"({torrent.get('completed_files', 0)}/{torrent.get('total_files', 0)} files)"
+                    torrent_table.add_row(
+                        f"🔄 {progress:.0f}%",
+                        f"{display_name} [dim]{files_str}[/dim]"
                     )
 
+                    # --- File List ---
+                    file_list = self._file_lists.get(hash_, [])
+                    file_status = self._file_status.get(hash_, {})
+
+                    completed_files = []
+                    active_files = []
+                    queued_files = []
+
+                    # Max files to show to avoid flooding the UI
+                    MAX_FILES_DISPLAY = 3
+
+                    for file_name in file_list:
+                        status = file_status.get(file_name, "queued")
+                        base_name = os.path.basename(file_name)
+                        short_name = base_name[:35] + "..." if len(base_name) > 38 else base_name
+
+                        if status == "completed":
+                            completed_files.append(short_name)
+                        elif status == "downloading":
+                            active_files.append(f"[blue]⬇ {short_name}[/blue]")
+                        elif status == "uploading":
+                            active_files.append(f"[yellow]⬆ {short_name}[/yellow]")
+                        elif status == "failed":
+                            active_files.append(f"[red]✖ {short_name}[/red]")
+                        else: # queued
+                            queued_files.append(short_name)
+
+                    # --- Add File Lists to Table ---
+
+                    # 1. Completed Files (Show count)
+                    if completed_files:
+                        torrent_table.add_row("  [green]✓[/green]", f"[green]{len(completed_files)} completed[/green]")
+
+                    # 2. Active Files (Show first 3)
+                    for i, file_str in enumerate(active_files):
+                        if i >= MAX_FILES_DISPLAY:
+                            torrent_table.add_row("  [dim]...[/dim]", f"[dim]{len(active_files) - MAX_FILES_DISPLAY} more active[/dim]")
+                            break
+                        torrent_table.add_row("  [dim]└─[/dim]", file_str)
+
+                    # 3. Queued Files (Show count)
+                    if queued_files and not active_files: # Only show queue if nothing is active
+                        torrent_table.add_row("  [dim]▫[/dim]", f"[dim]{len(queued_files)} queued[/dim]")
+
+                    active_torrents_content.append(Panel(torrent_table, style="on #16213e", border_style="dim"))
+
             if active_count == 0:
-                self.current_table.add_row("[dim]⏸️ Idle", "[dim]Waiting for torrents...")
+                active_torrents_content.append(Panel(Align.center("[dim]⏸️ Waiting for torrents...[/dim]"), style="on #16213e", border_style="dim"))
 
-            # Add queued count
-            queued = self._stats["total_torrents"] - self._stats["completed_transfers"] - self._stats["failed_transfers"] - active_count
-            if queued > 0:
-                self.current_table.add_row("", "")
-                self.current_table.add_row("[bold]⏳ Queued:", f"[yellow]{queued} torrent(s)[/]")
+            # --- Add Queued Torrents Summary ---
+            queued_count = self._stats["total_torrents"] - self._stats["completed_transfers"] - self._stats["failed_transfers"] - active_count
+            if queued_count > 0:
+                queued_table = Table.grid(padding=(0, 1))
+                queued_table.add_column(style="bold", width=12)
+                queued_table.add_column()
+                queued_table.add_row("[bold]⏳ Queued:[/]", f"[yellow]{queued_count} torrent(s)[/]")
+                active_torrents_content.append(Panel(queued_table, style="on #16213e", border_style="dim"))
 
-            self.layout["middle"].update(
+            self.layout["active_torrents"].update(
                 Panel(
-                    self.current_table,
-                    title="[bold yellow]🎯 Active Queue",
+                    Group(*active_torrents_content),
+                    title="[bold yellow]🎯 Active Torrents",
                     border_style="dim",
-                    style="on #16213e" # <-- ADDED DARK THEME
+                    style="on #16213e"
                 )
             )
+
 
     def _setup_stats_panel(self):
         """Enhanced stats panel with graphs and recent completions."""
@@ -303,9 +338,12 @@ class UIManagerV2:
                 eta_str = f"{eta_hours:02d}:{eta_minutes:02d}"
                 stats_table.add_row("⏳ ETA:", f"[cyan]{eta_str}[/]")
 
-            # ... (rest of the method for recent completions)
+            # Create and update Statistics Panel (Right Column)
+            stats_panel = Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460")
+            self.layout["right"].update(stats_panel)
+
+            # Create and update Recent Completions Panel (Middle Column)
             if self._recent_completions:
-                # ... (recent completions table code remains the same) ...
                 recent_table = Table.grid(padding=(0, 1))
                 recent_table.add_column(style="dim", no_wrap=True)
                 recent_table.add_column(style="dim")
@@ -317,14 +355,12 @@ class UIManagerV2:
                         f"✓ {display_name}",
                         f"{speed / (1024**2):.1f} MB/s"
                     )
-                stats_group = Group(
-                    Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460"),
-                    Panel(recent_table, title="[bold green]🎉 Recent Completions", border_style="dim", style="on #16213e")
-                )
+                recent_panel = Panel(recent_table, title="[bold green]🎉 Recent Completions", border_style="dim", style="on #16213e")
             else:
-                 stats_group = Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460")
+                # Placeholder if no recent completions yet
+                recent_panel = Panel(Align.center("[dim]No completions yet.[/dim]"), title="[bold green]🎉 Recent Completions", border_style="dim", style="on #16213e")
 
-            self.layout["right"].update(stats_group)
+            self.layout["middle"].update(recent_panel)
 
     def _setup_footer(self):
         """Initial setup for the log panel footer."""
@@ -377,7 +413,6 @@ class UIManagerV2:
             if self._stats_thread.is_alive():
                 self._stats_thread.join(timeout=2.0) # <-- ADD TIMEOUT
             self.main_progress.stop()
-            self.files_progress.stop()
             self._live.stop()
 
     def set_final_status(self, message: str):
@@ -429,31 +464,23 @@ class UIManagerV2:
             self._stats["total_bytes"] = total_bytes
             self.main_progress.update(self.overall_task, total=total_bytes, visible=True)
 
-    def start_torrent_transfer(self, torrent_hash: str, torrent_name: str,
-                               total_size: float, total_files: int,
-                               transfer_multiplier: int = 1):
+    def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1):
         with self._lock:
+            total_files = len(all_files)
             self._torrents[torrent_hash] = {
                 "name": torrent_name,
                 "size": total_size * transfer_multiplier,
-                "total_files": total_files,
+                "total_files": total_files, # <-- Use derived total_files
                 "completed_files": 0,
                 "transferred": 0,
                 "status": "transferring",
                 "start_time": time.time()
             }
+            # Initialize file tracking for this torrent
+            self._file_lists[torrent_hash] = all_files
+            self._file_status[torrent_hash] = {file_name: "queued" for file_name in all_files}
             self._active_torrents.append(torrent_hash)
             self._stats["active_transfers"] += 1
-
-            # Update current torrent progress bar
-            display_name = torrent_name[:40] + "..." if len(torrent_name) > 40 else torrent_name
-            self.main_progress.update(
-                self.current_torrent_task,
-                description=f"[yellow]⚡ Current Torrent: {display_name}", # <-- RENAMED
-                completed=0,
-                total=total_size * transfer_multiplier, # <-- APPLY MULTIPLIER HERE
-                visible=True
-            )
 
     def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float):
         with self._lock:
@@ -463,81 +490,54 @@ class UIManagerV2:
 
             # Update progress bars
             self.main_progress.update(self.overall_task, advance=bytes_transferred)
-            self.main_progress.update(self.current_torrent_task, advance=bytes_transferred)
 
-    def start_file_transfer(self, torrent_hash: str, file_path: str, file_size: int):
+    def start_file_transfer(self, torrent_hash: str, file_path: str, status: str):
+        """Mark a file as actively transferring."""
         with self._lock:
-            # Only show last 5 files
-            if len(self.active_file_tasks) >= 5:
-                try:
-                    oldest_file = next(iter(self.active_file_tasks))
-                    task_id, _ = self.active_file_tasks.pop(oldest_file)
-                    self.files_progress.remove_task(task_id)
-                except StopIteration:
-                    pass
-                except Exception:
-                    pass  # Failsafe
+            if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
+                self._file_status[torrent_hash][file_path] = status # e.g., "downloading" or "uploading"
 
-            # Get torrent name
-            torrent_name = self._torrents.get(torrent_hash, {}).get("name", "UnknownTorrent")
-            # Truncate torrent name
-            trunc_torrent_name = torrent_name[:15] + "..." if len(torrent_name) > 18 else torrent_name
-
-            # Existing line for filename
-            file_name = file_path.split('/')[-1]
-            display_name = file_name[:30] + "..." if len(file_name) > 33 else file_name  # Shorten file slightly
-
-            # Updated task description
-            task_description = f"[dim]{trunc_torrent_name} /[/] 📄 {display_name}"
-
-            # Update the add_task call
-            task_id = self.files_progress.add_task(
-                task_description,  # Use the new description
-                total=file_size
-            )
-            self.active_file_tasks[file_path] = (task_id, torrent_hash)  # Store hash
-
-    def update_file_progress(self, file_path: str, bytes_transferred: int):
+    def complete_file_transfer(self, torrent_hash: str, file_path: str):
+        """Mark a file as completed."""
         with self._lock:
-            if file_path in self.active_file_tasks:
-                task_id, _ = self.active_file_tasks[file_path]
-                self.files_progress.update(
-                    task_id,
-                    advance=bytes_transferred
-                )
-
-    def complete_file_transfer(self, file_path: str):
-        with self._lock:
-            if file_path in self.active_file_tasks:
-                task_id, torrent_hash = self.active_file_tasks.pop(file_path)
-                # Finish the progress bar
-                self.files_progress.update(task_id, completed=self.files_progress.tasks[task_id].total)
-                self.files_progress.remove_task(task_id)
+            if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
+                self._file_status[torrent_hash][file_path] = "completed"
+                # Update the completed_files count on the main torrent object
                 if torrent_hash in self._torrents:
                     self._torrents[torrent_hash]["completed_files"] += 1
+
+    def fail_file_transfer(self, torrent_hash: str, file_path: str):
+        """Mark a file as failed."""
+        with self._lock:
+            if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
+                self._file_status[torrent_hash][file_path] = "failed"
 
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
         with self._lock:
             if torrent_hash in self._torrents:
-                torrent = self._torrents[torrent_hash]
-                torrent["status"] = "completed" if success else "failed"
-                self._completed_hashes.add(torrent_hash)
-                self._stats["active_transfers"] = max(0, self._stats["active_transfers"] - 1)
+                try:
+                    torrent = self._torrents[torrent_hash]
+                    torrent["status"] = "completed" if success else "failed"
+                    self._completed_hashes.add(torrent_hash)
+                    self._stats["active_transfers"] = max(0, self._stats["active_transfers"] - 1)
 
-                if success:
-                    self._stats["completed_transfers"] += 1
-                    # Add to recent completions
-                    duration = time.time() - torrent.get("start_time", time.time())
-                    self._recent_completions.append((
-                        torrent["name"],
-                        torrent["size"],
-                        duration
-                    ))
-                else:
-                    self._stats["failed_transfers"] += 1
-
-                # Hide current torrent progress
-                self.main_progress.update(self.current_torrent_task, visible=False, description="[yellow]⚡ Current Torrent: (none)")
+                    if success:
+                        self._stats["completed_transfers"] += 1
+                        # Add to recent completions
+                        duration = time.time() - torrent.get("start_time", time.time())
+                        self._recent_completions.append((
+                            torrent["name"],
+                            torrent["size"],
+                            duration
+                        ))
+                    else:
+                        self._stats["failed_transfers"] += 1
+                finally:
+                    # Clean up file tracking data
+                    if torrent_hash in self._file_lists:
+                        del self._file_lists[torrent_hash]
+                    if torrent_hash in self._file_status:
+                        del self._file_status[torrent_hash]
 
     def log(self, message: str):
         """Adds a message to the on-screen log buffer."""

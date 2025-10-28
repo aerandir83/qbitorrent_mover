@@ -10,11 +10,28 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.4.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.5.4**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.4.2 (Latest)
+### Version 2.5.4 (Latest)
+* **fix(system)**: Corrected an `AttributeError` in `delete_destination_content` by importing the `Timeouts` class from `transfer_manager` instead of `ssh_manager`.
+
+### Version 2.5.3
+* **refactor(ui)**: Rearranged layout panels: Moved "Active Torrents" to the left column and "Recent Completions" to the middle column based on user feedback.
+
+### Version 2.5.2
+* **fix(transfer)**: Correct indentation of `try...except` blocks in `_sftp_download_file` to resolve a critical `SyntaxError`.
+
+### Version 2.5.1
+* **fix(main)**: Correctly capture transfer success/failure status from `_execute_transfer` to prevent rechecks on partial or failed transfers.
+* **fix(transfer)**: Correct indentation of `try...except` blocks in `_sftp_upload_file` to resolve a `SyntaxError`.
+
+### Version 2.5.0
+* **feat(ui)**: Overhauled the "Active Queue" panel to display a detailed, color-coded file list (completed, downloading, uploading, queued) for each active torrent.
+* **refactor(ui)**: Removed the redundant "Current Torrent" progress bar and the separate "Active Files" panel to create a cleaner, more integrated layout.
+
+### Version 2.4.2
 * **fix(main)**: Correct arguments in transfer_torrent call.
 
 ### Version 2.4.1
