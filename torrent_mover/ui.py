@@ -329,16 +329,17 @@ class UIManagerV2:
             dl_speed_str = f"{current_dl_speed / (1024**2):.2f} MB/s"
             ul_speed_str = f"{current_ul_speed / (1024**2):.2f} MB/s"
 
-            try:
-                self.main_progress.update(
-                    self.overall_task,
-                    fields={ # Update the whole dictionary
-                        'dl_speed': dl_speed_str,
-                        'ul_speed': ul_speed_str
-                    }
-                )
-            except Exception as e:
-                logging.debug(f"Could not update overall task speeds: {e}")
+            with self._lock: # Acquire the lock before updating
+                try:
+                    self.main_progress.update(
+                        self.overall_task,
+                        fields={ # Update the whole dictionary
+                            'dl_speed': dl_speed_str,
+                            'ul_speed': ul_speed_str
+                        }
+                    )
+                except Exception as e:
+                    logging.debug(f"Could not update overall task speeds: {e}")
 
             # Create stats table
             stats_table = Table.grid(padding=(0, 2))
