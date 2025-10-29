@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.6.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.6.1**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.6.0 (Latest)
+### Version 2.6.1 (Latest)
+* **fix(ui)**: Resolved a threading deadlock that caused DL/UL speeds in the "Overall Progress" bar to remain at 0.00 MB/s. The `progress.update()` call was moved outside the main UI lock.
+
+### Version 2.6.0
 * **feat(ui)**: Changed layout to 3/4 (Torrents) and 1/4 (Stats) based on user feedback.
 * **feat(ui)**: Added a visual progress bar next to each active torrent.
 * **feat(ui)**: Added visual progress bars for individual active files (requires data from `v2.5.12` backend).

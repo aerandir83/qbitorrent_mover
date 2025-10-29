@@ -420,6 +420,12 @@ class UIManagerV2:
     def _stats_updater(self):
         """Background thread to update stats and progress bars."""
         while not self._stats_thread_stop.wait(1.0):
+            # --- ADD THESE LINES ---
+            dl_speed_str = "0.00 MB/s"
+            ul_speed_str = "0.00 MB/s"
+            task_exists = False
+            # --- END ADD ---
+
             with self._lock:
                 # --- Calculate Speeds ---
                 current_dl_speed = 0.0
@@ -452,22 +458,29 @@ class UIManagerV2:
                     self._stats["peak_speed"] = current_total_speed
 
                 # --- UPDATE STORED SPEED STRINGS ---
+                # Set values for the non-locked update
                 dl_speed_str = f"{current_dl_speed / (1024**2):.2f} MB/s"
                 ul_speed_str = f"{current_ul_speed / (1024**2):.2f} MB/s"
 
-                # FIX: Better error handling and task existence check
                 try:
-                    # Check if the task exists before updating
-                    if hasattr(self.main_progress, 'tasks') and self.overall_task in [t.id for t in self.main_progress.tasks]:
-                        self.main_progress.update(
-                            self.overall_task,
-                            fields={
-                                'dl_speed': dl_speed_str,
-                                'ul_speed': ul_speed_str
-                            }
-                        )
-                except Exception as e:
-                    logging.debug(f"Could not update overall task speeds: {e}")
+                    task_exists = hasattr(self.main_progress, 'tasks') and self.overall_task in [t.id for t in self.main_progress.tasks]
+                except Exception:
+                    task_exists = False # Precaution
+
+        # Now, update the progress bar outside the lock
+        if task_exists:
+            try:
+                self.main_progress.update(
+                    self.overall_task,
+                    fields={
+                        'dl_speed': dl_speed_str,
+                        'ul_speed': ul_speed_str
+                    }
+                )
+            except Exception as e:
+                # This might still fail if the task finished between the check and here,
+                # but it won't cause a deadlock.
+                logging.debug(f"Could not update overall task speeds (non-locked): {e}")
 
     # ===== Public API (keeping existing methods) =====
 
