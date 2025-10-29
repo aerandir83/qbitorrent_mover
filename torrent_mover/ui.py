@@ -441,7 +441,9 @@ class UIManagerV2:
                     self._stats["current_dl_speed"] = current_dl_speed
                     self._dl_speed_history.append(current_dl_speed)
                 else:
+                    # --- ADD THIS BLOCK BACK ---
                     current_dl_speed = self._stats.get("current_dl_speed", 0.0)
+                    # --- END ADD ---
 
                 if time_since_last_ul >= 1.0:
                     bytes_since_last = self._stats["transferred_ul_bytes"] - self._stats["last_ul_bytes"]
@@ -451,7 +453,9 @@ class UIManagerV2:
                     self._stats["current_ul_speed"] = current_ul_speed
                     self._ul_speed_history.append(current_ul_speed)
                 else:
+                    # --- ADD THIS BLOCK BACK ---
                     current_ul_speed = self._stats.get("current_ul_speed", 0.0)
+                    # --- END ADD ---
 
                 current_total_speed = current_dl_speed + current_ul_speed
                 if current_total_speed > self._stats["peak_speed"]:

@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.6.1**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.6.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.6.1 (Latest)
+### Version 2.6.2 (Latest)
+* **fix(ui)**: Corrected flawed logic in the `_stats_updater` thread that caused DL/UL speeds to reset to 0. Re-added `else` blocks to ensure the last known speed is used between 1-second update intervals.
+
+### Version 2.6.1
 * **fix(ui)**: Resolved a threading deadlock that caused DL/UL speeds in the "Overall Progress" bar to remain at 0.00 MB/s. The `progress.update()` call was moved outside the main UI lock.
 
 ### Version 2.6.0
