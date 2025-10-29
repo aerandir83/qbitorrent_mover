@@ -10,6 +10,7 @@ TransferSpeedColumn,
 TimeRemainingColumn,
 DownloadColumn,
 TaskID,
+ProgressColumn, # <-- Import ProgressColumn
 )
 from rich.table import Table
 from rich.text import Text
@@ -20,6 +21,21 @@ from collections import OrderedDict, deque
 from typing import Dict, Any, Optional, Deque, Tuple, List, Type
 from rich.layout import Layout
 import time
+
+# --- Custom Progress Column for Speed ---
+
+class _SpeedColumn(ProgressColumn):
+    """Renders DL/UL speed by reading from task.fields."""
+    def __init__(self, field_name: str, label: str, style: str):
+        self.field_name = field_name
+        self.label = label
+        self.style = style
+        super().__init__()
+
+    def render(self, task: "Task") -> Text:
+        """Get speed from task fields and render it."""
+        speed = task.fields.get(self.field_name, '0.00 MB/s')
+        return Text(f"{self.label}:[{self.style}]{speed:>10}[/]", justify="left")
 
 # --- Custom Renderable Classes ---
 
@@ -281,7 +297,7 @@ class UIManagerV2:
         self._last_header_text_part = "[green]Initializing...[/]"
 
     def _setup_progress(self):
-        """Setup progress bars with better formatting. FIXED: Use callable columns."""
+        """Setup progress bars with better formatting. FIXED: Use custom column."""
         self.main_progress = Progress(
             TextColumn("[bold]{task.description}", justify="left"),
             BarColumn(bar_width=None, complete_style="green", finished_style="bold green"),
@@ -289,10 +305,10 @@ class UIManagerV2:
             "•",
             DownloadColumn(binary_units=True),
             "•",
-            # FIX: Use callable columns to access task.fields with .get()
-            TextColumn(lambda task: f"DL:[green]{task.fields.get('dl_speed', '0.00 MB/s'):>10}[/]"),
+            # FIX: Use the new custom _SpeedColumn
+            _SpeedColumn("dl_speed", "DL", "green"),
             "•",
-            TextColumn(lambda task: f"UL:[yellow]{task.fields.get('ul_speed', '0.00 MB/s'):>10}[/]"),
+            _SpeedColumn("ul_speed", "UL", "yellow"),
             "•",
             TimeRemainingColumn(),
             expand=True,
