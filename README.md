@@ -10,11 +10,57 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.5.4**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.6.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.5.4 (Latest)
+### Version 2.6.2 (Latest)
+* **fix(ui)**: Corrected flawed logic in the `_stats_updater` thread that caused DL/UL speeds to reset to 0. Re-added `else` blocks to ensure the last known speed is used between 1-second update intervals.
+
+### Version 2.6.1
+* **fix(ui)**: Resolved a threading deadlock that caused DL/UL speeds in the "Overall Progress" bar to remain at 0.00 MB/s. The `progress.update()` call was moved outside the main UI lock.
+
+### Version 2.6.0
+* **feat(ui)**: Changed layout to 3/4 (Torrents) and 1/4 (Stats) based on user feedback.
+* **feat(ui)**: Added a visual progress bar next to each active torrent.
+* **feat(ui)**: Added visual progress bars for individual active files (requires data from `v2.5.12` backend).
+* **fix(ui)**: Changed "Downloading" file status color from red to blue.
+* **fix(ui)**: Changed "DL Speed" color in Stats panel from red to green.
+* **fix(ui)**: Fixed a bug where DL/UL speed text would render incorrectly (`DL:[gre...`) in the main progress bar.
+
+### Version 2.5.12
+* **fix(ui)**: Corrected a flawed fix that caused an `AttributeError: 'function' object has no attribute 'format'`.
+* **fix(ui)**: Replaced the incorrect `TextColumn(lambda ...)` with a proper custom `ProgressColumn` (`_SpeedColumn`) to render DL/UL speeds. This is the correct way to use callables for `rich` progress bars and resolves the startup crash.
+* **fix(ui)**: Applied the remaining fixes from the code review, including pointing `_ActiveTorrentsPanel` to `_file_status` and adding bounds checking to `complete_file_transfer`.
+
+### Version 2.5.11
+* **fix(ui)**: Applied multiple fixes to `ui.py` based on an independent review to resolve critical `AttributeError` crashes and data access issues.
+* **fix(ui)**: Corrected `TextColumn` format strings to use callables (lambda functions) instead of unsupported method calls (`.get()`).
+* **fix(ui)**: Fixed `_ActiveTorrentsPanel` to correctly access file status from `self.ui_manager._file_status` instead of the non-existent `torrent.get("files", {})`.
+* **fix(ui)**: Added more robust task existence checks in `_stats_updater` and bounds checking in `complete_file_transfer`.
+
+### Version 2.5.10
+* **fix(ui)**: Corrected a `TypeError` by removing an invalid `extra_description` argument from `TextColumn` and reverting to the standard, thread-safe `task.fields` implementation.
+
+### Version 2.5.9
+* **fix(ui)**: Refactored DL/UL speed display mechanism to avoid `task.fields` access during rendering, using direct attribute storage and column callables instead to prevent race conditions.
+
+### Version 2.5.8
+* **fix(ui)**: Refactored the entire UI rendering logic to be thread-safe, resolving a persistent crash. UI panels are now custom renderables, eliminating direct layout modification from background threads.
+
+### Version 2.5.7
+* **fix(ui)**: Implemented a more robust fix for Rich UI rendering errors by adding default fallbacks directly to DL/UL speed column formatters.
+* **fix(ui)**: Ensured DL/UL byte counters are correctly initialized in stats.
+
+### Version 2.5.6
+* **fix(ui)**: Resolved a race condition that caused the Rich UI to crash on startup by providing default values for DL/UL speed fields.
+
+### Version 2.5.5
+* **feat(ui)**: Added separate Download (DL) and Upload (UL) speed indicators to the "Overall Progress" bar.
+* **fix(ui)**: Prevented completed file count from exceeding total file count by adding checks in `complete_file_transfer`.
+* **fix(log)**: Enhanced logging in transfer functions to explicitly record the filename and error details upon transfer failure.
+
+### Version 2.5.4
 * **fix(system)**: Corrected an `AttributeError` in `delete_destination_content` by importing the `Timeouts` class from `transfer_manager` instead of `ssh_manager`.
 
 ### Version 2.5.3
