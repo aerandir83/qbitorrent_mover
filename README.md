@@ -15,7 +15,7 @@ The current version is **2.5.8**. To check your version, run: `python3 -m torren
 ## Changelog
 
 ### Version 2.5.8 (Latest)
-* **fix(ui)**: Attempted fix for Rich UI crash by protecting the `main_progress.update` call with a lock.
+* **fix(ui)**: Refactored the entire UI rendering logic to be thread-safe, resolving a persistent crash. UI panels are now custom renderables, eliminating direct layout modification from background threads.
 
 ### Version 2.5.7
 * **fix(ui)**: Implemented a more robust fix for Rich UI rendering errors by adding default fallbacks directly to DL/UL speed column formatters.
