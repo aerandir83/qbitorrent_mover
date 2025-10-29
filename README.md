@@ -10,11 +10,16 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.5.11**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.5.12**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.5.11 (Latest)
+### Version 2.5.12 (Latest)
+* **fix(ui)**: Corrected a flawed fix that caused an `AttributeError: 'function' object has no attribute 'format'`.
+* **fix(ui)**: Replaced the incorrect `TextColumn(lambda ...)` with a proper custom `ProgressColumn` (`_SpeedColumn`) to render DL/UL speeds. This is the correct way to use callables for `rich` progress bars and resolves the startup crash.
+* **fix(ui)**: Applied the remaining fixes from the code review, including pointing `_ActiveTorrentsPanel` to `_file_status` and adding bounds checking to `complete_file_transfer`.
+
+### Version 2.5.11
 * **fix(ui)**: Applied multiple fixes to `ui.py` based on an independent review to resolve critical `AttributeError` crashes and data access issues.
 * **fix(ui)**: Corrected `TextColumn` format strings to use callables (lambda functions) instead of unsupported method calls (`.get()`).
 * **fix(ui)**: Fixed `_ActiveTorrentsPanel` to correctly access file status from `self.ui_manager._file_status` instead of the non-existent `torrent.get("files", {})`.
