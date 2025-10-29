@@ -211,6 +211,8 @@ class UIManagerV2:
         self._current_header_string_template: str = ""
         self._last_header_text_part: str = ""
         self._current_status: Optional[str] = None
+        self._current_dl_speed_str: str = "0.00 MB/s"
+        self._current_ul_speed_str: str = "0.00 MB/s"
         self._analysis_complete = False # Add this flag
 
         # Data structures
@@ -290,9 +292,9 @@ class UIManagerV2:
             "•",
             DownloadColumn(binary_units=True),
             "•",
-            TextColumn("DL:[green]{task.fields.get('dl_speed', '0.00 MB/s'):>10}[/]"),
+            TextColumn("DL:[green]{task.extra_description[0]:>10}[/]", extra_description=lambda: [self._current_dl_speed_str]),
             "•",
-            TextColumn("UL:[yellow]{task.fields.get('ul_speed', '0.00 MB/s'):>10}[/]"),
+            TextColumn("UL:[yellow]{task.extra_description[0]:>10}[/]", extra_description=lambda: [self._current_ul_speed_str]),
             "•",
             TimeRemainingColumn(),
             expand=True,
@@ -305,8 +307,7 @@ class UIManagerV2:
         self.overall_task = self.main_progress.add_task(
             "[green]📦 Overall Progress",
             total=100,
-            visible=False,
-            fields={}
+            visible=False
         )
 
         # Combine into left panel
@@ -394,20 +395,13 @@ class UIManagerV2:
                 if current_total_speed > self._stats["peak_speed"]:
                     self._stats["peak_speed"] = current_total_speed
 
-                # --- UPDATE THREAD-SAFE PROGRESS BAR ---
+                # --- UPDATE STORED SPEED STRINGS (PROGRESS BAR WILL READ THESE) ---
                 dl_speed_str = f"{current_dl_speed / (1024**2):.2f} MB/s"
                 ul_speed_str = f"{current_ul_speed / (1024**2):.2f} MB/s"
 
-                try:
-                    self.main_progress.update(
-                        self.overall_task,
-                        fields={
-                            'dl_speed': dl_speed_str,
-                            'ul_speed': ul_speed_str
-                        }
-                    )
-                except Exception as e:
-                    logging.debug(f"Could not update overall task speeds: {e}")
+                with self._lock: # Lock is still needed to safely write attributes read by render thread
+                    self._current_dl_speed_str = dl_speed_str
+                    self._current_ul_speed_str = ul_speed_str
 
     # ===== Public API (keeping existing methods) =====
 
