@@ -10,11 +10,17 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.5.10**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.5.11**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.5.10 (Latest)
+### Version 2.5.11 (Latest)
+* **fix(ui)**: Applied multiple fixes to `ui.py` based on an independent review to resolve critical `AttributeError` crashes and data access issues.
+* **fix(ui)**: Corrected `TextColumn` format strings to use callables (lambda functions) instead of unsupported method calls (`.get()`).
+* **fix(ui)**: Fixed `_ActiveTorrentsPanel` to correctly access file status from `self.ui_manager._file_status` instead of the non-existent `torrent.get("files", {})`.
+* **fix(ui)**: Added more robust task existence checks in `_stats_updater` and bounds checking in `complete_file_transfer`.
+
+### Version 2.5.10
 * **fix(ui)**: Corrected a `TypeError` by removing an invalid `extra_description` argument from `TextColumn` and reverting to the standard, thread-safe `task.fields` implementation.
 
 ### Version 2.5.9
