@@ -211,8 +211,6 @@ class UIManagerV2:
         self._current_header_string_template: str = ""
         self._last_header_text_part: str = ""
         self._current_status: Optional[str] = None
-        self._current_dl_speed_str: str = "0.00 MB/s"
-        self._current_ul_speed_str: str = "0.00 MB/s"
         self._analysis_complete = False # Add this flag
 
         # Data structures
@@ -292,9 +290,9 @@ class UIManagerV2:
             "•",
             DownloadColumn(binary_units=True),
             "•",
-            TextColumn("DL:[green]{task.extra_description[0]:>10}[/]", extra_description=lambda: [self._current_dl_speed_str]),
+            TextColumn("DL:[green]{task.fields.get('dl_speed', '0.00 MB/s'):>10}[/]"),
             "•",
-            TextColumn("UL:[yellow]{task.extra_description[0]:>10}[/]", extra_description=lambda: [self._current_ul_speed_str]),
+            TextColumn("UL:[yellow]{task.fields.get('ul_speed', '0.00 MB/s'):>10}[/]"),
             "•",
             TimeRemainingColumn(),
             expand=True,
@@ -307,7 +305,8 @@ class UIManagerV2:
         self.overall_task = self.main_progress.add_task(
             "[green]📦 Overall Progress",
             total=100,
-            visible=False
+            visible=False,
+            fields={'dl_speed': '0.00 MB/s', 'ul_speed': '0.00 MB/s'} # Initialize fields
         )
 
         # Combine into left panel
@@ -399,9 +398,17 @@ class UIManagerV2:
                 dl_speed_str = f"{current_dl_speed / (1024**2):.2f} MB/s"
                 ul_speed_str = f"{current_ul_speed / (1024**2):.2f} MB/s"
 
-                with self._lock: # Lock is still needed to safely write attributes read by render thread
-                    self._current_dl_speed_str = dl_speed_str
-                    self._current_ul_speed_str = ul_speed_str
+                with self._lock:
+                    try:
+                        self.main_progress.update(
+                            self.overall_task,
+                            fields={ # Update the whole dictionary
+                                'dl_speed': dl_speed_str,
+                                'ul_speed': ul_speed_str
+                            }
+                        )
+                    except Exception as e:
+                        logging.debug(f"Could not update overall task speeds: {e}")
 
     # ===== Public API (keeping existing methods) =====
 
