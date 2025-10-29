@@ -10,6 +10,7 @@ TransferSpeedColumn,
 TimeRemainingColumn,
 DownloadColumn,
 TaskID,
+ProgressColumn, # <-- Import ProgressColumn
 )
 from rich.table import Table
 from rich.text import Text
@@ -20,6 +21,21 @@ from collections import OrderedDict, deque
 from typing import Dict, Any, Optional, Deque, Tuple, List, Type
 from rich.layout import Layout
 import time
+
+# --- Custom Progress Column for Speed ---
+
+class _SpeedColumn(ProgressColumn):
+    """Renders DL/UL speed by reading from task.fields."""
+    def __init__(self, field_name: str, label: str, style: str):
+        self.field_name = field_name
+        self.label = label
+        self.style = style
+        super().__init__()
+
+    def render(self, task: "Task") -> Text:
+        """Get speed from task fields and render it."""
+        speed = task.fields.get(self.field_name, '0.00 MB/s')
+        return Text(f"{self.label}:[{self.style}]{speed:>10}[/]", justify="left")
 
 # --- Custom Renderable Classes ---
 
@@ -116,13 +132,13 @@ class _ActiveTorrentsPanel:
                     display_name = name[:40] + "..." if len(name) > 43 else name
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
 
-                    # Build file list
+                    # Build file list - FIX: Access the correct data structure
                     file_lines = []
-                    files = torrent.get("files", {})
+                    files = self.ui_manager._file_status.get(hash_, {})
 
                     # Sort files: active, failed, queued, completed
                     def sort_key(item):
-                        status = item[1].get("status", "queued")
+                        status = item[1] if isinstance(item[1], str) else "queued"
                         if status in ["downloading", "uploading"]: return 0
                         if status == "failed": return 1
                         if status == "queued": return 2
@@ -130,10 +146,9 @@ class _ActiveTorrentsPanel:
 
                     sorted_files = sorted(files.items(), key=sort_key)
 
-                    for file_path, file_info in sorted_files[:5]: # Limit to 5 files
+                    for file_path, status in sorted_files[:5]: # Limit to 5 files
                         file_name = file_path.split('/')[-1]
                         file_name = file_name[:35] + "..." if len(file_name) > 38 else file_name
-                        status = file_info.get("status", "queued")
 
                         if status == "downloading":
                             file_lines.append(f" [red]⇩ {file_name}[/red]")
@@ -282,7 +297,7 @@ class UIManagerV2:
         self._last_header_text_part = "[green]Initializing...[/]"
 
     def _setup_progress(self):
-        """Setup progress bars with better formatting."""
+        """Setup progress bars with better formatting. FIXED: Use custom column."""
         self.main_progress = Progress(
             TextColumn("[bold]{task.description}", justify="left"),
             BarColumn(bar_width=None, complete_style="green", finished_style="bold green"),
@@ -290,9 +305,10 @@ class UIManagerV2:
             "•",
             DownloadColumn(binary_units=True),
             "•",
-            TextColumn("DL:[green]{task.fields.get('dl_speed', '0.00 MB/s'):>10}[/]"),
+            # FIX: Use the new custom _SpeedColumn
+            _SpeedColumn("dl_speed", "DL", "green"),
             "•",
-            TextColumn("UL:[yellow]{task.fields.get('ul_speed', '0.00 MB/s'):>10}[/]"),
+            _SpeedColumn("ul_speed", "UL", "yellow"),
             "•",
             TimeRemainingColumn(),
             expand=True,
@@ -306,7 +322,7 @@ class UIManagerV2:
             "[green]📦 Overall Progress",
             total=100,
             visible=False,
-            fields={}
+            fields={'dl_speed': '0.00 MB/s', 'ul_speed': '0.00 MB/s'} # Initialize fields
         )
 
         # Combine into left panel
@@ -394,18 +410,21 @@ class UIManagerV2:
                 if current_total_speed > self._stats["peak_speed"]:
                     self._stats["peak_speed"] = current_total_speed
 
-                # --- UPDATE THREAD-SAFE PROGRESS BAR ---
+                # --- UPDATE STORED SPEED STRINGS ---
                 dl_speed_str = f"{current_dl_speed / (1024**2):.2f} MB/s"
                 ul_speed_str = f"{current_ul_speed / (1024**2):.2f} MB/s"
 
+                # FIX: Better error handling and task existence check
                 try:
-                    self.main_progress.update(
-                        self.overall_task,
-                        fields={
-                            'dl_speed': dl_speed_str,
-                            'ul_speed': ul_speed_str
-                        }
-                    )
+                    # Check if the task exists before updating
+                    if hasattr(self.main_progress, 'tasks') and self.overall_task in [t.id for t in self.main_progress.tasks]:
+                        self.main_progress.update(
+                            self.overall_task,
+                            fields={
+                                'dl_speed': dl_speed_str,
+                                'ul_speed': ul_speed_str
+                            }
+                        )
                 except Exception as e:
                     logging.debug(f"Could not update overall task speeds: {e}")
 
@@ -475,10 +494,13 @@ class UIManagerV2:
             if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
                 if self._file_status[torrent_hash][file_path] != "completed":
                     self._file_status[torrent_hash][file_path] = "completed"
+                    # FIX: More explicit handling
                     if torrent_hash in self._torrents:
-                        if "completed_files" not in self._torrents[torrent_hash]:
-                            self._torrents[torrent_hash]["completed_files"] = 0
-                        self._torrents[torrent_hash]["completed_files"] += 1
+                        current_completed = self._torrents[torrent_hash].get("completed_files", 0)
+                        total_files = self._torrents[torrent_hash].get("total_files", 0)
+                        # Prevent completed from exceeding total
+                        if current_completed < total_files:
+                            self._torrents[torrent_hash]["completed_files"] = current_completed + 1
 
     def fail_file_transfer(self, torrent_hash: str, file_path: str):
         with self._lock:
