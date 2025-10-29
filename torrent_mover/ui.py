@@ -35,7 +35,7 @@ class _SpeedColumn(ProgressColumn):
     def render(self, task: "Task") -> Text:
         """Get speed from task fields and render it."""
         speed = task.fields.get(self.field_name, '0.00 MB/s')
-        return Text(f"{self.label}:[{self.style}]{speed:>10}[/]", justify="left")
+        return Text.from_markup(f"{self.label}:[{self.style}]{speed:>10}[/]")
 
 # --- Custom Renderable Classes ---
 
@@ -67,7 +67,7 @@ class _StatsPanel:
 
             stats_table.add_row("📊 Transferred:", f"[white]{transferred_gb:.2f} / {total_gb:.2f} GB[/white]")
             stats_table.add_row("⏳ Remaining:", f"[white]{remaining_gb:.2f} GB[/white]")
-            stats_table.add_row("⚡ DL Speed:", f"[red]{current_dl_speed / (1024**2):.2f} MB/s[/red]")
+            stats_table.add_row("⚡ DL Speed:", f"[green]{current_dl_speed / (1024**2):.2f} MB/s[/green]")
             stats_table.add_row("⚡ UL Speed:", f"[yellow]{current_ul_speed / (1024**2):.2f} MB/s[/yellow]")
             stats_table.add_row("📈 Avg Speed:", f"[dim]{avg_speed_hist / (1024**2):.2f} MB/s[/dim]")
             stats_table.add_row("🔥 Peak Speed:", f"[dim]{stats['peak_speed'] / (1024**2):.2f} MB/s[/dim]")
@@ -115,13 +115,31 @@ class _ActiveTorrentsPanel:
     def __init__(self, ui_manager: "UIManagerV2"):
         self.ui_manager = ui_manager
 
+    def _render_progress_bar(self, percent: float, width: int = 10) -> Text:
+        """Creates a rich Text progress bar."""
+        filled_width = int(percent / 100 * width)
+        bar_char = "█"
+        empty_char = "─"
+        bar = bar_char * filled_width + empty_char * (width - filled_width)
+        style = "green" if percent >= 100 else "blue"
+        return Text.from_markup(f"[[{style}]{bar}[/]] {percent:>3.0f}%")
+
+    def _render_file_progress_bar(self, percent: float, width: int = 15) -> Text:
+        """Creates a small rich Text progress bar for files."""
+        filled_width = int(percent / 100 * width)
+        bar_char = "█"
+        empty_char = "─"
+        bar = bar_char * filled_width + empty_char * (width - filled_width)
+        style = "green" if percent >= 100 else "blue"
+        return Text.from_markup(f" [[{style}]{bar}[/]]")
+
     def __rich_console__(self, console: Console, options: Any) -> RenderResult:
         with self.ui_manager._lock:
             torrents = self.ui_manager._torrents
             stats = self.ui_manager._stats
 
             table = Table.grid(padding=(0, 1), expand=True)
-            table.add_column(style="bold", no_wrap=True, width=4) # Progress %
+            table.add_column(style="bold", no_wrap=True, width=18) # Progress %
             table.add_column() # Name & File List
 
             active_count = 0
@@ -132,8 +150,11 @@ class _ActiveTorrentsPanel:
                     display_name = name[:40] + "..." if len(name) > 43 else name
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
 
-                    # Build file list - FIX: Access the correct data structure
-                    file_lines = []
+                    # Call torrent progress bar helper
+                    progress_bar = self._render_progress_bar(progress)
+
+                    # Build file list
+                    file_renderables: List[Text] = [] # Changed from file_lines
                     files = self.ui_manager._file_status.get(hash_, {})
 
                     # Sort files: active, failed, queued, completed
@@ -150,28 +171,46 @@ class _ActiveTorrentsPanel:
                         file_name = file_path.split('/')[-1]
                         file_name = file_name[:35] + "..." if len(file_name) > 38 else file_name
 
+                        progress_bar_text = Text("")
+                        # Get per-file progress data
+                        file_progress_data = self.ui_manager._file_progress.get(hash_, {}).get(file_path)
+
+                        # Only show progress bar for active files
+                        if file_progress_data and status in ["downloading", "uploading"]:
+                            transferred, total = file_progress_data
+                            if total > 0:
+                                file_percent = (transferred / total * 100)
+                                progress_bar_text = self._render_file_progress_bar(file_percent)
+                            elif transferred > 0: # Case where total is 0 but bytes seen
+                                progress_bar_text = Text.from_markup(" [[yellow]...[/]]")
+
                         if status == "downloading":
-                            file_lines.append(f" [red]⇩ {file_name}[/red]")
+                            # Changed to blue
+                            file_renderables.append(Text.from_markup(f" [blue]⇩ {file_name}[/blue]").append(progress_bar_text))
                         elif status == "uploading":
-                            file_lines.append(f" [yellow]⇧ {file_name}[/yellow]")
+                            file_renderables.append(Text.from_markup(f" [yellow]⇧ {file_name}[/yellow]").append(progress_bar_text))
                         elif status == "failed":
-                            file_lines.append(f" [bold red]✖ {file_name}[/bold red]")
+                            file_renderables.append(Text.from_markup(f" [bold red]✖ {file_name}[/bold red]"))
                         elif status == "completed":
-                            file_lines.append(f" [dim]✓ {file_name}[/dim]")
+                            file_renderables.append(Text.from_markup(f" [dim]✓ {file_name}[/dim]"))
                         else: # queued
-                            file_lines.append(f" [dim]· {file_name}[/dim]")
+                            file_renderables.append(Text.from_markup(f" [dim]· {file_name}[/dim]"))
 
                     if len(files) > 5:
-                        file_lines.append(f" [dim]... and {len(files) - 5} more.[/dim]")
+                        file_renderables.append(Text.from_markup(f" [dim]... and {len(files) - 5} more.[/dim]"))
 
-                    files_str = "\n".join(file_lines)
+                    # Join Text objects
+                    files_panel_content = Text("\n").join(file_renderables)
                     completed_files = torrent.get('completed_files', 0)
                     total_files = torrent.get('total_files', 0)
 
                     # Main torrent entry
                     table.add_row(
-                        f"{progress:>3.0f}%",
-                        f"[bold cyan]{display_name}[/bold cyan] [dim]({completed_files}/{total_files} files)[/dim]\n{files_str}"
+                        progress_bar, # Use progress bar
+                        Group( # Group Text objects
+                            Text.from_markup(f"[bold cyan]{display_name}[/bold cyan] [dim]({completed_files}/{total_files} files)[/dim]"),
+                            files_panel_content
+                        )
                     )
                     table.add_row("", "") # Spacer
 
@@ -237,6 +276,8 @@ class UIManagerV2:
         # Data structures for file-level tracking
         self._file_lists: Dict[str, List[str]] = {} # torrent_hash -> [file_name_1, file_name_2, ...]
         self._file_status: Dict[str, Dict[str, str]] = {} # torrent_hash -> {file_name -> "queued" | "downloading" | "uploading" | "completed"}
+        self._file_progress: Dict[str, Dict[str, Tuple[int, int]]] = {} # torrent_hash -> {file_name -> (transferred, total)}
+
 
         # Statistics
         self._stats = {
@@ -271,7 +312,7 @@ class UIManagerV2:
 
         # Split body into two columns
         self.layout["body"].split_row(
-            Layout(name="left", ratio=1),  # Active Torrents
+            Layout(name="left", ratio=3),  # Active Torrents
             Layout(name="right", ratio=1) # Stats
         )
 
