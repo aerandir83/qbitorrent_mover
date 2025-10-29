@@ -10,11 +10,17 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.5.7**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.5.9**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.5.7 (Latest)
+### Version 2.5.9 (Latest)
+* **fix(ui)**: Refactored DL/UL speed display mechanism to avoid `task.fields` access during rendering, using direct attribute storage and column callables instead to prevent race conditions.
+
+### Version 2.5.8
+* **fix(ui)**: Refactored the entire UI rendering logic to be thread-safe, resolving a persistent crash. UI panels are now custom renderables, eliminating direct layout modification from background threads.
+
+### Version 2.5.7
 * **fix(ui)**: Implemented a more robust fix for Rich UI rendering errors by adding default fallbacks directly to DL/UL speed column formatters.
 * **fix(ui)**: Ensured DL/UL byte counters are correctly initialized in stats.
 
