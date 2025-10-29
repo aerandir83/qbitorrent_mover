@@ -233,15 +233,14 @@ class UIManagerV2:
             "completed_transfers": 0,
             "failed_transfers": 0,
             "peak_speed": 0.0,
-            "current_speed": 0.0,
-            "last_bytes": 0, # Bytes at last speed check
-            "last_speed_check": time.time(), # Time of last speed check
             "current_dl_speed": 0.0,
             "current_ul_speed": 0.0,
             "last_dl_bytes": 0,
             "last_ul_bytes": 0,
             "transferred_dl_bytes": 0,
             "transferred_ul_bytes": 0,
+            "last_dl_speed_check": time.time(),
+            "last_ul_speed_check": time.time(),
         }
         self._dl_speed_history = deque(maxlen=60)
         self._ul_speed_history = deque(maxlen=60)
@@ -257,24 +256,15 @@ class UIManagerV2:
 
         # Split body into two columns
         self.layout["body"].split_row(
-            Layout(name="left", ratio=2),
-            Layout(name="right", ratio=2)
-        )
-
-        # Split the 'left' column vertically
-        self.layout["left"].split(
-            Layout(name="overall_progress", size=5),
-            Layout(name="active_torrents", ratio=1)
+            Layout(name="left", ratio=1),  # Active Torrents
+            Layout(name="right", ratio=1) # Stats
         )
 
         # Initialize components
         self._setup_header()
         self._setup_progress()
-
-        # Setup layout with custom renderables
-        self.layout["active_torrents"].update(_ActiveTorrentsPanel(self))
-        self.layout["right"].update(_StatsPanel(self))
-        self.layout["footer"].update(_LogPanel(self))
+        self._setup_stats_panel()
+        self._setup_footer()
 
     def _setup_header(self):
         """Enhanced header with version and mode indicators."""
@@ -319,13 +309,25 @@ class UIManagerV2:
             fields={}
         )
 
-        main_progress_panel = Panel(
-            self.main_progress,
-            title="[bold green]📈 Transfer Progress",
-            border_style="dim",
-            style="on #16213e"
+        # Combine into left panel
+        left_group = Group(
+            Panel(
+                self.main_progress,
+                title="[bold green]📈 Transfer Progress",
+                border_style="dim",
+                style="on #16213e"
+            ),
+            _ActiveTorrentsPanel(self) # Add the new renderable panel
         )
-        self.layout["overall_progress"].update(main_progress_panel)
+        self.layout["left"].update(left_group)
+
+    def _setup_stats_panel(self):
+        """Setup stats panel using the renderable class."""
+        self.layout["right"].update(_StatsPanel(self))
+
+    def _setup_footer(self):
+        """Initial setup for the log panel footer."""
+        self.layout["footer"].update(_LogPanel(self))
 
     def __enter__(self):
         self._live = Live(
@@ -359,52 +361,50 @@ class UIManagerV2:
             self._current_status = message
 
     def _stats_updater(self):
-        """Background thread to calculate stats."""
+        """Background thread to update stats and progress bars."""
         while not self._stats_thread_stop.wait(1.0):
             with self._lock:
-                # --- SPEED CALCULATION ---
-                current_speed = 0.0
+                # --- Calculate Speeds ---
                 current_dl_speed = 0.0
                 current_ul_speed = 0.0
-                time_since_last = time.time() - self._stats["last_speed_check"]
+                time_since_last_dl = time.time() - self._stats["last_dl_speed_check"]
+                time_since_last_ul = time.time() - self._stats["last_ul_speed_check"]
 
-                if time_since_last >= 1.0:
-                    bytes_since_last = self._stats["transferred_bytes"] - self._stats["last_bytes"]
-                    current_speed = bytes_since_last / time_since_last
-                    self._stats["last_bytes"] = self._stats["transferred_bytes"]
-
-                    transferred_dl_bytes = self._stats.get("transferred_dl_bytes", 0)
-                    bytes_since_last_dl = transferred_dl_bytes - self._stats["last_dl_bytes"]
-                    current_dl_speed = bytes_since_last_dl / time_since_last
-                    self._stats["last_dl_bytes"] = transferred_dl_bytes
-
-                    transferred_ul_bytes = self._stats.get("transferred_ul_bytes", 0)
-                    bytes_since_last_ul = transferred_ul_bytes - self._stats["last_ul_bytes"]
-                    current_ul_speed = bytes_since_last_ul / time_since_last
-                    self._stats["last_ul_bytes"] = transferred_ul_bytes
-
-                    self._stats["last_speed_check"] = time.time()
-                    self._stats["current_speed"] = current_speed
+                if time_since_last_dl >= 1.0:
+                    bytes_since_last = self._stats["transferred_dl_bytes"] - self._stats["last_dl_bytes"]
+                    current_dl_speed = bytes_since_last / time_since_last_dl
+                    self._stats["last_dl_bytes"] = self._stats["transferred_dl_bytes"]
+                    self._stats["last_dl_speed_check"] = time.time()
                     self._stats["current_dl_speed"] = current_dl_speed
-                    self._stats["current_ul_speed"] = current_ul_speed
                     self._dl_speed_history.append(current_dl_speed)
+                else:
+                    current_dl_speed = self._stats.get("current_dl_speed", 0.0)
+
+                if time_since_last_ul >= 1.0:
+                    bytes_since_last = self._stats["transferred_ul_bytes"] - self._stats["last_ul_bytes"]
+                    current_ul_speed = bytes_since_last / time_since_last_ul
+                    self._stats["last_ul_bytes"] = self._stats["transferred_ul_bytes"]
+                    self._stats["last_ul_speed_check"] = time.time()
+                    self._stats["current_ul_speed"] = current_ul_speed
                     self._ul_speed_history.append(current_ul_speed)
                 else:
-                    current_speed = self._stats["current_speed"]
-                    current_dl_speed = self._stats["current_dl_speed"]
-                    current_ul_speed = self._stats["current_ul_speed"]
+                    current_ul_speed = self._stats.get("current_ul_speed", 0.0)
 
-                if current_speed > self._stats["peak_speed"]:
-                    self._stats["peak_speed"] = current_speed
+                current_total_speed = current_dl_speed + current_ul_speed
+                if current_total_speed > self._stats["peak_speed"]:
+                    self._stats["peak_speed"] = current_total_speed
 
-                # --- UPDATE PROGRESS BAR ---
+                # --- UPDATE THREAD-SAFE PROGRESS BAR ---
                 dl_speed_str = f"{current_dl_speed / (1024**2):.2f} MB/s"
                 ul_speed_str = f"{current_ul_speed / (1024**2):.2f} MB/s"
 
                 try:
                     self.main_progress.update(
                         self.overall_task,
-                        fields={'dl_speed': dl_speed_str, 'ul_speed': ul_speed_str}
+                        fields={
+                            'dl_speed': dl_speed_str,
+                            'ul_speed': ul_speed_str
+                        }
                     )
                 except Exception as e:
                     logging.debug(f"Could not update overall task speeds: {e}")
