@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.7.0"
+__version__ = "2.7.1"
 
 # Standard Lib
 import configparser
@@ -159,7 +159,7 @@ def _pre_transfer_setup(
 
     return status_code, status_message, all_files, source_content_path, dest_content_path, destination_save_path, total_files
 
-def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, config: configparser.ConfigParser, ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], all_files: List[Tuple[str, str]], source_content_path: str, dest_content_path: str, dry_run: bool, sftp_chunk_size: int) -> Tuple[bool, str]:
+def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, config: configparser.ConfigParser, ui: BaseUIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], all_files: List[Tuple[str, str]], source_content_path: str, dest_content_path: str, dry_run: bool, sftp_chunk_size: int) -> Tuple[bool, str]:
     """Executes the file transfer based on the configured transfer mode."""
     name = torrent.name
     hash_ = torrent.hash
@@ -321,7 +321,7 @@ def transfer_torrent(
     destination_qbit: qbittorrentapi.Client,
     config: configparser.ConfigParser,
     tracker_rules: Dict[str, str],
-    ui: UIManager,
+    ui: BaseUIManager,
     file_tracker: FileTransferTracker,
     ssh_connection_pools: Dict[str, SSHConnectionPool],
     checkpoint: TransferCheckpoint, # Added checkpoint
