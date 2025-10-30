@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.6.2"
+__version__ = "2.7.0"
 
 # Standard Lib
 import configparser
@@ -17,9 +17,10 @@ import os
 import time
 import argparse
 import argcomplete
-from typing import Dict, List, Tuple, TYPE_CHECKING, Optional
+from typing import Dict, List, Tuple, TYPE_CHECKING, Optional, cast
 
 import qbittorrentapi
+from rich.logging import RichHandler
 
 # Project Modules
 from .config_manager import update_config, load_config, ConfigValidator
@@ -42,7 +43,7 @@ from .tracker_manager import (
     load_tracker_rules, save_tracker_rules, set_category_based_on_tracker,
     run_interactive_categorization, display_tracker_rules
 )
-from .ui import UIManagerV2 as UIManager
+from .ui import BaseUIManager, SimpleUIManager, UIManagerV2
 
 if TYPE_CHECKING:
     import qbittorrentapi
@@ -534,8 +535,22 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
 
     total_count = len(eligible_torrents)
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+    rich_handler = next((h for h in logging.getLogger().handlers if isinstance(h, RichHandler)), None)
 
-    with UIManager(version=__version__) as ui:
+    # --- UI Initialization ---
+    ui_context: BaseUIManager # Define type for linter
+    if simple_mode:
+        ui_context = SimpleUIManager()
+        # In simple mode, the logger is already set up.
+        # We just need to remove the rich handler.
+        logger = logging.getLogger()
+        if rich_handler:
+            logger.removeHandler(rich_handler)
+    else:
+        # Use the rich, interactive UI
+        ui_context = UIManagerV2(version=__version__, rich_handler=rich_handler)
+
+    with ui_context as ui:
         ui.set_transfer_mode(transfer_mode)
         ui.set_analysis_total(total_count)
         ui.log(f"Found {total_count} torrents to process. Analyzing...")
@@ -671,12 +686,18 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
             ui.set_final_status("Shutdown requested.")
             raise
 
-        with ui._lock:
-            completed_count = ui._stats['completed_transfers']
+        if simple_mode:
+            # We must cast here to access the specific member
+            simple_ui = cast(SimpleUIManager, ui)
+            completed_count = simple_ui._stats['completed_transfers']
+        else:
+            # We must cast here to access the specific member
+            rich_ui = cast(UIManagerV2, ui)
+            with rich_ui._lock:
+                completed_count = rich_ui._stats['completed_transfers']
+
         ui.log(f"Processing complete. Moved {completed_count}/{total_count} torrent(s).")
         ui.set_final_status("All tasks finished.")
-        with ui._lock:
-            completed_count = ui._stats['completed_transfers']
         logging.info(f"Processing complete. Successfully moved {completed_count}/{total_count} torrent(s).")
 
 

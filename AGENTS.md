@@ -9,7 +9,10 @@ Torrent Mover is a Python application designed to automatically move completed t
 ### Core Components
 
 *   **`torrent_mover/torrent_mover.py`**: The main application entrypoint and orchestrator. It initializes all manager classes and orchestrates the main application flow (e.g., analyzing torrents, running health checks, and executing transfers).
-*   **`torrent_mover/ui.py`**: Handles the Rich-based terminal UI, including all progress bars, layouts, and status panels.
+*   **`torrent_mover/ui.py`**: Defines the UI managers.
+    * `BaseUIManager`: An abstract interface for all UI implementations.
+    * `UIManagerV2`: The "rich" UI, using `rich.Live` for an interactive, multi-panel display.
+    * `SimpleUIManager`: The "simple" UI (for `--simple` mode), which only prints standard log lines.
 *   **`torrent_mover/utils.py`**: Contains shared utilities, specifically the `@retry` decorator for handling transient network errors.
 *   **`torrent_mover/config_manager.py`**: Handles loading, updating, and validating `config.ini`.
 *   **`torrent_mover/ssh_manager.py`**: Manages all SSH/SFTP/Rsync connections and utilities (e.g., `SSHConnectionPool`, `sftp_mkdir_p`).

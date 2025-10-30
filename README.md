@@ -10,9 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.6.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.7.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
+
+### Version 2.7.0 (Latest)
+* **feat(ui)**: Added a `--simple` flag to use a basic, non-interactive logging UI.
+* **feat(ui)**: The script now detects if it's running in `gnu screen` and will warn the user, recommending they use the `--simple` flag to avoid UI corruption.
+* **refactor(ui)**: Created a `BaseUIManager` interface to support both the "rich" (`UIManagerV2`) and new `SimpleUIManager` modes.
 
 ### Version 2.6.2 (Latest)
 * **fix(ui)**: Corrected flawed logic in the `_stats_updater` thread that caused DL/UL speeds to reset to 0. Re-added `else` blocks to ensure the last known speed is used between 1-second update intervals.
@@ -332,6 +337,8 @@ To run the script automatically, set up a cron job. **You must use absolute path
 | `--config [PATH]` | | Specifies the path to the `config.ini` file. |
 | `--dry-run` | | Simulates the process without making any changes. |
 | `--test-run` | | Performs a full run but **skips deleting torrents** from the source client. |
+| `--debug` | | Enable debug logging to file. |
+| `--simple` | | Use a simple, non-interactive UI. Recommended for `screen` or `tmux` to avoid visual glitches. |
 | `--parallel-jobs [N]` | | Sets the number of *torrents* to process concurrently. Defaults to `4`. |
 | `--test-permissions` | | Tests write permissions for the configured destination and exits. |
 | `--categorize` | `-c` | Starts an interactive session to categorize torrents. |

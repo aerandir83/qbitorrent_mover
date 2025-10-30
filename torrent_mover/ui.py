@@ -250,6 +250,18 @@ class _LogPanel:
                 style="on #0a0e27"
             )
 
+class UMLoggingHandler(logging.Handler):
+    """A logging handler that redirects records to the UIManager's log buffer."""
+    def __init__(self, ui_manager: "UIManagerV2"):
+        super().__init__()
+        self.ui_manager = ui_manager
+
+    def emit(self, record: logging.LogRecord):
+        if "torrent_mover.ui" in record.name:
+            return
+        # The UI's log method will handle timestamps and formatting
+        self.ui_manager.log(record.getMessage())
+
 class BaseUIManager(abc.ABC):
     """Abstract base class for UI managers."""
     def __enter__(self):
@@ -386,11 +398,13 @@ class UIManagerV2(BaseUIManager):
     v3: Fixes color theme, adds file sizes, and corrects progress display.
     """
 
-    def __init__(self, version: str = ""):
+    def __init__(self, version: str = "", rich_handler: Optional[logging.Handler] = None):
         self.console = Console()
         self._lock = threading.RLock()
         self._live: Optional[Live] = None
         self.version = version
+        self._rich_handler_ref = rich_handler
+        self._um_log_handler = UMLoggingHandler(self)
         self.transfer_mode = "" # For transfer mode
         self._log_buffer: Deque[Text] = deque(maxlen=20) # For log panel
         self._current_header_string_template: str = ""
@@ -518,6 +532,10 @@ class UIManagerV2(BaseUIManager):
         self.layout["footer"].update(_LogPanel(self))
 
     def __enter__(self):
+        root_logger = logging.getLogger()
+        if self._rich_handler_ref:
+            root_logger.removeHandler(self._rich_handler_ref)
+        root_logger.addHandler(self._um_log_handler)
         self._live = Live(
             self.layout,
             console=self.console,
@@ -540,6 +558,10 @@ class UIManagerV2(BaseUIManager):
                 self._stats_thread.join(timeout=2.0)
             self.main_progress.stop()
             self._live.stop()
+        root_logger = logging.getLogger()
+        root_logger.removeHandler(self._um_log_handler)
+        if self._rich_handler_ref:
+            root_logger.addHandler(self._rich_handler_ref)
 
     def set_final_status(self, message: str):
         """
@@ -732,3 +754,5 @@ class UIManagerV2(BaseUIManager):
         self.console.print(f"Successful Transfers: {self._stats['completed_transfers']}")
         self.console.print(f"Failed Transfers: {self._stats['failed_transfers']}")
         self.console.print(f"Total Duration: {time.time() - self._stats['start_time']:.2f} seconds")
+
+__all__ = ["BaseUIManager", "SimpleUIManager", "UIManagerV2"]
