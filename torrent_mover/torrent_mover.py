@@ -497,7 +497,7 @@ def _handle_utility_commands(args: argparse.Namespace, config: configparser.Conf
 
     return False # Should not be reached, but as a fallback.
 
-def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Namespace, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, file_tracker: FileTransferTracker) -> None:
+def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Namespace, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, file_tracker: FileTransferTracker, simple_mode: bool) -> None:
     """Connects to clients and runs the main transfer process."""
     sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
     try:
@@ -697,6 +697,7 @@ def main() -> int:
     mode_group.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
     mode_group.add_argument('--test-run', action='store_true', help='Run the full process but do not delete the source torrent.')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging to file.')
+    parser.add_argument('--simple', action='store_true', help='Use a simple, non-interactive UI. Recommended for `screen` or `tmux`.')
     parser.add_argument('--parallel-jobs', type=int, default=DEFAULT_PARALLEL_JOBS, metavar='N', help='Number of torrents to process in parallel.')
     parser.add_argument('-l', '--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
     parser.add_argument('-a', '--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
@@ -710,6 +711,26 @@ def main() -> int:
     parser.add_argument('--clear-recheck-failure', metavar='TORRENT_HASH', help='Remove a torrent hash from the recheck_failed list in the checkpoint file.')
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
+
+    # --- Screen Detection ---
+    term_env = os.getenv('TERM', '').lower()
+    if 'screen' in term_env and not args.simple:
+        print("--- WARNING: 'screen' DETECTED ---", file=sys.stderr)
+        print("You are running in a 'screen' session, which is known to cause", file=sys.stderr)
+        print("severe UI corruption with the rich interactive display.", file=sys.stderr)
+        print("\nIt is HIGHLY recommended to stop and re-run with the --simple flag:", file=sys.stderr)
+        print(f"  python3 -m torrent_mover.torrent_mover --simple { ' '.join(sys.argv[1:]) }", file=sys.stderr)
+        print("\nAlternatively, run in a standard terminal (not 'screen') to use the rich UI.", file=sys.stderr)
+        print("\nAborting in 10 seconds. Press Ctrl+C to cancel.", file=sys.stderr)
+        try:
+            time.sleep(10)
+        except KeyboardInterrupt:
+            print("\nUser cancelled. Exiting.", file=sys.stderr)
+            return 1
+        print("Aborting. Please re-run with --simple.", file=sys.stderr)
+        return 1
+    # --- End Screen Detection ---
+
     if args.version:
         print(f"{Path(sys.argv[0]).name} {__version__}")
         print(f"Configuration file: {args.config}")
@@ -758,7 +779,7 @@ def main() -> int:
         if transfer_mode == 'rsync':
             check_sshpass_installed()
 
-        _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint, file_tracker)
+        _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint, file_tracker, args.simple)
 
     except KeyboardInterrupt:
         logging.warning("Process interrupted by user. Shutting down.")
