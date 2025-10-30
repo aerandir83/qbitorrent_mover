@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.7.1**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.7.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.7.1 (Latest)
+### Version 2.7.2 (Latest)
+* **fix(ui)**: Implemented all stubbed methods in `SimpleUIManager` to correctly log progress to `stdout`, fixing the issue where `--simple` mode produced no output.
+
+### Version 2.7.1
 * **fix(main)**: Corrected a `NameError` for `UIManager` by updating function definition type hints to use the `BaseUIManager` interface.
 
 ### Version 2.7.0

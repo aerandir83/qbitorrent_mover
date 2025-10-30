@@ -21,6 +21,7 @@ from collections import OrderedDict, deque
 from typing import Dict, Any, Optional, Deque, Tuple, List, Type
 from rich.layout import Layout
 import time
+import re
 import abc
 
 # --- Custom Progress Column for Speed ---
@@ -328,68 +329,82 @@ class BaseUIManager(abc.ABC):
 
 
 class SimpleUIManager(BaseUIManager):
-    """A simple UI manager that logs to the console."""
+    """A basic, log-to-stdout UI manager."""
     def __init__(self):
         self._stats = {
             "total_torrents": 0,
+            "total_bytes": 0,
+            "transferred_bytes": 0,
+            "start_time": time.time(),
             "completed_transfers": 0,
             "failed_transfers": 0,
         }
-        logging.info("Using simple UI mode.")
+        logging.info("Using simple UI (standard logging).")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            logging.error(f"An error occurred: {exc_val}")
+        logging.info("--- Torrent Mover script finished ---")
 
     def set_transfer_mode(self, mode: str):
-        logging.info(f"Transfer mode set to: {mode.upper()}")
+        logging.info(f"Transfer Mode: {mode.upper()}")
+
+    def log(self, message: str):
+        # Strip rich markup
+        message = re.sub(r"\[.*?\]", "", message)
+        logging.info(message)
 
     def set_analysis_total(self, total: int):
         self._stats["total_torrents"] = total
-        logging.info(f"Found {total} torrents to analyze.")
+        logging.info(f"Analysis: Found {total} torrents to process.")
 
     def advance_analysis(self):
         pass # Not needed for simple logger
 
     def complete_analysis(self):
-        logging.info("Analysis complete.")
+        logging.info("Analysis: Complete.")
 
     def set_overall_total(self, total_bytes: float):
-        logging.info(f"Total transfer size: {total_bytes / (1024**3):.2f} GB")
+        self._stats["total_bytes"] = total_bytes
+        logging.info(f"Transfer: Total size: {total_bytes / (1024**3):.2f} GB")
 
     def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1):
-        logging.info(f"Starting transfer for: {torrent_name} ({len(all_files)} files, {total_size / (1024**2):.2f} MB)")
+        logging.info(f"Starting Transfer: {torrent_name}")
 
     def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str):
-        pass # Too noisy for simple logger
+        # We don't log every progress update in simple mode, too noisy.
+        pass
 
     def start_file_transfer(self, torrent_hash: str, file_path: str, status: str):
-        file_name = file_path.split('/')[-1]
-        logging.info(f"  -> {status.capitalize()}: {file_name}")
+        logging.debug(f"File Transfer: [{status.upper()}] {file_path}")
 
     def complete_file_transfer(self, torrent_hash: str, file_path: str):
-        pass # Too noisy
+        logging.debug(f"File Transfer: [COMPLETED] {file_path}")
 
     def fail_file_transfer(self, torrent_hash: str, file_path: str):
-        file_name = file_path.split('/')[-1]
-        logging.warning(f"  -> FAILED: {file_name}")
+        logging.warning(f"File Transfer: [FAILED] {file_path}")
 
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
         if success:
             self._stats["completed_transfers"] += 1
+            logging.info(f"Transfer Complete: Torrent hash {torrent_hash[:10]}...")
         else:
             self._stats["failed_transfers"] += 1
-
-    def log(self, message: str):
-        # Simple UI handler just logs. The 'rich' version of log()
-        # is handled by the logging takeover.
-        pass
+            logging.error(f"Transfer Failed: Torrent hash {torrent_hash[:10]}...")
 
     def set_final_status(self, message: str):
-        logging.info(message)
+        logging.info(f"Status: {message}")
 
     def display_stats(self, stats: Dict[str, Any]) -> None:
-        # The final stats are logged by torrent_mover.py, but we
-        # can print our own summary.
-        logging.info("--- Transfer Summary ---")
+        # This is called by UIManagerV2, but SimpleUIManager logs at the end.
+        logging.info("--- Final Statistics ---")
+        logging.info(f"Total Bytes Transferred: {self._stats['transferred_bytes'] / (1024**3):.2f} GB")
         logging.info(f"Successful Transfers: {self._stats['completed_transfers']}")
         logging.info(f"Failed Transfers: {self._stats['failed_transfers']}")
+        logging.info(f"Total Duration: {time.time() - self._stats['start_time']:.2f} seconds")
 
 
 class UIManagerV2(BaseUIManager):
