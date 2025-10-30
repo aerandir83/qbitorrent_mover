@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.7.2"
+__version__ = "2.7.3"
 
 # Standard Lib
 import configparser
@@ -45,6 +45,8 @@ from .tracker_manager import (
     run_interactive_categorization, display_tracker_rules
 )
 from .ui import BaseUIManager, SimpleUIManager, UIManagerV2
+from rich.logging import RichHandler
+from rich.console import Console
 
 if TYPE_CHECKING:
     import qbittorrentapi
@@ -499,7 +501,7 @@ def _handle_utility_commands(args: argparse.Namespace, config: configparser.Conf
 
     return False # Should not be reached, but as a fallback.
 
-def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Namespace, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, file_tracker: FileTransferTracker, simple_mode: bool) -> None:
+def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Namespace, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, file_tracker: FileTransferTracker, simple_mode: bool, rich_handler: Optional[logging.Handler]) -> None:
     """Connects to clients and runs the main transfer process."""
     sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
     try:
@@ -536,17 +538,12 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
 
     total_count = len(eligible_torrents)
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-    rich_handler = next((h for h in logging.getLogger().handlers if isinstance(h, RichHandler)), None)
 
     # --- UI Initialization ---
     ui_context: BaseUIManager # Define type for linter
     if simple_mode:
         ui_context = SimpleUIManager()
-        # In simple mode, the logger is already set up.
-        # We just need to remove the rich handler.
-        logger = logging.getLogger()
-        if rich_handler:
-            logger.removeHandler(rich_handler)
+        # No need to do anything with handlers, main() already set up the correct one.
     else:
         # Use the rich, interactive UI
         ui_context = UIManagerV2(version=__version__, rich_handler=rich_handler)
@@ -758,6 +755,27 @@ def main() -> int:
         print(f"Configuration file: {args.config}")
         return 0
     setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
+
+    logger = logging.getLogger()
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    rich_handler: Optional[logging.Handler] = None
+    simple_mode = args.simple
+
+    if simple_mode:
+        # --- Simple Mode: Add a standard StreamHandler ---
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        stream_handler.setFormatter(stream_formatter)
+        logger.addHandler(stream_handler)
+        logging.info("--- Torrent Mover script started (Simple UI) ---")
+    else:
+        # --- Rich Mode: Add the RichHandler ---
+        rich_handler = RichHandler(level=log_level, show_path=False, rich_tracebacks=True, markup=True, console=Console(stderr=True))
+        rich_formatter = logging.Formatter('%(message)s')
+        rich_handler.setFormatter(rich_formatter)
+        logger.addHandler(rich_handler)
+        logging.info("--- Torrent Mover script started (Rich UI) ---")
+
     logging.info(f"Using configuration file: {args.config}")
     if args.check_config:
         logging.info("--- Running Configuration Check ---")
@@ -801,7 +819,7 @@ def main() -> int:
         if transfer_mode == 'rsync':
             check_sshpass_installed()
 
-        _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint, file_tracker, args.simple)
+        _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint, file_tracker, simple_mode, rich_handler)
 
     except KeyboardInterrupt:
         logging.warning("Process interrupted by user. Shutting down.")

@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.7.2**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.7.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.7.2 (Latest)
+### Version 2.7.3 (Latest)
+* **fix(main)**: Fixed hang in `--simple` mode by refactoring all console logging logic. The script now correctly adds *only* a `StreamHandler` in simple mode and *only* a `RichHandler` in rich mode, resolving the `screen` conflict.
+
+### Version 2.7.2
 * **fix(ui)**: Implemented all stubbed methods in `SimpleUIManager` to correctly log progress to `stdout`, fixing the issue where `--simple` mode produced no output.
 
 ### Version 2.7.1
