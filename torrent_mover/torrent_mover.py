@@ -18,6 +18,7 @@ import time
 import argparse
 import argcomplete
 from typing import Dict, List, Tuple, TYPE_CHECKING, Optional, cast
+import typing
 
 import qbittorrentapi
 from rich.logging import RichHandler
