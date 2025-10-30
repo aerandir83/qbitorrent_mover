@@ -15,6 +15,7 @@ from typing import Optional, Dict, List, Tuple, Any, Set, TYPE_CHECKING
 import configparser
 import paramiko
 from . import ssh_manager
+import sys
 
 from .ssh_manager import SSHConnectionPool
 from .transfer_manager import Timeouts
@@ -261,27 +262,33 @@ def change_ownership(path_to_change: str, user: str, group: str, remote_config: 
             logging.error(f"An exception occurred during local chown: {e}", exc_info=True)
 
 def setup_logging(script_dir: Path, dry_run: bool, test_run: bool, debug: bool) -> None:
-    """Configures logging to both console and a file."""
+    """Configures logging ONLY to a file."""
     log_dir = script_dir / 'logs'
     log_dir.mkdir(exist_ok=True)
     timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
     log_file_name = f"torrent_mover_{timestamp}.log"
     log_file_path = log_dir / log_file_name
+
     logger = logging.getLogger()
     log_level = logging.DEBUG if debug else logging.INFO
     logger.setLevel(log_level)
+
     if logger.hasHandlers():
         logger.handlers.clear()
+
+    # --- Setup File Handler ---
     file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
-    rich_handler = RichHandler(level=log_level, show_path=False, rich_tracebacks=True, markup=True, console=Console(stderr=True))
-    rich_formatter = logging.Formatter('%(message)s')
-    rich_handler.setFormatter(rich_formatter)
-    logger.addHandler(rich_handler)
+
+    # --- Remove all console handler logic ---
+    # Console handlers will be added in main()
+
     logging.getLogger("paramiko").setLevel(logging.WARNING)
-    logging.info("--- Torrent Mover script started ---")
+    logging.info("--- Torrent Mover script started (logging to file) ---")
+    # --- END OF MODIFICATIONS ---
+
     if dry_run:
         logging.warning("!!! DRY RUN MODE ENABLED. NO CHANGES WILL BE MADE. !!!")
     if test_run:

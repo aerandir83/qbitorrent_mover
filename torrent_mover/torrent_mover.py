@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.6.2"
+__version__ = "2.7.3"
 
 # Standard Lib
 import configparser
@@ -17,9 +17,11 @@ import os
 import time
 import argparse
 import argcomplete
-from typing import Dict, List, Tuple, TYPE_CHECKING, Optional
+from typing import Dict, List, Tuple, TYPE_CHECKING, Optional, cast
+import typing
 
 import qbittorrentapi
+from rich.logging import RichHandler
 
 # Project Modules
 from .config_manager import update_config, load_config, ConfigValidator
@@ -42,7 +44,9 @@ from .tracker_manager import (
     load_tracker_rules, save_tracker_rules, set_category_based_on_tracker,
     run_interactive_categorization, display_tracker_rules
 )
-from .ui import UIManagerV2 as UIManager
+from .ui import BaseUIManager, SimpleUIManager, UIManagerV2
+from rich.logging import RichHandler
+from rich.console import Console
 
 if TYPE_CHECKING:
     import qbittorrentapi
@@ -157,7 +161,7 @@ def _pre_transfer_setup(
 
     return status_code, status_message, all_files, source_content_path, dest_content_path, destination_save_path, total_files
 
-def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, config: configparser.ConfigParser, ui: UIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], all_files: List[Tuple[str, str]], source_content_path: str, dest_content_path: str, dry_run: bool, sftp_chunk_size: int) -> Tuple[bool, str]:
+def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, config: configparser.ConfigParser, ui: BaseUIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], all_files: List[Tuple[str, str]], source_content_path: str, dest_content_path: str, dry_run: bool, sftp_chunk_size: int) -> Tuple[bool, str]:
     """Executes the file transfer based on the configured transfer mode."""
     name = torrent.name
     hash_ = torrent.hash
@@ -319,7 +323,7 @@ def transfer_torrent(
     destination_qbit: qbittorrentapi.Client,
     config: configparser.ConfigParser,
     tracker_rules: Dict[str, str],
-    ui: UIManager,
+    ui: BaseUIManager,
     file_tracker: FileTransferTracker,
     ssh_connection_pools: Dict[str, SSHConnectionPool],
     checkpoint: TransferCheckpoint, # Added checkpoint
@@ -497,7 +501,7 @@ def _handle_utility_commands(args: argparse.Namespace, config: configparser.Conf
 
     return False # Should not be reached, but as a fallback.
 
-def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Namespace, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, file_tracker: FileTransferTracker) -> None:
+def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Namespace, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, file_tracker: FileTransferTracker, simple_mode: bool, rich_handler: Optional[logging.Handler]) -> None:
     """Connects to clients and runs the main transfer process."""
     sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
     try:
@@ -535,7 +539,16 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
     total_count = len(eligible_torrents)
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
-    with UIManager(version=__version__) as ui:
+    # --- UI Initialization ---
+    ui_context: BaseUIManager # Define type for linter
+    if simple_mode:
+        ui_context = SimpleUIManager()
+        # No need to do anything with handlers, main() already set up the correct one.
+    else:
+        # Use the rich, interactive UI
+        ui_context = UIManagerV2(version=__version__, rich_handler=rich_handler)
+
+    with ui_context as ui:
         ui.set_transfer_mode(transfer_mode)
         ui.set_analysis_total(total_count)
         ui.log(f"Found {total_count} torrents to process. Analyzing...")
@@ -671,12 +684,18 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
             ui.set_final_status("Shutdown requested.")
             raise
 
-        with ui._lock:
-            completed_count = ui._stats['completed_transfers']
+        if simple_mode:
+            # We must cast here to access the specific member
+            simple_ui = cast(SimpleUIManager, ui)
+            completed_count = simple_ui._stats['completed_transfers']
+        else:
+            # We must cast here to access the specific member
+            rich_ui = cast(UIManagerV2, ui)
+            with rich_ui._lock:
+                completed_count = rich_ui._stats['completed_transfers']
+
         ui.log(f"Processing complete. Moved {completed_count}/{total_count} torrent(s).")
         ui.set_final_status("All tasks finished.")
-        with ui._lock:
-            completed_count = ui._stats['completed_transfers']
         logging.info(f"Processing complete. Successfully moved {completed_count}/{total_count} torrent(s).")
 
 
@@ -697,6 +716,7 @@ def main() -> int:
     mode_group.add_argument('--dry-run', action='store_true', help='Simulate the process without making any changes.')
     mode_group.add_argument('--test-run', action='store_true', help='Run the full process but do not delete the source torrent.')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging to file.')
+    parser.add_argument('--simple', action='store_true', help='Use a simple, non-interactive UI. Recommended for `screen` or `tmux`.')
     parser.add_argument('--parallel-jobs', type=int, default=DEFAULT_PARALLEL_JOBS, metavar='N', help='Number of torrents to process in parallel.')
     parser.add_argument('-l', '--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
     parser.add_argument('-a', '--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
@@ -710,11 +730,52 @@ def main() -> int:
     parser.add_argument('--clear-recheck-failure', metavar='TORRENT_HASH', help='Remove a torrent hash from the recheck_failed list in the checkpoint file.')
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
+
+    # --- Screen Detection ---
+    term_env = os.getenv('TERM', '').lower()
+    if 'screen' in term_env and not args.simple:
+        print("--- WARNING: 'screen' DETECTED ---", file=sys.stderr)
+        print("You are running in a 'screen' session, which is known to cause", file=sys.stderr)
+        print("severe UI corruption with the rich interactive display.", file=sys.stderr)
+        print("\nIt is HIGHLY recommended to stop and re-run with the --simple flag:", file=sys.stderr)
+        print(f"  python3 -m torrent_mover.torrent_mover --simple { ' '.join(sys.argv[1:]) }", file=sys.stderr)
+        print("\nAlternatively, run in a standard terminal (not 'screen') to use the rich UI.", file=sys.stderr)
+        print("\nAborting in 10 seconds. Press Ctrl+C to cancel.", file=sys.stderr)
+        try:
+            time.sleep(10)
+        except KeyboardInterrupt:
+            print("\nUser cancelled. Exiting.", file=sys.stderr)
+            return 1
+        print("Aborting. Please re-run with --simple.", file=sys.stderr)
+        return 1
+    # --- End Screen Detection ---
+
     if args.version:
         print(f"{Path(sys.argv[0]).name} {__version__}")
         print(f"Configuration file: {args.config}")
         return 0
     setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
+
+    logger = logging.getLogger()
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    rich_handler: Optional[logging.Handler] = None
+    simple_mode = args.simple
+
+    if simple_mode:
+        # --- Simple Mode: Add a standard StreamHandler ---
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        stream_handler.setFormatter(stream_formatter)
+        logger.addHandler(stream_handler)
+        logging.info("--- Torrent Mover script started (Simple UI) ---")
+    else:
+        # --- Rich Mode: Add the RichHandler ---
+        rich_handler = RichHandler(level=log_level, show_path=False, rich_tracebacks=True, markup=True, console=Console(stderr=True))
+        rich_formatter = logging.Formatter('%(message)s')
+        rich_handler.setFormatter(rich_formatter)
+        logger.addHandler(rich_handler)
+        logging.info("--- Torrent Mover script started (Rich UI) ---")
+
     logging.info(f"Using configuration file: {args.config}")
     if args.check_config:
         logging.info("--- Running Configuration Check ---")
@@ -758,7 +819,7 @@ def main() -> int:
         if transfer_mode == 'rsync':
             check_sshpass_installed()
 
-        _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint, file_tracker)
+        _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint, file_tracker, simple_mode, rich_handler)
 
     except KeyboardInterrupt:
         logging.warning("Process interrupted by user. Shutting down.")
