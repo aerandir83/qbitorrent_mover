@@ -262,8 +262,22 @@ class _LogPanel:
             )
 
 class UMLoggingHandler(logging.Handler):
-    """A logging handler that redirects records to the UIManager's log buffer."""
+    """A custom logging handler that forwards log records to the UIManager.
+
+    This handler is attached to the root logger when the Rich UI is active. It
+    captures log messages from other parts of the application and calls the
+    `UIManagerV2.log()` method, which adds the formatted message to the UI's
+    live log panel.
+
+    Attributes:
+        ui_manager: An instance of the UIManagerV2 to which logs will be sent.
+    """
     def __init__(self, ui_manager: "UIManagerV2"):
+        """Initializes the UMLoggingHandler.
+
+        Args:
+            ui_manager: The UIManagerV2 instance to use for logging.
+        """
         super().__init__()
         self.ui_manager = ui_manager
 
@@ -274,11 +288,19 @@ class UMLoggingHandler(logging.Handler):
         self.ui_manager.log(record.getMessage())
 
 class BaseUIManager(abc.ABC):
-    """Abstract base class for UI managers."""
+    """Defines the interface for all UI manager implementations.
+
+    This abstract base class ensures that any UI implementation (e.g., a rich
+    terminal UI or a simple logging-based UI) provides a consistent set of
+    methods for the main application logic to call. This allows the UI to be
+    swapped without changing the core transfer logic.
+    """
     def __enter__(self):
+        """Enters the context manager, preparing the UI for display."""
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exits the context manager, cleaning up UI resources."""
         pass
 
     @abc.abstractmethod
@@ -339,8 +361,15 @@ class BaseUIManager(abc.ABC):
 
 
 class SimpleUIManager(BaseUIManager):
-    """A basic, log-to-stdout UI manager."""
+    """A non-interactive UI that logs progress to the console via `logging`.
+
+    This UI manager is suitable for environments where a rich, interactive
+    display is not feasible, such as in `tmux`, `screen`, or non-interactive
+    SSH sessions. It implements the `BaseUIManager` interface by writing
+    status updates to the standard Python `logging` module.
+    """
     def __init__(self):
+        """Initializes the SimpleUIManager."""
         self._stats = {
             "total_torrents": 0,
             "total_bytes": 0,
@@ -355,49 +384,62 @@ class SimpleUIManager(BaseUIManager):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Logs a final message upon exiting."""
         if exc_type:
             logging.error(f"An error occurred: {exc_val}")
         logging.info("--- Torrent Mover script finished ---")
 
     def set_transfer_mode(self, mode: str):
+        """Logs the configured transfer mode."""
         logging.info(f"Transfer Mode: {mode.upper()}")
 
     def log(self, message: str):
+        """Logs a message, stripping any Rich markup."""
         # Strip rich markup
         message = re.sub(r"\[.*?\]", "", message)
         logging.info(message)
 
     def set_analysis_total(self, total: int):
+        """Logs the total number of torrents found for analysis."""
         self._stats["total_torrents"] = total
         logging.info(f"Analysis: Found {total} torrents to process.")
 
     def advance_analysis(self):
+        """A no-op for the simple UI."""
         pass # Not needed for simple logger
 
     def complete_analysis(self):
+        """Logs the completion of the analysis phase."""
         logging.info("Analysis: Complete.")
 
     def set_overall_total(self, total_bytes: float):
+        """Logs the total size of all transfers."""
         self._stats["total_bytes"] = total_bytes
         logging.info(f"Transfer: Total size: {total_bytes / (1024**3):.2f} GB")
 
     def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1):
+        """Logs the start of a new torrent transfer."""
         logging.info(f"Starting Transfer: {torrent_name}")
 
     def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str):
+        """A no-op to avoid overly verbose logging."""
         # We don't log every progress update in simple mode, too noisy.
         pass
 
     def start_file_transfer(self, torrent_hash: str, file_path: str, status: str):
+        """Logs the start of an individual file transfer at the DEBUG level."""
         logging.debug(f"File Transfer: [{status.upper()}] {file_path}")
 
     def complete_file_transfer(self, torrent_hash: str, file_path: str):
+        """Logs the completion of a file transfer at the DEBUG level."""
         logging.debug(f"File Transfer: [COMPLETED] {file_path}")
 
     def fail_file_transfer(self, torrent_hash: str, file_path: str):
+        """Logs the failure of a file transfer as a warning."""
         logging.warning(f"File Transfer: [FAILED] {file_path}")
 
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
+        """Logs the completion or failure of a torrent's transfer."""
         if success:
             self._stats["completed_transfers"] += 1
             logging.info(f"Transfer Complete: Torrent hash {torrent_hash[:10]}...")
@@ -406,9 +448,11 @@ class SimpleUIManager(BaseUIManager):
             logging.error(f"Transfer Failed: Torrent hash {torrent_hash[:10]}...")
 
     def set_final_status(self, message: str):
+        """Logs a final status message."""
         logging.info(f"Status: {message}")
 
     def display_stats(self, stats: Dict[str, Any]) -> None:
+        """Displays the final transfer statistics."""
         # This is called by UIManagerV2, but SimpleUIManager logs at the end.
         logging.info("--- Final Statistics ---")
         logging.info(f"Total Bytes Transferred: {self._stats['transferred_bytes'] / (1024**3):.2f} GB")
@@ -418,12 +462,27 @@ class SimpleUIManager(BaseUIManager):
 
 
 class UIManagerV2(BaseUIManager):
-    """
-    Enhanced UI with improved information density and visual clarity.
-    v3: Fixes color theme, adds file sizes, and corrects progress display.
+    """A rich, interactive terminal UI powered by the `rich` library.
+
+    This class provides a real-time dashboard for monitoring the torrent
+    transfer process. It includes:
+    -   Overall progress bars for analysis and transfers.
+    -   A live-updating panel with detailed statistics (speeds, counts, ETA).
+    -   A panel showing currently active torrents and their individual file progress.
+    -   A live log panel that captures log messages from the application.
+
+    It uses a background thread to periodically update statistics and relies on
+    custom `rich` renderable classes to display the data in a structured layout.
     """
 
     def __init__(self, version: str = "", rich_handler: Optional[logging.Handler] = None):
+        """Initializes the UIManagerV2.
+
+        Args:
+            version: The application version string, displayed in the header.
+            rich_handler: A reference to the RichHandler, which is temporarily
+                removed and replaced by the UI's internal handler during display.
+        """
         self.console = Console()
         self._lock = threading.RLock()
         self._live: Optional[Live] = None
@@ -588,8 +647,13 @@ class UIManagerV2(BaseUIManager):
             root_logger.addHandler(self._rich_handler_ref)
 
     def set_final_status(self, message: str):
-        """
-        Sets a final, persistent status message in the footer.
+        """Displays a final, persistent status message in the log panel.
+
+        This is used to show a summary message (e.g., "All tasks finished.")
+        after the live updates have stopped.
+
+        Args:
+            message: The final status message to display.
         """
         with self._lock:
             self._current_status = message
@@ -631,19 +695,23 @@ class UIManagerV2(BaseUIManager):
     # ===== Public API (keeping existing methods) =====
 
     def set_transfer_mode(self, mode: str):
+        """Sets and displays the current transfer mode in the UI header."""
         with self._lock:
             self.transfer_mode = mode
             self._setup_header()
 
     def set_analysis_total(self, total: int):
+        """Initializes the analysis progress bar with the total number of torrents."""
         with self._lock:
             self._stats["total_torrents"] = total
             self.main_progress.update(self.analysis_task, total=total, visible=True)
 
     def advance_analysis(self):
+        """Advances the analysis progress bar by one step."""
         self.main_progress.update(self.analysis_task, advance=1)
 
     def complete_analysis(self):
+        """Hides the analysis progress bar upon completion."""
         with self._lock:
             self._analysis_complete = True
             try:
@@ -652,11 +720,13 @@ class UIManagerV2(BaseUIManager):
                 logging.error(f"Error hiding analysis task: {e}")
 
     def set_overall_total(self, total_bytes: float):
+        """Initializes the overall transfer progress bar with the total size."""
         with self._lock:
             self._stats["total_bytes"] = total_bytes
             self.main_progress.update(self.overall_task, total=total_bytes, visible=True)
 
     def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1):
+        """Adds a new torrent to the UI, making it visible in the 'Active Torrents' panel."""
         with self._lock:
             total_files = len(all_files)
             self._torrents[torrent_hash] = {
@@ -674,6 +744,13 @@ class UIManagerV2(BaseUIManager):
             self._stats["active_transfers"] += 1
 
     def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str):
+        """Updates the progress for a torrent and the overall progress bar.
+
+        Args:
+            torrent_hash: The hash of the torrent to update.
+            bytes_transferred: The number of bytes to add to the progress.
+            transfer_type: Either "download" or "upload", for stat tracking.
+        """
         with self._lock:
             if torrent_hash in self._torrents:
                 self._torrents[torrent_hash]["transferred"] += bytes_transferred
@@ -685,11 +762,13 @@ class UIManagerV2(BaseUIManager):
             self.main_progress.update(self.overall_task, advance=bytes_transferred)
 
     def start_file_transfer(self, torrent_hash: str, file_path: str, status: str):
+        """Sets the status of an individual file within a torrent (e.g., "downloading")."""
         with self._lock:
             if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
                 self._file_status[torrent_hash][file_path] = status
 
     def complete_file_transfer(self, torrent_hash: str, file_path: str):
+        """Marks an individual file as completed."""
         with self._lock:
             if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
                 if self._file_status[torrent_hash][file_path] != "completed":
@@ -703,11 +782,13 @@ class UIManagerV2(BaseUIManager):
                             self._torrents[torrent_hash]["completed_files"] = current_completed + 1
 
     def fail_file_transfer(self, torrent_hash: str, file_path: str):
+        """Marks an individual file as failed."""
         with self._lock:
             if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
                 self._file_status[torrent_hash][file_path] = "failed"
 
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
+        """Finalizes a torrent's status, moving it out of the active list."""
         with self._lock:
             if torrent_hash in self._torrents:
                 try:
@@ -732,11 +813,13 @@ class UIManagerV2(BaseUIManager):
                         del self._file_status[torrent_hash]
 
     def log(self, message: str):
+        """Adds a timestamped message to the live log panel."""
         with self._lock:
             timestamp = time.strftime("%H:%M:%S")
             self._log_buffer.append(Text.from_markup(f"[{timestamp}] {message}"))
 
     def display_stats(self, stats: Dict[str, Any]) -> None:
+        """Prints final summary statistics to the console after the UI has shut down."""
         self.console.print("--- Final Statistics ---", style="bold green")
         self.console.print(f"Total Bytes Transferred: {self._stats['transferred_bytes'] / (1024**3):.2f} GB")
         self.console.print(f"Peak Speed: {self._stats['peak_speed'] / (1024**2):.2f} MB/s")

@@ -21,9 +21,20 @@ GB_BYTES = 1024**3
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def connect_qbit(config_section: configparser.SectionProxy, client_name: str) -> qbittorrentapi.Client:
-    """
-    Connects to a qBittorrent client using details from a config section.
-    Returns a connected client object or raises an exception on failure.
+    """Connects to a qBittorrent client with retry logic.
+
+    Args:
+        config_section: The configuration section proxy from ConfigParser
+            containing connection details (host, port, username, password).
+        client_name: A descriptive name for the client (e.g., "Source")
+            for logging purposes.
+
+    Returns:
+        A connected and authenticated qbittorrentapi.Client object.
+
+    Raises:
+        qbittorrentapi.exceptions.LoginFailed: If authentication fails.
+        requests.exceptions.RequestException: If a network error occurs.
     """
     host = config_section['host']
     port = config_section.getint('port')
@@ -44,8 +55,25 @@ def connect_qbit(config_section: configparser.SectionProxy, client_name: str) ->
     return client
 
 def get_eligible_torrents(client: qbittorrentapi.Client, category: str, size_threshold_gb: Optional[float] = None) -> List[qbittorrentapi.TorrentDictionary]:
-    """
-    Retrieves a list of torrents to be moved based on the specified category and an optional size threshold.
+    """Retrieves a list of torrents eligible for transfer.
+
+    This function can operate in two modes:
+    1.  If `size_threshold_gb` is None, it fetches all completed torrents
+        in the specified category.
+    2.  If `size_threshold_gb` is set, it fetches completed torrents sorted
+        by added date until the total size of torrents in the category is
+        below the threshold.
+
+    Args:
+        client: An authenticated qBittorrent client instance.
+        category: The category to scan for torrents.
+        size_threshold_gb: If provided, the desired maximum size of the
+            category in gigabytes. Torrents will be selected for moving
+            until the category size is at or below this threshold.
+
+    Returns:
+        A list of TorrentDictionary objects that are eligible to be moved.
+        Returns an empty list if no torrents meet the criteria or an error occurs.
     """
     try:
         if size_threshold_gb is None:
@@ -81,6 +109,24 @@ def get_eligible_torrents(client: qbittorrentapi.Client, category: str, size_thr
         return []
 
 def wait_for_recheck_completion(client: qbittorrentapi.Client, torrent_hash: str, timeout_seconds: int = Timeouts.RECHECK, dry_run: bool = False) -> bool:
+    """Monitors a torrent on the destination client until it completes rechecking.
+
+    This function polls the qBittorrent client periodically to check the status
+    of a torrent that is rechecking. It will continue until the torrent's
+    progress reaches 100%, it enters an error state, or the timeout is exceeded.
+
+    Args:
+        client: An authenticated qBittorrent client instance.
+        torrent_hash: The hash of the torrent to monitor.
+        timeout_seconds: The maximum number of seconds to wait for the recheck.
+        dry_run: If True, the function will simulate a successful recheck
+            without actually waiting.
+
+    Returns:
+        True if the recheck completes successfully (progress is 100%).
+        False if the recheck fails, the torrent enters an error state,
+            or the timeout is reached.
+    """
     if dry_run:
         logging.info(f"[DRY RUN] Would wait for recheck on {torrent_hash[:10]}. Assuming success.")
         return True

@@ -61,17 +61,34 @@ def _pre_transfer_setup(
     ssh_connection_pools: Dict[str, SSHConnectionPool],
     args: argparse.Namespace
 ) -> Tuple[str, str, Optional[List[Tuple[str, str]]], Optional[str], Optional[str], Optional[str], Optional[int]]:
-    """
-    Handles pre-transfer setup: path resolution, file listing, and checking destination status.
+    """Performs setup tasks before a torrent transfer begins.
 
-    Returns a tuple:
-    (status_code, message, all_files, source_content_path, dest_content_path, destination_save_path, total_files)
+    This function is responsible for:
+    1.  Resolving source and destination paths for the torrent content.
+    2.  Checking if content already exists at the destination and comparing its
+        size with the source.
+    3.  Fetching the complete list of files for the torrent if a transfer is
+        likely to occur.
 
-    Status Codes:
-    - "not_exists": Destination path is clear. Proceed with transfer.
-    - "exists_same_size": Destination path exists and size matches source. Skip transfer, proceed to recheck.
-    - "exists_different_size": Destination path exists, size mismatches. Proceed with delete & transfer.
-    - "failed": An error occurred.
+    Args:
+        torrent: The qBittorrent torrent dictionary object.
+        total_size: The pre-calculated total size of the torrent content in bytes.
+        config: The application's ConfigParser object.
+        ssh_connection_pools: Dictionary of SSH connection pools.
+        args: The command-line arguments namespace.
+
+    Returns:
+        A tuple containing:
+        -   status_code (str): One of "not_exists", "exists_same_size",
+            "exists_different_size", or "failed".
+        -   message (str): A descriptive message for logging.
+        -   all_files (Optional[List[Tuple[str, str]]]): A list of (source, dest)
+            path tuples for each file, or None on failure.
+        -   source_content_path (Optional[str]): The top-level source path.
+        -   dest_content_path (Optional[str]): The top-level destination path.
+        -   destination_save_path (Optional[str]): The save path for the torrent
+            client.
+        -   total_files (Optional[int]): The total number of files in the torrent.
     """
     source_pool = ssh_connection_pools.get(config['SETTINGS']['source_server_section'])
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
@@ -162,7 +179,28 @@ def _pre_transfer_setup(
     return status_code, status_message, all_files, source_content_path, dest_content_path, destination_save_path, total_files
 
 def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: int, config: configparser.ConfigParser, ui: BaseUIManager, file_tracker: FileTransferTracker, ssh_connection_pools: Dict[str, SSHConnectionPool], all_files: List[Tuple[str, str]], source_content_path: str, dest_content_path: str, dry_run: bool, sftp_chunk_size: int) -> Tuple[bool, str]:
-    """Executes the file transfer based on the configured transfer mode."""
+    """Executes the file transfer for a torrent.
+
+    This function calls the appropriate transfer function from `transfer_manager`
+    based on the `transfer_mode` set in the configuration. It orchestrates
+    SFTP, SFTP-to-SFTP (sftp_upload), and rsync transfers.
+
+    Args:
+        torrent: The torrent object being transferred.
+        total_size: The total size of the torrent's content.
+        config: The application's configuration object.
+        ui: The UI manager instance for progress updates.
+        file_tracker: The FileTransferTracker instance for resuming transfers.
+        ssh_connection_pools: Dictionary of SSH connection pools.
+        all_files: A list of (source, destination) path tuples for each file.
+        source_content_path: The top-level source path.
+        dest_content_path: The top-level destination path.
+        dry_run: If True, simulates the transfer without moving files.
+        sftp_chunk_size: The chunk size in bytes for SFTP transfers.
+
+    Returns:
+        A tuple containing a boolean success status and a descriptive message.
+    """
     name = torrent.name
     hash_ = torrent.hash
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
@@ -217,7 +255,33 @@ def _post_transfer_actions(
     dry_run: bool = False,
     test_run: bool = False
 ) -> Tuple[bool, str]:
-    """Handles all actions after a transfer (or skip) decision."""
+    """Manages tasks after the file transfer is complete.
+
+    This function is responsible for:
+    1.  Changing file ownership at the destination (if configured).
+    2.  Adding the torrent to the destination client.
+    3.  Forcing a recheck of the torrent data on the destination.
+    4.  Waiting for the recheck to complete and handling failures.
+    5.  Starting the torrent and applying tracker-based categories.
+    6.  Deleting the torrent and its data from the source client.
+
+    Args:
+        torrent: The torrent object.
+        source_qbit: The source qBittorrent client.
+        destination_qbit: The destination qBittorrent client.
+        config: The application's configuration.
+        tracker_rules: A dictionary of tracker-to-category rules.
+        ssh_connection_pools: Dictionary of SSH connection pools.
+        dest_content_path: The top-level destination path of the content.
+        destination_save_path: The save path for the torrent client.
+        transfer_executed: A boolean indicating if a file transfer actually
+            occurred. Some actions (like chown) are skipped if this is False.
+        dry_run: If True, simulates actions without making changes.
+        test_run: If True, skips deleting the torrent from the source.
+
+    Returns:
+        A tuple containing a boolean success status and a descriptive message.
+    """
     name, hash_ = torrent.name, torrent.hash
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
@@ -329,9 +393,28 @@ def transfer_torrent(
     checkpoint: TransferCheckpoint, # Added checkpoint
     args: argparse.Namespace # Added args
 ) -> Tuple[str, str]:
-    """
-    Executes the transfer and management process for a single, pre-analyzed torrent.
-    Returns (status, message)
+    """Orchestrates the entire transfer process for a single torrent.
+
+    This function is the main entry point for processing one torrent. It calls
+    helper functions to perform the pre-transfer setup, execute the transfer,
+    and handle all post-transfer actions like rechecking and client management.
+
+    Args:
+        torrent: The torrent object to be processed.
+        total_size: The pre-calculated size of the torrent's content.
+        source_qbit: The source qBittorrent client.
+        destination_qbit: The destination qBittorrent client.
+        config: The application's configuration.
+        tracker_rules: A dictionary of tracker-to-category rules.
+        ui: The UI manager instance for progress updates.
+        file_tracker: The FileTransferTracker for resuming transfers.
+        ssh_connection_pools: Dictionary of SSH connection pools.
+        checkpoint: The TransferCheckpoint to track completed torrents.
+        args: The command-line arguments namespace.
+
+    Returns:
+        A tuple containing a status string ("success", "failed", "skipped")
+        and a descriptive message.
     """
     name, hash_ = torrent.name, torrent.hash
     start_time = time.time()
@@ -440,7 +523,24 @@ def transfer_torrent(
         ui.complete_torrent_transfer(hash_, success=True)
 
 def _handle_utility_commands(args: argparse.Namespace, config: configparser.ConfigParser, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint) -> bool:
-    """Handles all utility command-line arguments that exit after running."""
+    """Handles command-line arguments that perform a specific action and exit.
+
+    This function checks for the presence of utility flags (e.g., `--list-rules`,
+    `--test-permissions`). If one is found, it executes the corresponding
+    action and returns True, signaling to the main function that the script
+    should exit.
+
+    Args:
+        args: The command-line arguments namespace.
+        config: The application's configuration.
+        tracker_rules: A dictionary of tracker-to-category rules.
+        script_dir: The directory of the running script.
+        ssh_connection_pools: Dictionary of SSH connection pools.
+        checkpoint: The TransferCheckpoint instance.
+
+    Returns:
+        True if a utility command was handled, False otherwise.
+    """
     if not (args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions or args.clear_recheck_failure):
         return False
 
@@ -502,7 +602,30 @@ def _handle_utility_commands(args: argparse.Namespace, config: configparser.Conf
     return False # Should not be reached, but as a fallback.
 
 def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Namespace, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, file_tracker: FileTransferTracker, simple_mode: bool, rich_handler: Optional[logging.Handler]) -> None:
-    """Connects to clients and runs the main transfer process."""
+    """The main orchestration function for the torrent transfer process.
+
+    This function performs the following steps:
+    1.  Connects to the source and destination qBittorrent clients.
+    2.  Performs startup tasks like cleaning orphaned cache and recovering
+        incomplete transfers.
+    3.  Fetches the list of eligible torrents based on configuration.
+    4.  Initializes the appropriate UI manager (Simple or Rich).
+    5.  Analyzes torrents to get their file lists and sizes.
+    6.  Performs a destination health check.
+    7.  Executes the transfers, either in parallel or sequentially.
+    8.  Handles success, failure, and skip statuses for each torrent.
+
+    Args:
+        config: The application's configuration.
+        args: The command-line arguments namespace.
+        tracker_rules: A dictionary of tracker-to-category rules.
+        script_dir: The directory of the running script.
+        ssh_connection_pools: Dictionary of SSH connection pools.
+        checkpoint: The TransferCheckpoint instance.
+        file_tracker: The FileTransferTracker instance.
+        simple_mode: A boolean indicating if the simple UI should be used.
+        rich_handler: A reference to the RichHandler if used.
+    """
     sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
     try:
         source_section_name = config['SETTINGS']['source_client_section']
@@ -700,7 +823,21 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
 
 
 def main() -> int:
-    """Main entry point for the script."""
+    """The main entry point for the application.
+
+    This function is responsible for:
+    -   Acquiring a lock to prevent multiple instances from running.
+    -   Parsing command-line arguments.
+    -   Performing startup checks (e.g., screen detection, version check).
+    -   Setting up file and console logging.
+    -   Loading and validating the configuration.
+    -   Initializing SSH connection pools.
+    -   Handling utility commands or dispatching to the main transfer operation.
+    -   Ensuring all resources (like SSH pools) are cleaned up on exit.
+
+    Returns:
+        0 on successful execution, 1 on error.
+    """
     script_dir = Path(__file__).resolve().parent
     lock = None
     try:

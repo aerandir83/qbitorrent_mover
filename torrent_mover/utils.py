@@ -4,12 +4,19 @@ from functools import wraps
 from typing import Callable, Any
 
 def retry(tries: int = 2, delay: int = 5, backoff: int = 1) -> Callable:
-    """
-    A decorator for retrying a function call with a specified delay.
+    """Creates a decorator that retries a function call.
 
-    :param tries: The maximum number of attempts.
-    :param delay: The delay between retries in seconds.
-    :param backoff: The factor by which the delay should grow (default is 1 for fixed delay).
+    This decorator will re-invoke the decorated function upon exceptions up to
+    a specified number of times, with an optional exponential backoff.
+
+    Args:
+        tries: The maximum number of attempts.
+        delay: The initial delay between retries in seconds.
+        backoff: The factor by which the delay should be multiplied after each
+            failed attempt. A value of 1 results in a fixed delay.
+
+    Returns:
+        A decorator that can be applied to a function.
     """
     def deco_retry(f: Callable) -> Callable:
         @wraps(f)
