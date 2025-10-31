@@ -27,17 +27,27 @@ import abc
 # --- Custom Progress Column for Speed ---
 
 class _SpeedColumn(ProgressColumn):
-    """Renders DL/UL speed by reading from task.fields."""
-    def __init__(self, field_name: str, label: str, style: str):
-        self.field_name = field_name
+    """Renders DL/UL speed by reading directly from ui_manager._stats."""
+    def __init__(self, field_name: str, label: str, style: str, ui_manager: "UIManagerV2"):
+        self.field_name = field_name # This will now be 'current_dl_speed' or 'current_ul_speed'
         self.label = label
         self.style = style
+        self.ui_manager = ui_manager # <-- Store the UI Manager instance
         super().__init__()
 
     def render(self, task: "Task") -> Text:
-        """Get speed from task fields and render it."""
-        speed = task.fields.get(self.field_name, '0.00 MB/s')
-        return Text.from_markup(f"{self.label}:[{self.style}]{speed:>10}[/]")
+        """Get speed from ui_manager._stats and render it."""
+        speed_bytes = 0.0
+        try:
+            # Safely read the speed from the stats dictionary
+            with self.ui_manager._lock:
+                speed_bytes = self.ui_manager._stats.get(self.field_name, 0.0)
+        except Exception:
+            pass # In case lock fails, just render 0.0
+
+        # Format the speed here, just like the Stats panel does
+        speed_str = f"{speed_bytes / (1024**2):.2f} MB/s"
+        return Text.from_markup(f"{self.label}:[{self.style}]{speed_str:>10}[/]")
 
 # --- Custom Renderable Classes ---
 
@@ -506,10 +516,10 @@ class UIManagerV2(BaseUIManager):
             "•",
             DownloadColumn(binary_units=True),
             "•",
-            # FIX: Use the new custom _SpeedColumn
-            _SpeedColumn("dl_speed", "DL", "green"),
+            # FIX: Pass the ui_manager instance and use the _stats key name
+            _SpeedColumn("current_dl_speed", "DL", "green", ui_manager=self),
             "•",
-            _SpeedColumn("ul_speed", "UL", "yellow"),
+            _SpeedColumn("current_ul_speed", "UL", "yellow", ui_manager=self),
             "•",
             TimeRemainingColumn(),
             expand=True,
@@ -522,8 +532,7 @@ class UIManagerV2(BaseUIManager):
         self.overall_task = self.main_progress.add_task(
             "[green]📦 Overall Progress",
             total=100,
-            visible=False,
-            fields={'dl_speed': '0.00 MB/s', 'ul_speed': '0.00 MB/s'} # Initialize fields
+            visible=False
         )
 
         # Combine into left panel
@@ -588,12 +597,6 @@ class UIManagerV2(BaseUIManager):
     def _stats_updater(self):
         """Background thread to update stats and progress bars."""
         while not self._stats_thread_stop.wait(1.0):
-            # --- ADD THESE LINES ---
-            dl_speed_str = "0.00 MB/s"
-            ul_speed_str = "0.00 MB/s"
-            task_exists = False
-            # --- END ADD ---
-
             with self._lock:
                 # --- Calculate Speeds ---
                 current_dl_speed = 0.0
@@ -609,9 +612,7 @@ class UIManagerV2(BaseUIManager):
                     self._stats["current_dl_speed"] = current_dl_speed
                     self._dl_speed_history.append(current_dl_speed)
                 else:
-                    # --- ADD THIS BLOCK BACK ---
                     current_dl_speed = self._stats.get("current_dl_speed", 0.0)
-                    # --- END ADD ---
 
                 if time_since_last_ul >= 1.0:
                     bytes_since_last = self._stats["transferred_ul_bytes"] - self._stats["last_ul_bytes"]
@@ -621,38 +622,11 @@ class UIManagerV2(BaseUIManager):
                     self._stats["current_ul_speed"] = current_ul_speed
                     self._ul_speed_history.append(current_ul_speed)
                 else:
-                    # --- ADD THIS BLOCK BACK ---
                     current_ul_speed = self._stats.get("current_ul_speed", 0.0)
-                    # --- END ADD ---
 
                 current_total_speed = current_dl_speed + current_ul_speed
                 if current_total_speed > self._stats["peak_speed"]:
                     self._stats["peak_speed"] = current_total_speed
-
-                # --- UPDATE STORED SPEED STRINGS ---
-                # Set values for the non-locked update
-                dl_speed_str = f"{current_dl_speed / (1024**2):.2f} MB/s"
-                ul_speed_str = f"{current_ul_speed / (1024**2):.2f} MB/s"
-
-                try:
-                    task_exists = hasattr(self.main_progress, 'tasks') and self.overall_task in [t.id for t in self.main_progress.tasks]
-                except Exception:
-                    task_exists = False # Precaution
-
-        # Now, update the progress bar outside the lock
-        if task_exists:
-            try:
-                self.main_progress.update(
-                    self.overall_task,
-                    fields={
-                        'dl_speed': dl_speed_str,
-                        'ul_speed': ul_speed_str
-                    }
-                )
-            except Exception as e:
-                # This might still fail if the task finished between the check and here,
-                # but it won't cause a deadlock.
-                logging.debug(f"Could not update overall task speeds (non-locked): {e}")
 
     # ===== Public API (keeping existing methods) =====
 
