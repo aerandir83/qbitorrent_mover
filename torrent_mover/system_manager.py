@@ -26,15 +26,40 @@ if TYPE_CHECKING:
     import qbittorrentapi
 
 class LockFile:
-    """Atomic lock file using fcntl (Unix only)."""
+    """Ensures that only one instance of the script can run at a time.
+
+    This class uses the `fcntl` module to create an atomic, advisory lock on a
+    file. This prevents race conditions and ensures that operations are not
+    disrupted by another instance of the same script starting. The lock is
+    automatically released upon script exit. This implementation is suitable
+    for Unix-like systems.
+
+    Attributes:
+        lock_path: The Path object for the lock file.
+        lock_fd: The file descriptor for the opened lock file.
+    """
 
     def __init__(self, lock_path: Path):
+        """Initializes the LockFile.
+
+        Args:
+            lock_path: The path to the file that will be used for locking.
+        """
         self.lock_path = lock_path
         self.lock_fd: Optional[int] = None
         self._acquired = False
 
     def acquire(self) -> None:
-        """Acquire the lock. Raises RuntimeError if already locked."""
+        """Acquires an exclusive, non-blocking lock on the lock file.
+
+        If the lock is already held by another process, this method will raise
+        a RuntimeError. If successful, it writes the current process ID (PID)
+        to the lock file and registers the `release` method to be called upon
+        script exit.
+
+        Raises:
+            RuntimeError: If the lock file is already locked by another process.
+        """
         try:
             # Open the file, creating it if it doesn't exist
             self.lock_fd = open(self.lock_path, 'w')
@@ -58,7 +83,12 @@ class LockFile:
                 raise RuntimeError(f"Script is already running (lock file: {self.lock_path})")
 
     def release(self) -> None:
-        """Release the lock."""
+        """Releases the lock and cleans up the lock file.
+
+        This method removes the lock, closes the file descriptor, and deletes
+        the lock file from the filesystem. It is registered with `atexit` to
+        ensure it is called automatically on script termination.
+        """
         if self.lock_fd and self._acquired:
             try:
                 # Release the lock
@@ -72,7 +102,12 @@ class LockFile:
                 self.lock_fd = None
 
     def get_locking_pid(self) -> Optional[str]:
-        """Read the PID from the lock file, if it exists."""
+        """Reads the PID of the process holding the lock.
+
+        Returns:
+            The process ID (PID) as a string if the lock file exists and is
+            readable, otherwise None.
+        """
         if self.lock_path.exists():
             try:
                 return self.lock_path.read_text().strip()
@@ -83,9 +118,16 @@ class LockFile:
 # --- System & Health Check Functions ---
 
 def cleanup_orphaned_cache(destination_qbit: "qbittorrentapi.Client") -> None:
-    """
-    Scans for leftover cache directories from previous runs and removes them
-    if the corresponding torrent is already successfully on the destination client.
+    """Removes orphaned local cache directories from previous runs.
+
+    This function scans the system's temporary directory for cache folders
+    created by this script. If a cache folder corresponds to a torrent that
+    is already completed on the destination qBittorrent client, the cache
+    folder is deleted to free up disk space.
+
+    Args:
+        destination_qbit: An authenticated qBittorrent client instance for the
+            destination client.
     """
     temp_dir = Path(tempfile.gettempdir())
     cache_prefix = "torrent_mover_cache_"
@@ -117,9 +159,22 @@ def cleanup_orphaned_cache(destination_qbit: "qbittorrentapi.Client") -> None:
         logging.info(f"Cleanup complete. Removed {cleaned_cache_dirs}/{found_cache_dirs} orphaned cache directories.")
 
 def recover_cached_torrents(source_qbit: "qbittorrentapi.Client", destination_qbit: "qbittorrentapi.Client") -> List["qbittorrentapi.TorrentDictionary"]:
-    """
-    Scans for leftover cache directories from previous runs and adds them back
-    to the processing queue if the torrent is not on the destination.
+    """Identifies and recovers torrents from incomplete cached transfers.
+
+    This function scans the temporary directory for cache folders from previous
+    runs. If a cache folder's torrent does not exist on the destination client,
+    it is considered a failed or incomplete transfer. This function retrieves
+    the full torrent information from the source client and returns it so it
+    can be added back into the processing queue for a retry.
+
+    Args:
+        source_qbit: An authenticated qBittorrent client instance for the source.
+        destination_qbit: An authenticated qBittorrent client instance for the
+            destination.
+
+    Returns:
+        A list of TorrentDictionary objects for the torrents that need to be
+        recovered and re-processed.
     """
     temp_dir = Path(tempfile.gettempdir())
     cache_prefix = "torrent_mover_cache_"
@@ -157,8 +212,24 @@ def recover_cached_torrents(source_qbit: "qbittorrentapi.Client", destination_qb
         return []
 
 def destination_health_check(config: configparser.ConfigParser, total_transfer_size_bytes: int, ssh_connection_pools: Dict[str, SSHConnectionPool]) -> bool:
-    """
-    Performs checks on the destination (local or remote) to ensure it's ready.
+    """Verifies that the destination is ready for file transfers.
+
+    This function performs two key checks:
+    1.  Disk Space: Ensures there is enough free space at the destination path
+        for the current batch of torrents. It handles both local and remote
+        (via SSH `df` command) checks.
+    2.  Permissions: Calls `test_path_permissions` to verify that the script
+        has write access to the destination path.
+
+    Args:
+        config: The application's ConfigParser object.
+        total_transfer_size_bytes: The total size in bytes of all files to be
+            transferred in the current run.
+        ssh_connection_pools: A dictionary of SSHConnectionPool objects, used
+            for remote checks.
+
+    Returns:
+        True if all health checks pass, False otherwise.
     """
     logging.info("--- Running Destination Health Check ---")
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
@@ -218,8 +289,22 @@ def destination_health_check(config: configparser.ConfigParser, total_transfer_s
     return True
 
 def change_ownership(path_to_change: str, user: str, group: str, remote_config: Optional[configparser.SectionProxy] = None, dry_run: bool = False, ssh_connection_pools: Optional[Dict[str, SSHConnectionPool]] = None) -> None:
-    """
-    Changes the ownership of a file or directory, either locally or remotely.
+    """Changes the ownership of a file or directory.
+
+    This function can operate on both local and remote filesystems. If
+    `remote_config` and `ssh_connection_pools` are provided, it executes `chown`
+    over SSH. Otherwise, it executes `chown` locally using `subprocess`.
+
+    Args:
+        path_to_change: The path to the file or directory.
+        user: The username to set as the owner.
+        group: The group name to set as the owner.
+        remote_config: The configuration section for the remote server. If None,
+            the operation is assumed to be local.
+        dry_run: If True, logs the command that would be executed without
+            actually running it.
+        ssh_connection_pools: A dictionary of SSH connection pools, required for
+            remote operations.
     """
     if not user and not group:
         return
@@ -262,7 +347,19 @@ def change_ownership(path_to_change: str, user: str, group: str, remote_config: 
             logging.error(f"An exception occurred during local chown: {e}", exc_info=True)
 
 def setup_logging(script_dir: Path, dry_run: bool, test_run: bool, debug: bool) -> None:
-    """Configures logging ONLY to a file."""
+    """Configures the root logger for file-based logging.
+
+    This function sets up a rotating file handler that logs messages to a
+    timestamped file in the 'logs' directory. It sets the base logging level
+    for the application. Console logging (e.g., RichHandler or StreamHandler)
+    is configured separately in the `main` function.
+
+    Args:
+        script_dir: The directory where the main script is located.
+        dry_run: If True, adds a warning to the log.
+        test_run: If True, adds a warning to the log.
+        debug: If True, sets the logging level to DEBUG, otherwise INFO.
+    """
     log_dir = script_dir / 'logs'
     log_dir.mkdir(exist_ok=True)
     timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
@@ -295,7 +392,18 @@ def setup_logging(script_dir: Path, dry_run: bool, test_run: bool, debug: bool) 
         logging.warning("!!! TEST RUN MODE ENABLED. SOURCE TORRENTS WILL NOT BE DELETED. !!!")
 
 def pid_exists(pid: int) -> bool:
-    """Check whether a process with the given PID exists."""
+    """Checks if a process with the given PID is currently running.
+
+    This function uses `os.kill` with a signal of 0, which does not actually
+    send a signal but does perform error checking. This is a reliable way to
+    check for the existence of a process on Unix-like systems.
+
+    Args:
+        pid: The process ID to check.
+
+    Returns:
+        True if the process exists, False otherwise.
+    """
     if pid < 0: return False
     if pid == 0: return False
     try:
@@ -308,8 +416,25 @@ def pid_exists(pid: int) -> bool:
         return True
 
 def test_path_permissions(path_to_test: str, remote_config: Optional[configparser.SectionProxy] = None, ssh_connection_pools: Optional[Dict[str, SSHConnectionPool]] = None) -> bool:
-    """
-    Tests write permissions for a given path by creating and deleting a temporary file.
+    """Tests for write permissions at a specified local or remote path.
+
+    This function attempts to create and then delete a temporary file at the
+    given path to verify that the user running the script has the necessary
+    permissions. It can operate in two modes:
+    1.  Local: If `remote_config` is not provided.
+    2.  Remote: If `remote_config` and `ssh_connection_pools` are provided,
+        the test is performed over SFTP.
+
+    Args:
+        path_to_test: The absolute path to the directory where permissions should
+            be checked.
+        remote_config: The configuration section for the remote server. If None,
+            the test is performed locally.
+        ssh_connection_pools: A dictionary of SSH connection pools, required for
+            remote tests.
+
+    Returns:
+        True if write permissions are confirmed, False otherwise.
     """
     if remote_config:
         logging.info(f"--- Running REMOTE Permission Test on: {path_to_test} ---")
@@ -371,8 +496,23 @@ def delete_destination_content(
     transfer_mode: str,
     ssh_connection_pools: Dict[str, SSHConnectionPool]
 ) -> None:
-    """
-    Deletes the content from the destination path, either locally or remotely.
+    """Deletes content from the destination path.
+
+    This function handles the deletion of files or directories at the destination,
+    adapting the deletion method based on the transfer mode.
+    -   For remote destinations (`sftp_upload`), it uses SSH `rm -rf` for
+        directories and SFTP `remove` for files.
+    -   For local destinations (`sftp`, `rsync`), it uses `shutil.rmtree` for
+        directories and `Path.unlink` for files.
+
+    Args:
+        dest_content_path: The absolute path to the content to be deleted.
+        transfer_mode: The current transfer mode (e.g., 'sftp_upload').
+        ssh_connection_pools: A dictionary of SSH connection pools, required for
+            remote deletion.
+
+    Raises:
+        Exception: Propagates exceptions that occur during the deletion process.
     """
     is_remote = (transfer_mode == 'sftp_upload')
 

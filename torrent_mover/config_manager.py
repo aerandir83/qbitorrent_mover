@@ -9,9 +9,16 @@ from typing import List
 
 
 def update_config(config_path: str, template_path: str) -> None:
-    """
-    Updates the config.ini from the template, preserving existing values and comments.
-    Also creates a backup of the original config file.
+    """Updates the config.ini from the template, preserving existing values.
+
+    This function compares the user's configuration file with a template.
+    It adds any new sections or options from the template to the user's
+    config file while preserving existing values and comments. If changes
+    are made, a timestamped backup of the original config file is created.
+
+    Args:
+        config_path: The path to the user's configuration file (e.g., 'config.ini').
+        template_path: The path to the template configuration file (e.g., 'config.ini.template').
     """
     config_file = Path(config_path)
     template_file = Path(template_path)
@@ -79,9 +86,16 @@ def update_config(config_path: str, template_path: str) -> None:
         sys.exit(1)
 
 def load_config(config_path: str = "config.ini") -> configparser.ConfigParser:
-    """
-    Loads the configuration from the specified .ini file.
-    Exits if the file is not found.
+    """Loads the configuration from the specified .ini file.
+
+    Args:
+        config_path: The path to the configuration file.
+
+    Returns:
+        A ConfigParser object loaded with the configuration.
+
+    Raises:
+        SystemExit: If the configuration file is not found.
     """
     config_file = Path(config_path)
     if not config_file.is_file():
@@ -94,7 +108,17 @@ def load_config(config_path: str = "config.ini") -> configparser.ConfigParser:
 
 
 class ConfigValidator:
-    """Validates configuration file structure and values."""
+    """Validates the structure and values of the configuration file.
+
+    This class checks for required sections and options, validates transfer modes,
+    checks path formats, and ensures that numeric values are within a valid
+        range.
+
+    Attributes:
+        config: The ConfigParser object to validate.
+        errors: A list of critical error messages found during validation.
+        warnings: A list of non-critical warning messages.
+    """
 
     REQUIRED_SECTIONS = {
         'SOURCE_CLIENT': ['host', 'port', 'username', 'password'],
@@ -108,12 +132,26 @@ class ConfigValidator:
     VALID_TRANSFER_MODES = ['sftp', 'rsync', 'sftp_upload']
 
     def __init__(self, config: configparser.ConfigParser):
+        """Initializes the ConfigValidator.
+
+        Args:
+            config: A ConfigParser object loaded with the configuration to be validated.
+        """
         self.config = config
         self.errors: List[str] = []
         self.warnings: List[str] = []
 
     def validate(self) -> bool:
-        """Run all validation checks. Returns True if config is valid."""
+        """Runs all validation checks and prints errors or warnings.
+
+        This method orchestrates the validation process by calling various
+        private check methods. If any errors are found, they are printed to
+        stderr, and the method returns False. Warnings are printed to stderr,
+        but do not cause validation to fail.
+
+        Returns:
+            True if the configuration is valid (no errors), False otherwise.
+        """
         self._check_required_sections()
         self._check_required_options()
         self._check_transfer_mode()

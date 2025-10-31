@@ -10,7 +10,12 @@ from rich.table import Table
 
 
 def display_tracker_rules(rules: Dict[str, str]) -> None:
-    """Displays tracker rules in a formatted table."""
+    """Displays the current tracker-to-category rules in a formatted table.
+
+    Args:
+        rules: A dictionary where keys are tracker domains and values are
+            the categories to assign.
+    """
     if not rules:
         logging.info("No rules found.")
         return
@@ -25,6 +30,17 @@ def display_tracker_rules(rules: Dict[str, str]) -> None:
 
 
 def load_tracker_rules(script_dir: Path, rules_filename: str = "tracker_rules.json") -> Dict[str, str]:
+    """Loads tracker-to-category mapping rules from a JSON file.
+
+    Args:
+        script_dir: The directory where the script is located, used to find
+            the rules file.
+        rules_filename: The name of the JSON file containing the rules.
+
+    Returns:
+        A dictionary of tracker rules. Returns an empty dictionary if the file
+        is not found or contains invalid JSON.
+    """
     rules_file = script_dir / rules_filename
     if not rules_file.is_file():
         logging.warning(f"Tracker rules file not found at '{rules_file}'. Starting with empty ruleset.")
@@ -39,6 +55,17 @@ def load_tracker_rules(script_dir: Path, rules_filename: str = "tracker_rules.js
         return {}
 
 def save_tracker_rules(rules: Dict[str, str], script_dir: Path, rules_filename: str = "tracker_rules.json") -> bool:
+    """Saves the tracker rules to a JSON file.
+
+    Args:
+        rules: The dictionary of rules to save.
+        script_dir: The directory where the script is located, used to find
+            the rules file.
+        rules_filename: The name of the JSON file to save the rules to.
+
+    Returns:
+        True if the rules were saved successfully, False otherwise.
+    """
     rules_file = script_dir / rules_filename
     try:
         with open(rules_file, 'w') as f:
@@ -50,6 +77,18 @@ def save_tracker_rules(rules: Dict[str, str], script_dir: Path, rules_filename: 
         return False
 
 def get_tracker_domain(tracker_url: str) -> Optional[str]:
+    """Extracts the effective domain name from a tracker URL.
+
+    This function parses a URL and attempts to strip common subdomains like
+    'tracker', 'announce', or 'www' to find the base domain name used for
+    rule matching.
+
+    Args:
+        tracker_url: The full URL of the tracker.
+
+    Returns:
+        The extracted domain name as a string, or None if parsing fails.
+    """
     try:
         netloc = urlparse(tracker_url).netloc
         parts = netloc.split('.')
@@ -61,6 +100,20 @@ def get_tracker_domain(tracker_url: str) -> Optional[str]:
         return None
 
 def get_category_from_rules(torrent: qbittorrentapi.TorrentDictionary, rules: Dict[str, str], client: qbittorrentapi.Client) -> Optional[str]:
+    """Finds a matching category for a torrent based on its trackers.
+
+    This function iterates through a torrent's trackers, extracts the domain
+    for each, and checks if that domain exists in the provided rules dictionary.
+    The first match found determines the category.
+
+    Args:
+        torrent: The torrent object to check.
+        rules: A dictionary of tracker-to-category rules.
+        client: An authenticated qBittorrent client instance to fetch trackers.
+
+    Returns:
+        The matched category as a string, or None if no rule matches.
+    """
     try:
         trackers = client.torrents_trackers(torrent_hash=torrent.hash)
         for tracker in trackers:
@@ -72,6 +125,19 @@ def get_category_from_rules(torrent: qbittorrentapi.TorrentDictionary, rules: Di
     return None
 
 def set_category_based_on_tracker(client: qbittorrentapi.Client, torrent_hash: str, tracker_rules: Dict[str, str], dry_run: bool = False) -> None:
+    """Sets a torrent's category based on matching tracker rules.
+
+    This function fetches a torrent's information, finds a matching category
+    using `get_category_from_rules`, and then sets the torrent's category
+    on the qBittorrent client if a rule is found and the category is not
+    "ignore".
+
+    Args:
+        client: An authenticated qBittorrent client instance.
+        torrent_hash: The hash of the torrent to categorize.
+        tracker_rules: The dictionary of tracker-to-category rules.
+        dry_run: If True, logs the action without actually changing the category.
+    """
     try:
         torrent_info = client.torrents_info(torrent_hashes=torrent_hash)
         if not torrent_info:
@@ -99,7 +165,22 @@ def set_category_based_on_tracker(client: qbittorrentapi.Client, torrent_hash: s
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
 def run_interactive_categorization(client: qbittorrentapi.Client, rules: Dict[str, str], script_dir: Path, category_to_scan: str, no_rules: bool = False) -> None:
-    """Interactively categorize torrents based on tracker domains."""
+    """Starts a user-interactive session to categorize torrents.
+
+    This function scans a specified category (or uncategorized torrents) for
+    torrents that do not match any existing tracker rules. For each such torrent,
+    it prompts the user to assign a category and optionally create a new rule
+    for the torrent's tracker domain.
+
+    Args:
+        client: An authenticated qBittorrent client instance.
+        rules: The current dictionary of tracker rules, which may be updated.
+        script_dir: The directory of the script, used for saving updated rules.
+        category_to_scan: The category to scan for torrents. If empty, scans
+            for uncategorized torrents.
+        no_rules: If True, the session will ignore existing rules and prompt
+            for all torrents in the category.
+    """
     logging.info("Starting interactive categorization...")
     if no_rules:
         logging.warning("Ignoring existing rules for this session (--no-rules).")

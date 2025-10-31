@@ -22,8 +22,24 @@ if typing.TYPE_CHECKING:
     import qbittorrentapi
 
 class RateLimitedFile:
-    """Wrapper for file objects that limits read/write speed."""
+    """Wraps a file-like object to throttle read and write operations.
+
+    This class acts as a proxy to a file object, inserting delays into read()
+    and write() calls to ensure that the data transfer rate does not exceed a
+    specified maximum.
+
+    Attributes:
+        file: The underlying file-like object (e.g., from `open()` or SFTP).
+        max_bytes_per_sec: The maximum desired transfer speed in bytes per second.
+    """
     def __init__(self, file_obj: Any, max_bytes_per_sec: float):
+        """Initializes the RateLimitedFile wrapper.
+
+        Args:
+            file_obj: The file-like object to wrap.
+            max_bytes_per_sec: The maximum transfer speed in bytes per second.
+                If 0 or None, the limit is infinite (no throttling).
+        """
         self.file = file_obj
         self.max_bytes_per_sec = max_bytes_per_sec if max_bytes_per_sec else float('inf')
         self.last_time = time.time()
@@ -63,7 +79,24 @@ class RateLimitedFile:
 
 
 class TransferCheckpoint:
+    """Manages a checkpoint file to track processed torrents.
+
+    This class prevents the script from re-processing torrents that have
+    already been successfully transferred or that have previously failed the
+    recheck process on the destination. It maintains a simple JSON file to
+    store the hashes of these torrents.
+
+    Attributes:
+        file: The Path object for the checkpoint JSON file.
+        state: A dictionary holding the lists of 'completed' and 'recheck_failed'
+            torrent hashes.
+    """
     def __init__(self, checkpoint_file: Path):
+        """Initializes the TransferCheckpoint.
+
+        Args:
+            checkpoint_file: The path to the JSON file used for checkpointing.
+        """
         self.file = checkpoint_file
         self.state = self._load()
 
@@ -80,16 +113,33 @@ class TransferCheckpoint:
         return {"completed": [], "recheck_failed": []}
 
     def mark_completed(self, torrent_hash: str) -> None:
+        """Marks a torrent as successfully completed and saves the state.
+
+        Args:
+            torrent_hash: The hash of the completed torrent.
+        """
         if torrent_hash not in self.state["completed"]:
             self.state["completed"].append(torrent_hash)
             self.clear_recheck_failed(torrent_hash)  # Ensure it's not in the failed list
             self._save()
 
     def is_completed(self, torrent_hash: str) -> bool:
+        """Checks if a torrent has been marked as completed.
+
+        Args:
+            torrent_hash: The torrent hash to check.
+
+        Returns:
+            True if the torrent is in the completed list, False otherwise.
+        """
         return torrent_hash in self.state["completed"]
 
     def mark_recheck_failed(self, torrent_hash: str) -> None:
-        """Mark a torrent as having failed the recheck on the destination."""
+        """Marks a torrent as having failed recheck and saves the state.
+
+        Args:
+            torrent_hash: The hash of the torrent that failed recheck.
+        """
         if torrent_hash not in self.state["recheck_failed"]:
             self.state["recheck_failed"].append(torrent_hash)
         # Also remove it from completed if it's there
@@ -98,11 +148,24 @@ class TransferCheckpoint:
         self._save()
 
     def is_recheck_failed(self, torrent_hash: str) -> bool:
-        """Check if a torrent is in the recheck_failed list."""
+        """Checks if a torrent has been marked as having failed recheck.
+
+        Args:
+            torrent_hash: The torrent hash to check.
+
+        Returns:
+            True if the torrent is in the recheck_failed list, False otherwise.
+        """
         return torrent_hash in self.state["recheck_failed"]
 
     def clear_recheck_failed(self, torrent_hash: str) -> None:
-        """Remove a torrent from the recheck_failed list, e.g., for a manual retry."""
+        """Removes a torrent from the recheck_failed list.
+
+        This is useful for manually retrying a torrent that previously failed.
+
+        Args:
+            torrent_hash: The hash of the torrent to remove from the list.
+        """
         if torrent_hash in self.state["recheck_failed"]:
             self.state["recheck_failed"].remove(torrent_hash)
             self._save()
@@ -115,9 +178,24 @@ class TransferCheckpoint:
 
 
 class FileTransferTracker:
-    """Track partial file transfers for resume capability."""
+    """Tracks the progress of individual file transfers for resumability.
+
+    This class maintains a JSON file that stores the number of bytes transferred
+    for each file. This allows the script to resume downloads or uploads from
+    the point of interruption, saving bandwidth and time. Writes to the file
+    are throttled to reduce I/O load.
+
+    Attributes:
+        file: The Path object for the tracker JSON file.
+        state: A dictionary holding the progress state for all tracked files.
+    """
 
     def __init__(self, checkpoint_file: Path):
+        """Initializes the FileTransferTracker.
+
+        Args:
+            checkpoint_file: The path to the JSON file for tracking progress.
+        """
         self.file = checkpoint_file
         self.state = self._load()
         self._lock = threading.Lock()
@@ -132,7 +210,15 @@ class FileTransferTracker:
         return {"files": {}}
 
     def record_file_progress(self, torrent_hash: str, file_path: str, bytes_transferred: int) -> None:
-        """Record progress for a specific file."""
+        """Records the number of bytes transferred for a specific file.
+
+        This method is thread-safe.
+
+        Args:
+            torrent_hash: The hash of the parent torrent.
+            file_path: The path of the file being transferred.
+            bytes_transferred: The total number of bytes transferred so far.
+        """
         with self._lock:
             key = f"{torrent_hash}:{file_path}"
             self.state["files"][key] = {
@@ -142,7 +228,17 @@ class FileTransferTracker:
             self._save()
 
     def get_file_progress(self, torrent_hash: str, file_path: str) -> int:
-        """Get last known progress for a file."""
+        """Retrieves the last recorded progress for a specific file.
+
+        This method is thread-safe.
+
+        Args:
+            torrent_hash: The hash of the parent torrent.
+            file_path: The path of the file.
+
+        Returns:
+            The number of bytes transferred, or 0 if the file is not being tracked.
+        """
         with self._lock:
             key = f"{torrent_hash}:{file_path}"
             return self.state["files"].get(key, {}).get("bytes", 0)
@@ -181,8 +277,23 @@ def _get_ssh_command(port: int) -> str:
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: str, local_cache_path: Path, torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
-    """
-    Downloads a file from SFTP to a local cache path, with resume support and progress reporting.
+    """Downloads a file via SFTP to a local cache directory.
+
+    This function is used as part of the cached SFTP-to-SFTP transfer mode.
+    It supports resuming and progress reporting to the UI.
+
+    Args:
+        source_pool: The SSHConnectionPool for the source server.
+        source_file_path: The absolute path of the file on the source server.
+        local_cache_path: The local path where the file will be cached.
+        torrent_hash: The hash of the parent torrent.
+        ui: The UI manager for progress updates.
+        file_tracker: The tracker for recording file progress.
+        download_limit_bytes_per_sec: The download speed limit in bytes per second.
+        sftp_chunk_size: The size of data chunks for SFTP transfers.
+
+    Raises:
+        Exception: Propagates exceptions from the underlying SFTP operations.
     """
     try:
         ui.start_file_transfer(torrent_hash, source_file_path, "downloading")
@@ -233,8 +344,25 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path, source_file_path: str, dest_file_path: str, torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, upload_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
-    """
-    Uploads a file from a local cache path to the destination SFTP server.
+    """Uploads a file from the local cache to the destination SFTP server.
+
+    This function is the second part of a cached SFTP-to-SFTP transfer. It
+    supports resuming and progress reporting.
+
+    Args:
+        dest_pool: The SSHConnectionPool for the destination server.
+        local_cache_path: The path to the cached file on the local machine.
+        source_file_path: The original source path of the file (for UI).
+        dest_file_path: The absolute path on the destination server.
+        torrent_hash: The hash of the parent torrent.
+        ui: The UI manager for progress updates.
+        file_tracker: The tracker for recording file progress.
+        upload_limit_bytes_per_sec: The upload speed limit in bytes per second.
+        sftp_chunk_size: The size of data chunks for SFTP transfers.
+
+    Raises:
+        FileNotFoundError: If the local cache file does not exist.
+        Exception: Propagates exceptions from the underlying SFTP operations.
     """
     file_name = local_cache_path.name
     if not local_cache_path.is_file():
@@ -284,9 +412,27 @@ def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path
         raise
 
 def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPool, source_file_path: str, dest_file_path: str, torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, upload_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
-    """
-    Streams a single file from a source SFTP server to a destination SFTP server with a progress bar.
-    Establishes its own SFTP sessions for thread safety. Supports resuming.
+    """Streams a file directly from a source SFTP server to a destination SFTP server.
+
+    This function is used for the direct (non-cached) `sftp_upload` mode.
+    It opens connections to both servers and transfers the file in chunks,
+    avoiding the need to store the entire file in memory or on disk.
+
+    Args:
+        source_pool: The SSHConnectionPool for the source server.
+        dest_pool: The SSHConnectionPool for the destination server.
+        source_file_path: The absolute path of the file on the source server.
+        dest_file_path: The absolute path on the destination server.
+        torrent_hash: The hash of the parent torrent.
+        ui: The UI manager for progress updates.
+        file_tracker: The tracker for recording file progress.
+        dry_run: If True, simulates the transfer.
+        download_limit_bytes_per_sec: Speed limit for reading from the source.
+        upload_limit_bytes_per_sec: Speed limit for writing to the destination.
+        sftp_chunk_size: The size of data chunks for SFTP transfers.
+
+    Raises:
+        Exception: Propagates exceptions from the underlying SFTP operations.
     """
     file_name = os.path.basename(source_file_path)
     try:
@@ -384,9 +530,25 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: str, torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
-    """
-    Downloads a single file with a progress bar, with retries. Establishes its own SFTP session
-    to ensure thread safety when called from a ThreadPoolExecutor.
+    """Downloads a single file from a remote SFTP server to a local path.
+
+    This function is used for the `sftp` transfer mode. It is wrapped in a
+    retry decorator and handles its own SFTP session to ensure thread safety.
+    It supports resuming and progress reporting.
+
+    Args:
+        pool: The SSHConnectionPool for the source server.
+        remote_file: The absolute path of the file on the source server.
+        local_file: The absolute path of the destination on the local machine.
+        torrent_hash: The hash of the parent torrent.
+        ui: The UI manager for progress updates.
+        file_tracker: The tracker for recording file progress.
+        dry_run: If True, simulates the transfer.
+        download_limit_bytes_per_sec: The download speed limit in bytes per second.
+        sftp_chunk_size: The size of data chunks for SFTP transfers.
+
+    Raises:
+        Exception: Propagates exceptions from the underlying SFTP operations.
     """
     local_path = Path(local_file)
     file_name = os.path.basename(remote_file)
@@ -472,8 +634,22 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
         raise
 
 def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: str, local_path: str, torrent_hash: str, ui: UIManager, dry_run: bool = False) -> None:
-    """
-    Transfers a remote file or directory to a local path using rsync, with retries.
+    """Transfers content from a remote server to a local path using rsync.
+
+    This function constructs and executes an `rsync` command via `sshpass` to
+    handle password authentication. It captures the progress from rsync's
+    output to update the UI in real-time.
+
+    Args:
+        sftp_config: The configuration section for the source server.
+        remote_path: The absolute path of the source file or directory.
+        local_path: The absolute path of the local destination.
+        torrent_hash: The hash of the parent torrent.
+        ui: The UI manager for progress updates.
+        dry_run: If True, simulates the transfer.
+
+    Raises:
+        Exception: If the rsync command fails after multiple retries.
     """
     # For rsync, we treat the whole torrent as one "file"
     # The file_path is the source_content_path
@@ -596,8 +772,21 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
     raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {MAX_RETRY_ATTEMPTS} attempts.")
 
 def transfer_content(pool: SSHConnectionPool, all_files: List[tuple[str, str]], torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, max_concurrent_downloads: int, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
-    """
-    Transfers a list of remote files to their local destination paths.
+    """Transfers a torrent's content from a remote SFTP server to local disk.
+
+    This function uses a `ThreadPoolExecutor` to download multiple files in
+    parallel, orchestrating the calls to the `_sftp_download_file` function.
+
+    Args:
+        pool: The SSHConnectionPool for the source server.
+        all_files: A list of (remote_path, local_path) tuples.
+        torrent_hash: The hash of the parent torrent.
+        ui: The UI manager for progress updates.
+        file_tracker: The tracker for recording file progress.
+        max_concurrent_downloads: The maximum number of files to download in parallel.
+        dry_run: If True, simulates the transfer.
+        download_limit_bytes_per_sec: The download speed limit.
+        sftp_chunk_size: The chunk size for SFTP transfers.
     """
     with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as file_executor:
         futures = [
@@ -612,8 +801,32 @@ def transfer_content_sftp_upload(
     file_tracker: FileTransferTracker, max_concurrent_downloads: int, max_concurrent_uploads: int, total_size: int, dry_run: bool = False, local_cache_sftp_upload: bool = False,
     download_limit_bytes_per_sec: int = 0, upload_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536
 ) -> None:
-    """
-    Transfers a list of files from a source SFTP to a destination SFTP server.
+    """Transfers a torrent's content from a source to a destination SFTP server.
+
+    This function orchestrates the `sftp_upload` transfer mode. It can operate
+    in two ways:
+    1.  Direct Streaming: For smaller torrents, it streams files directly from
+        the source to the destination using `_sftp_upload_file`.
+    2.  Local Caching: For torrents larger than 1GB or when explicitly enabled,
+        it first downloads all files to a local temporary cache directory
+        using `_sftp_download_to_cache` and then uploads them to the
+        destination using `_sftp_upload_from_cache`.
+
+    Args:
+        source_pool: The SSHConnectionPool for the source server.
+        dest_pool: The SSHConnectionPool for the destination server.
+        all_files: A list of (source_path, dest_path) tuples.
+        torrent_hash: The hash of the parent torrent.
+        ui: The UI manager for progress updates.
+        file_tracker: The tracker for recording file progress.
+        max_concurrent_downloads: Max parallel downloads for cached mode.
+        max_concurrent_uploads: Max parallel uploads.
+        total_size: The total size of the torrent's content in bytes.
+        dry_run: If True, simulates the transfer.
+        local_cache_sftp_upload: If True, forces the use of local caching.
+        download_limit_bytes_per_sec: The download speed limit.
+        upload_limit_bytes_per_sec: The upload speed limit.
+        sftp_chunk_size: The chunk size for SFTP transfers.
     """
     if total_size > GB_BYTES and not local_cache_sftp_upload:
         logging.warning(f"Total torrent size ({total_size / GB_BYTES:.2f} GB) exceeds 1 GB threshold.")
