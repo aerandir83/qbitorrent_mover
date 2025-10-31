@@ -3,3 +3,5 @@ paramiko
 qbittorrent-api
 rich
 configupdater
+fastapi
+uvicorn[standard]
