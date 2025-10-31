@@ -106,3 +106,10 @@ sftp_upload_limit_mbps = 0
 # on high-latency networks, but can increase memory usage.
 # Default is 64.
 sftp_chunk_size_kb = 64
+
+[WEB_UI]
+# (Optional) Configuration for the web UI server.
+# host: The host address to bind the web server to (e.g., 0.0.0.0 to allow network access).
+# port: The port to run the web server on.
+host = 127.0.0.1
+port = 8000
