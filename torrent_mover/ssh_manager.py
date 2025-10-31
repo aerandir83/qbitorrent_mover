@@ -1,3 +1,10 @@
+"""Manages SSH and SFTP connections and operations.
+
+This module provides a thread-safe SSH connection pool, SFTP utilities for
+recursive directory creation (`mkdir -p`), and efficient remote file/directory
+size calculation using the `du -sb` command. It also handles SSH dependency
+checks and configuration for performance features like connection multiplexing.
+"""
 import paramiko
 import logging
 import threading
@@ -28,7 +35,12 @@ RETRY_DELAY_SECONDS = 5
 SSH_CONTROL_PATH: typing.Optional[str] = None
 
 def setup_ssh_control_path() -> None:
-    """Creates a directory for the SSH control socket."""
+    """Creates a user-specific directory for the SSH control socket.
+
+    This enables SSH connection multiplexing, which significantly speeds up
+    subsequent connections to the same host by reusing the master connection.
+    The path is stored in the global `SSH_CONTROL_PATH` variable.
+    """
     global SSH_CONTROL_PATH
     try:
         user = getpass.getuser()
@@ -41,9 +53,10 @@ def setup_ssh_control_path() -> None:
         SSH_CONTROL_PATH = None
 
 def check_sshpass_installed() -> None:
-    """
-    Checks if sshpass is installed, which is required for rsync with password auth.
-    Exits the script if it's not found.
+    """Checks if sshpass is installed and sets up the SSH control path.
+
+    `sshpass` is required for using rsync with password authentication. If it is
+    not found in the system's PATH, the script will exit with a fatal error.
     """
     if shutil.which("sshpass") is None:
         logging.error("FATAL: 'sshpass' is not installed or not in the system's PATH.")
@@ -54,7 +67,17 @@ def check_sshpass_installed() -> None:
     setup_ssh_control_path()
 
 def _get_ssh_command(port: int) -> str:
-    """Builds the SSH command for rsync, enabling connection multiplexing if available."""
+    """Builds the base SSH command for rsync.
+
+    Includes optimizations like a faster cipher and connection multiplexing
+    if a control path has been successfully configured.
+
+    Args:
+        port: The SSH port to connect to.
+
+    Returns:
+        The formatted SSH command string to be used with rsync.
+    """
     base_ssh_cmd = f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
     if SSH_CONTROL_PATH:
         multiplex_opts = f"-o ControlMaster=auto -o ControlPath={shlex.quote(SSH_CONTROL_PATH)} -o ControlPersist=60s"
@@ -62,9 +85,17 @@ def _get_ssh_command(port: int) -> str:
     return base_ssh_cmd
 
 def sftp_mkdir_p(sftp: paramiko.SFTPClient, remote_path: str) -> None:
-    """
-    Ensures a directory exists on the remote SFTP server, creating it recursively if necessary.
-    This is similar to `mkdir -p`.
+    """Ensures a directory exists on the remote SFTP server, like `mkdir -p`.
+
+    It creates the directory and any necessary parent directories recursively.
+
+    Args:
+        sftp: An active `paramiko.SFTPClient` instance.
+        remote_path: The absolute path of the directory to create on the remote server.
+
+    Raises:
+        IOError: If a directory could not be created for a reason other than it
+                 already existing.
     """
     if not remote_path:
         return
@@ -84,7 +115,17 @@ def sftp_mkdir_p(sftp: paramiko.SFTPClient, remote_path: str) -> None:
                 raise e
 
 def is_remote_dir(ssh_client: paramiko.SSHClient, path: str) -> bool:
-    """Checks if a remote path is a directory using 'test -d'."""
+    """Checks if a path on a remote server is a directory.
+
+    Uses the `test -d` command for a fast and reliable check.
+
+    Args:
+        ssh_client: An active `paramiko.SSHClient` instance.
+        path: The absolute path to check on the remote server.
+
+    Returns:
+        True if the path is a directory, False otherwise.
+    """
     logging.debug(f"Checking if remote path is directory: {path}")
     try:
         command = f"test -d {shlex.quote(path)}"
@@ -101,9 +142,13 @@ def is_remote_dir(ssh_client: paramiko.SSHClient, path: str) -> bool:
         return False
 
 def _get_all_files_recursive(sftp: paramiko.SFTPClient, remote_path: str, base_dest_path: str, file_list: typing.List[typing.Tuple[str, str]]) -> None:
-    """
-    Recursively walks a remote directory to build a flat list of all files to transfer.
-    `base_dest_path` is the corresponding destination path for the initial `remote_path`.
+    """Recursively builds a list of all files to transfer from a remote directory.
+
+    Args:
+        sftp: An active `paramiko.SFTPClient` instance.
+        remote_path: The current remote directory being scanned.
+        base_dest_path: The corresponding destination path for the `remote_path`.
+        file_list: A list to which `(source_path, destination_path)` tuples are appended.
     """
     remote_path_norm = remote_path.replace('\\', '/')
     base_dest_path_norm = base_dest_path.replace('\\', '/')
@@ -126,10 +171,37 @@ def _get_all_files_recursive(sftp: paramiko.SFTPClient, remote_path: str, base_d
             continue
 
 class SSHConnectionPool:
-    """Thread-safe SSH connection pool with proper dead connection handling."""
+    """A thread-safe pool for managing Paramiko SSH and SFTP connections.
+
+    This pool reuses active connections to improve performance and handles the
+    detection and removal of dead connections. It supports waiting for a
+
+    connection to become available if the pool is full.
+
+    Attributes:
+        host: The SSH server hostname or IP address.
+        port: The SSH server port.
+        username: The username for authentication.
+        password: The password for authentication.
+        max_size: The maximum number of concurrent connections allowed.
+        connect_timeout: Timeout in seconds for establishing a new connection.
+        pool_wait_timeout: Timeout in seconds for waiting for a connection from the pool.
+    """
 
     def __init__(self, host: str, port: int, username: str, password: str,
                  max_size: int = DEFAULT_SSH_POOL_SIZE, connect_timeout: int = 10, pool_wait_timeout: int = 120):
+        """Initializes the SSHConnectionPool.
+
+        Args:
+            host: The SSH server hostname.
+            port: The SSH server port.
+            username: The SSH username.
+            password: The SSH password.
+            max_size: The maximum number of connections to maintain in the pool.
+            connect_timeout: The timeout for establishing a new SSH connection.
+            pool_wait_timeout: The maximum time to wait for a connection to become
+                               available from the pool.
+        """
         self.host = host
         self.port = port
         self.username = username
@@ -145,7 +217,14 @@ class SSHConnectionPool:
         logging.debug(f"Initialized SSHConnectionPool for {host} with max_size={max_size}")
 
     def _create_connection(self) -> typing.Tuple[paramiko.SFTPClient, paramiko.SSHClient]:
-        """Create a new SSH client and SFTP session."""
+        """Creates a new SSH client and SFTP session.
+
+        Returns:
+            A tuple containing a new `SFTPClient` and `SSHClient`.
+
+        Raises:
+            Exception: If the connection fails.
+        """
         try:
             ssh_client = paramiko.SSHClient()
             ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -167,7 +246,14 @@ class SSHConnectionPool:
             raise
 
     def _is_connection_alive(self, ssh: paramiko.SSHClient) -> bool:
-        """Check if SSH connection is still active."""
+        """Checks if an SSH connection is still active.
+
+        Args:
+            ssh: The `paramiko.SSHClient` to check.
+
+        Returns:
+            True if the connection's transport is active, False otherwise.
+        """
         try:
             transport = ssh.get_transport()
             return transport is not None and transport.is_active()
@@ -176,7 +262,20 @@ class SSHConnectionPool:
 
     @contextmanager
     def get_connection(self) -> typing.Generator[typing.Tuple[paramiko.SFTPClient, paramiko.SSHClient], None, None]:
-        """Context manager to get a connection from the pool."""
+        """Provides a connection from the pool as a context manager.
+
+        This method will either reuse an existing connection from the pool, create
+        a new one if the pool is not full, or wait for one to become available.
+        The connection is automatically returned to the pool upon exiting the
+        context. Dead connections are automatically detected and discarded.
+
+        Yields:
+            A tuple containing an active `SFTPClient` and `SSHClient`.
+
+        Raises:
+            RuntimeError: If the pool is closed.
+            TimeoutError: If waiting for a connection exceeds `pool_wait_timeout`.
+        """
         if self._closed:
             raise RuntimeError("Connection pool is closed")
 
@@ -294,7 +393,7 @@ class SSHConnectionPool:
                         pass
 
     def close_all(self):
-        """Close all connections in the pool."""
+        """Closes all idle connections in the pool and prevents new ones."""
         logging.debug(f"Closing all connections for {self.host}...")
         self._closed = True
 
@@ -315,7 +414,13 @@ class SSHConnectionPool:
         logging.debug(f"Pool for {self.host} closed.")
 
     def get_stats(self) -> typing.Dict[str, int]:
-        """Get pool statistics."""
+        """Gets current statistics about the connection pool.
+
+        Returns:
+            A dictionary containing statistics like the number of active
+            connections, the number of connections currently in the pool,
+            and the number of connections currently in use.
+        """
         with self._lock:
             in_pool = self._pool.qsize()
             in_use = self._active_connections - in_pool
@@ -328,9 +433,20 @@ class SSHConnectionPool:
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def _get_remote_size_du_core(ssh_client: paramiko.SSHClient, remote_path: str) -> int:
-    """
-    Core logic for getting remote size using 'du -sb'. Does not handle concurrency.
-    This function is retried on failure.
+    """Core logic to get remote path size using 'du -sb'.
+
+    This function is wrapped with a retry decorator to handle transient failures.
+
+    Args:
+        ssh_client: An active `paramiko.SSHClient` instance.
+        remote_path: The absolute path to the file or directory on the remote server.
+
+    Returns:
+        The total size of the path in bytes. Returns 0 if the path is not found.
+
+    Raises:
+        Exception: If the `du` command fails for reasons other than a missing file.
+        ValueError: If the output of the `du` command cannot be parsed.
     """
     # Use shlex.quote for robust path escaping
     escaped_path = shlex.quote(remote_path)
@@ -366,9 +482,20 @@ def _get_remote_size_du_core(ssh_client: paramiko.SSHClient, remote_path: str) -
         raise
 
 def batch_get_remote_sizes(ssh_client: paramiko.SSHClient, paths: typing.List[str], batch_size: int = BATCH_SIZE) -> typing.Dict[str, int]:
-    """
-    Get sizes for multiple paths in a single SSH session.
-    Uses a single command with multiple du calls, respecting command length limits.
+    """Gets sizes for multiple remote paths efficiently in batches.
+
+    This function executes multiple `du -sb` commands in a single SSH session,
+    semicolon-separated, to reduce overhead. It dynamically adjusts the batch
+    size to avoid exceeding shell command length limits (ARG_MAX).
+
+    Args:
+        ssh_client: An active `paramiko.SSHClient` instance.
+        paths: A list of absolute remote paths to check.
+        batch_size: The initial number of paths to check in a single command.
+
+    Returns:
+        A dictionary mapping each path to its size in bytes. If a path fails,
+        its size is recorded as 0.
     """
     results = {}
 
