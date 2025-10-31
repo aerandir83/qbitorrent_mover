@@ -5,7 +5,7 @@ import logging
 import sys
 import configupdater
 import time
-from typing import List
+from typing import List, Dict, Any
 
 
 def update_config(config_path: str, template_path: str) -> None:
@@ -105,6 +105,61 @@ def load_config(config_path: str = "config.ini") -> configparser.ConfigParser:
     config = configparser.ConfigParser()
     config.read(config_file)
     return config
+
+
+def load_config_as_dict(config_path: str) -> Dict[str, Dict[str, str]]:
+    """Loads the config.ini file and returns it as a dictionary.
+
+    This function is designed to provide the web UI with a dictionary
+    representation of the configuration file, making it easy to populate
+    forms.
+
+    Args:
+        config_path: The path to the configuration file.
+
+    Returns:
+        A dictionary of dictionaries representing the configuration.
+        Returns an empty dictionary if the file cannot be read.
+    """
+    config = configparser.ConfigParser()
+    try:
+        config.read(config_path)
+        config_dict = {section: dict(config.items(section)) for section in config.sections()}
+        return config_dict
+    except configparser.Error as e:
+        logging.error(f"Error reading config for web UI: {e}")
+        return {}
+
+
+def save_config_from_dict(config_path: str, data: Dict[str, Dict[str, str]]) -> bool:
+    """Saves a dictionary to the config.ini file.
+
+    This function is used by the web UI to write changes back to the
+    configuration file. It loads the existing config, updates it with
+    the provided data, and writes it back.
+
+    Args:
+        config_path: The path to the configuration file.
+        data: A dictionary of dictionaries with the new configuration.
+
+    Returns:
+        True if the configuration was saved successfully, False otherwise.
+    """
+    config = configparser.ConfigParser()
+    try:
+        config.read(config_path)
+        for section, options in data.items():
+            if not config.has_section(section):
+                config.add_section(section)
+            for key, value in options.items():
+                config.set(section, key, str(value))
+
+        with open(config_path, 'w') as configfile:
+            config.write(configfile)
+        return True
+    except (configparser.Error, IOError) as e:
+        logging.error(f"Error saving config from web UI: {e}")
+        return False
 
 
 class ConfigValidator:
