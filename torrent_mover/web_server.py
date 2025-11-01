@@ -189,12 +189,12 @@ static_dir = SCRIPT_DIR / "web"
 app.mount("/", StaticFiles(directory=static_dir, html=True), name="web")
 
 
-def start_server():
+def start_server(config: configparser.ConfigParser):
     """
     Initializes and starts the uvicorn server for the web UI.
     """
     try:
-        config = load_config(CONFIG_PATH)
+        # config = load_config(CONFIG_PATH) # <-- REMOVED: Config is now passed in
         host = config.get('WEB_UI', 'host', fallback='127.0.0.1')
         port = config.getint('WEB_UI', 'port', fallback=8000)
 
@@ -207,4 +207,6 @@ def start_server():
 
 
 if __name__ == "__main__":
-    start_server()
+    # This allows running the web server directly for testing
+    config = load_config(CONFIG_PATH)
+    start_server(config)
