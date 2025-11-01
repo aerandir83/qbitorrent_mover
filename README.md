@@ -10,11 +10,18 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.7.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.8.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.7.3 (Latest)
+### Version 2.8.0 (Latest)
+* **feat(web)**: Added a new --web flag to launch a web UI.
+* **feat(web)**: The web UI allows viewing status, triggering transfers, and editing the configuration from a browser.
+* **feat(api)**: Added a new FastAPI backend (web_server.py) to support the UI.
+* **feat(config)**: Config manager can now read/write settings from the web UI.
+* **refactor(core)**: Decoupled core transfer logic from the CLI entrypoint to allow API-driven execution.
+
+### Version 2.7.3
 * **fix(main)**: Fixed hang in `--simple` mode by refactoring all console logging logic. The script now correctly adds *only* a `StreamHandler` in simple mode and *only* a `RichHandler` in rich mode, resolving the `screen` conflict.
 
 ### Version 2.7.2
@@ -222,6 +229,7 @@ The current version is **2.7.3**. To check your version, run: `python3 -m torren
 *   Python 3.6+
 *   Two qBittorrent clients accessible over the network.
 *   SSH/SFTP access to the source server (and destination server if using `sftp_upload` mode).
+*   `fastapi` and `uvicorn` (for the optional web UI)
 
 ## Installation & Setup
 
@@ -320,6 +328,18 @@ Once you've confirmed everything works, run the script normally:
 python3 -m torrent_mover.torrent_mover
 ```
 
+### Web UI Usage (Experimental)
+As of version 2.8.0, Torrent Mover includes an experimental web UI.
+To run it, use the --web flag:
+```bash
+# From the repository root directory
+python3 -m torrent_mover.torrent_mover --web
+```
+This will start a web server (default: http://127.0.0.1:8000). You can access this URL in your browser to:
+* View the current status (Idle/Running).
+* Trigger a manual transfer.
+* View and edit your config.ini settings.
+
 ## Scheduling with Cron
 
 To run the script automatically, set up a cron job. **You must use absolute paths.**
@@ -357,6 +377,7 @@ To run the script automatically, set up a cron job. **You must use absolute path
 | `--add-rule [DOMAIN] [CATEGORY]` | `-a` | Adds or updates a categorization rule and exits. |
 | `--delete-rule [DOMAIN]` | `-d` | Deletes a specific categorization rule and exits. |
 | `--clear-recheck-failure [TORRENT_HASH]` | | Manually removes a torrent from the internal 'recheck_failed' list, allowing the script to process it again. Use after resolving the underlying issue. |
+| `--web` | | Run the experimental web UI server instead of a CLI transfer. |
 | `--version` | | Displays the current version of the script and exits. |
 
 ## Advanced Usage: Tracker-Based Categorization
