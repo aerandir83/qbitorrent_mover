@@ -45,6 +45,7 @@ from .tracker_manager import (
     run_interactive_categorization, display_tracker_rules
 )
 from .ui import BaseUIManager, SimpleUIManager, UIManagerV2
+from .web_server import start_server
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -860,6 +861,7 @@ def main() -> int:
     parser.add_argument('--check-config', action='store_true', help='Validate the configuration file and exit.')
     parser.add_argument('--version', action='store_true', help="Show program's version and config file path, then exit.")
     parser.add_argument('--clear-recheck-failure', metavar='TORRENT_HASH', help='Remove a torrent hash from the recheck_failed list in the checkpoint file.')
+    parser.add_argument('--web', action='store_true', help='Start the web UI instead of running a transfer.')
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
@@ -886,6 +888,11 @@ def main() -> int:
         print(f"{Path(sys.argv[0]).name} {__version__}")
         print(f"Configuration file: {args.config}")
         return 0
+
+    if args.web:
+        start_server()
+        return 0
+
     setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
 
     logger = logging.getLogger()
