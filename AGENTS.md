@@ -20,6 +20,8 @@ Torrent Mover is a Python application designed to automatically move completed t
 *   **`torrent_mover/transfer_manager.py`**: Manages the logic for all file transfer modes (e.g., `transfer_content_sftp_upload`) and transfer state (e.g., `FileTransferTracker`, `TransferCheckpoint`). `TransferCheckpoint` now also tracks `recheck_failed` states.
 *   **`torrent_mover/system_manager.py`**: Manages system-level tasks like logging, lockfiles, health checks, and cache cleanup (e.g., `setup_logging`, `LockFile`, `destination_health_check`).
 *   **`torrent_mover/tracker_manager.py`**: Manages all logic for tracker-based categorization (e.g., `load_tracker_rules`, `run_interactive_categorization`).
+*   **`torrent_mover/web_server.py`**: The FastAPI backend that serves the API and frontend.
+*   **`torrent_mover/web/index.html`**: The single-page frontend application.
 *   **`torrent_mover/config.ini.template`**: The template for `config.ini`. When adding new configuration options, always update this file. The script will automatically update a user's `config.ini` from this template.
 
 ## Development Workflow
@@ -30,7 +32,7 @@ Before making any changes, thoroughly read the user's request to understand the 
 
 ### 2. Setting Up the Environment
 
-To run the script and any tests, ensure the necessary dependencies are installed:
+To run the script and any tests, ensure the necessary dependencies are installed. Note that `fastapi` and `uvicorn` are required for the web UI.
 
 ```bash
 pip install -r torrent_mover/requirements.txt

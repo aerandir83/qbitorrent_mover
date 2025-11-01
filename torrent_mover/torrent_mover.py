@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.7.3"
+__version__ = "2.8.0"
 
 # Standard Lib
 import configparser
@@ -45,7 +45,6 @@ from .tracker_manager import (
     run_interactive_categorization, display_tracker_rules
 )
 from .ui import BaseUIManager, SimpleUIManager, UIManagerV2
-from .web_server import start_server
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -890,6 +889,7 @@ def main() -> int:
         return 0
 
     if args.web:
+        from .web_server import start_server
         start_server()
         return 0
 
