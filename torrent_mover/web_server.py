@@ -17,7 +17,7 @@ from typing import Dict, Any
 
 # Project imports
 from .config_manager import load_config_as_dict, save_config_from_dict, load_config
-from .torrent_mover import run_transfer_logic, __version__
+from .torrent_mover import __version__
 from .system_manager import LockFile
 from .tracker_manager import load_tracker_rules
 from .transfer_manager import TransferCheckpoint, FileTransferTracker
@@ -100,6 +100,7 @@ def _run_transfer_in_background():
         ui_manager = SimpleUIManager()
 
         # Run the core logic
+        from .torrent_mover import run_transfer_logic
         run_transfer_logic(config, args, CHECKPOINT, FILE_TRACKER, ui_manager)
 
         APP_STATE["message"] = "Transfer process finished."
@@ -185,10 +186,7 @@ async def trigger_transfer():
 # Mount the static directory for the frontend
 # This assumes the HTML file will be in 'web/' relative to this file
 static_dir = SCRIPT_DIR / "web"
-if not static_dir.exists():
-    static_dir.mkdir()
-
-app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+app.mount("/", StaticFiles(directory=static_dir, html=True), name="web")
 
 
 def start_server():
@@ -206,3 +204,7 @@ def start_server():
         uvicorn.run(app, host=host, port=port)
     except Exception as e:
         print(f"FATAL: Could not start web server: {e}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    start_server()
