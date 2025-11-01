@@ -10,11 +10,15 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.8.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.8.1**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.8.0 (Latest)
+### Version 2.8.1 (Latest)
+* **fix(web)**: Corrected the web server startup logic to ensure logging and configuration are loaded before the server starts.
+* **fix(web)**: Updated the default web server host from `127.0.0.1` to `0.0.0.0` to allow network access by default.
+
+### Version 2.8.0
 * **feat(web)**: Added a new --web flag to launch a web UI.
 * **feat(web)**: The web UI allows viewing status, triggering transfers, and editing the configuration from a browser.
 * **feat(api)**: Added a new FastAPI backend (web_server.py) to support the UI.

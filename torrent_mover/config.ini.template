@@ -109,7 +109,9 @@ sftp_chunk_size_kb = 64
 
 [WEB_UI]
 # (Optional) Configuration for the web UI server.
-# host: The host address to bind the web server to (e.g., 0.0.0.0 to allow network access).
+# host: The host address to bind the web server to.
+# Use 0.0.0.0 to allow network access (e.g., http://<server-ip>:8000).
+# Use 127.0.0.1 to allow access only from the machine running the script.
+host = 0.0.0.0
 # port: The port to run the web server on.
-host = 127.0.0.1
 port = 8000
