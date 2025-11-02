@@ -48,7 +48,14 @@ def update_config(config_path: str, template_path: str) -> None:
         for section_name in template_updater.sections():
             template_section = template_updater[section_name]
             if not updater.has_section(section_name):
-                user_section = updater.add_section(section_name)
+                updater.add_section(section_name)  # Add the section first
+                user_section = updater[section_name]  # Now, retrieve the new section
+
+                # Add a safety check in case retrieval still fails
+                if user_section is None:
+                    logging.error(f"Failed to create new config section '{section_name}'. Skipping.")
+                    continue  # Move to the next section
+
                 for key, opt in template_section.items():
                     user_opt = user_section.set(key, opt.value)
                     if hasattr(opt, 'comments') and opt.comments.above:

@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.8.0"
+__version__ = "2.8.2"
 
 # Standard Lib
 import configparser
@@ -888,11 +888,8 @@ def main() -> int:
         print(f"Configuration file: {args.config}")
         return 0
 
-    if args.web:
-        from .web_server import start_server
-        start_server()
-        return 0
-
+    # --- MOVED: Setup Logging and Config FIRST ---
+    # This must happen before any other action (web or cli)
     setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
 
     logger = logging.getLogger()
@@ -916,26 +913,38 @@ def main() -> int:
         logging.info("--- Torrent Mover script started (Rich UI) ---")
 
     logging.info(f"Using configuration file: {args.config}")
-    if args.check_config:
-        logging.info("--- Running Configuration Check ---")
+    config_template_path = script_dir / 'config.ini.template'
+    update_config(args.config, str(config_template_path))
+
+    try:
         config = load_config(args.config)
         validator = ConfigValidator(config)
+        if not validator.validate():
+            return 1
+    except Exception as e:
+        logging.error(f"Failed to load or validate config: {e}", exc_info=True)
+        return 1
+
+    if args.check_config:
+        logging.info("--- Running Configuration Check ---")
         if validator.validate():
             logging.info("[bold green]SUCCESS:[/] Configuration file appears to be valid.")
             return 0
         else:
             logging.error("[bold red]FAILURE:[/] Configuration file has errors.")
             return 1
-    config_template_path = script_dir / 'config.ini.template'
-    update_config(args.config, str(config_template_path))
+    # --- END OF MOVED BLOCK ---
+
+    if args.web:
+        from .web_server import start_server
+        # Pass the loaded config to the server
+        start_server(config)
+        return 0
+
     checkpoint = TransferCheckpoint(script_dir / 'transfer_checkpoint.json')
     file_tracker = FileTransferTracker(script_dir / 'file_transfer_tracker.json')
     ssh_connection_pools: Dict[str, SSHConnectionPool] = {}
     try:
-        config = load_config(args.config)
-        validator = ConfigValidator(config)
-        if not validator.validate():
-            return 1
         server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
         for section_name in server_sections:
             max_sessions = config[section_name].getint('max_concurrent_ssh_sessions', 8)
