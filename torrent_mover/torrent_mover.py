@@ -211,18 +211,21 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
             logging.info(f"TRANSFER: Rsync transfer completed for '{name}'.")
         elif transfer_mode == 'rsync_upload':
             logging.info(f"TRANSFER: Starting Rsync upload for '{name}'...")
-            source_server_section = config['SETTINGS']['source_server_section']
+            content_path, rsync_file_name = os.path.split(torrent.content_path)
+            source_server_section = config['SETTINGS'].get('source_server_section')
             source_config = config[source_server_section]
             dest_config = config['DESTINATION_SERVER']
-            transfer_content_rsync_upload(
-                ssh_connection_pools=ssh_connection_pools,
-                source_config=source_config,
-                dest_config=dest_config,
-                source_content_path=source_content_path,
-                dest_content_path=dest_content_path,
-                ui=ui,
-                torrent_hash=hash_,
-                dry_run=dry_run
+            rsync_options = config['SETTINGS'].get("rsync_options")
+            rsync_dest_path = dest_content_path
+            transfer_success = transfer_content_rsync_upload(
+                ssh_connection_pools,
+                source_config,
+                dest_config,
+                rsync_options,
+                content_path=content_path,
+                rsync_file_name=rsync_file_name,
+                is_folder=torrent.is_folder,
+                dest_path=rsync_dest_path
             )
             logging.info(f"TRANSFER: Rsync upload completed for '{name}'.")
         else:
