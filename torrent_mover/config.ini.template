@@ -41,7 +41,7 @@ max_concurrent_ssh_sessions = 8
 
 [DESTINATION_SERVER]
 # (Optional) Connection details for the DESTINATION server.
-# Required only if using 'sftp_upload' transfer mode.
+# Required only if using 'sftp_upload' or 'rsync_upload' transfer mode.
 # If omitted, transfers will be downloaded to the machine running this script.
 host = destination-server.example.com
 port = 22
@@ -77,10 +77,11 @@ category_to_move = move-me
 # total size is at or below this threshold.
 # Leave blank to move all completed torrents in the category.
 size_threshold_gb =
-# The transfer mode to use. Options: sftp, rsync, sftp_upload.
+# The transfer mode to use. Options: sftp, rsync, sftp_upload, rsync_upload.
 # - sftp: Downloads files from the source server to this machine via SFTP.
 # - rsync: Downloads files from the source server to this machine via rsync (faster).
 # - sftp_upload: Transfers files directly from the source server to the destination server via SFTP.
+# - rsync_upload: Transfers files directly from the source server to the destination server via rsync.
 transfer_mode = rsync
 # For 'sftp' mode, and for 'sftp_upload' with local caching, this is the max number of concurrent downloads.
 max_concurrent_downloads = 4
