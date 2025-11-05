@@ -9,6 +9,7 @@ __version__ = "2.7.3"
 # Standard Lib
 import configparser
 import sys
+import shlex  # <-- Add this line
 import logging
 import traceback
 from pathlib import Path
