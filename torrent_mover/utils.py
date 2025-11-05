@@ -37,3 +37,8 @@ def retry(tries: int = 2, delay: int = 5, backoff: int = 1) -> Callable:
                     _delay *= backoff
         return f_retry
     return deco_retry
+
+
+class RemoteTransferError(Exception):
+    """Custom exception for remote transfer failures."""
+    pass
