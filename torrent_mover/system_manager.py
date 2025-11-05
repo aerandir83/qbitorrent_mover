@@ -234,7 +234,7 @@ def destination_health_check(config: configparser.ConfigParser, total_transfer_s
     logging.info("--- Running Destination Health Check ---")
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
     dest_path = config['DESTINATION_PATHS'].get('destination_path')
-    remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' and 'DESTINATION_SERVER' in config else None
+    remote_config = config['DESTINATION_SERVER'] if transfer_mode in ['sftp_upload', 'rsync_upload'] and 'DESTINATION_SERVER' in config else None
     dest_pool = ssh_connection_pools.get('DESTINATION_SERVER') if remote_config else None
     available_space = -1
     GB_BYTES = 1024**3
