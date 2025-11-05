@@ -33,7 +33,8 @@ from .ssh_manager import (
 from .qbittorrent_manager import connect_qbit, get_eligible_torrents, wait_for_recheck_completion
 from .transfer_manager import (
     FileTransferTracker, TransferCheckpoint, transfer_content_rsync,
-    transfer_content, transfer_content_sftp_upload, Timeouts
+    transfer_content, transfer_content_sftp_upload, Timeouts,
+    transfer_content_rsync_upload
 )
 from .system_manager import (
     LockFile, setup_logging, destination_health_check, change_ownership,
@@ -99,7 +100,7 @@ def _pre_transfer_setup(
     remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
     destination_save_path = remote_dest_base_path
     all_files: List[Tuple[str, str]] = []
-    is_remote_dest = (transfer_mode == 'sftp_upload')
+    is_remote_dest = (transfer_mode in ['sftp_upload', 'rsync_upload'])
 
     # --- 1. Check Destination Path ---
     destination_exists = False
@@ -208,6 +209,13 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
         if transfer_mode == 'rsync':
             transfer_content_rsync(config['SOURCE_SERVER'], source_content_path, dest_content_path, hash_, ui, dry_run)
             logging.info(f"TRANSFER: Rsync transfer completed for '{name}'.")
+        elif transfer_mode == 'rsync_upload':
+            logging.info(f"TRANSFER: Starting Rsync upload for '{name}'...")
+            dest_config = config['DESTINATION_SERVER']
+            source_pool = ssh_connection_pools.get('SOURCE_SERVER')
+            dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
+            transfer_content_rsync_upload(source_pool, dest_pool, dest_config, source_content_path, dest_content_path, hash_, ui, dry_run)
+            logging.info(f"TRANSFER: Rsync upload completed for '{name}'.")
         else:
             max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)
             max_concurrent_uploads = config['SETTINGS'].getint('max_concurrent_uploads', 4)
@@ -290,7 +298,7 @@ def _post_transfer_actions(
         chown_user = config['SETTINGS'].get('chown_user', '').strip()
         chown_group = config['SETTINGS'].get('chown_group', '').strip()
         if chown_user or chown_group:
-            remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' else None
+            remote_config = config['DESTINATION_SERVER'] if transfer_mode in ['sftp_upload', 'rsync_upload'] else None
             change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
 
     destination_save_path_str = str(destination_save_path).replace("\\", "/")
