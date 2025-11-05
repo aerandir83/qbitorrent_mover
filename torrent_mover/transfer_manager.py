@@ -267,14 +267,6 @@ class Timeouts:
     RECHECK = int(os.getenv('TM_RECHECK_TIMEOUT', '900'))
     POOL_WAIT = int(os.getenv('TM_POOL_WAIT_TIMEOUT', '120'))
 
-def _get_ssh_command(port: int) -> str:
-    """Builds the SSH command for rsync, enabling connection multiplexing if available."""
-    base_ssh_cmd = f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
-    if SSH_CONTROL_PATH:
-        multiplex_opts = f"-o ControlMaster=auto -o ControlPath={shlex.quote(SSH_CONTROL_PATH)} -o ControlPersist=60s"
-        return f"{base_ssh_cmd} {multiplex_opts}"
-    return base_ssh_cmd
-
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: str, local_cache_path: Path, torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
     """Downloads a file via SFTP to a local cache directory.
