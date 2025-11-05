@@ -770,54 +770,53 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
     raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {MAX_RETRY_ATTEMPTS} attempts.")
 
 
-def transfer_content_rsync_upload(rsync_options: List[str], content_path: str, rsync_file_name: str, dest_host: str, dest_port: int, dest_username: str, dest_password: str, dest_key_path: typing.Optional[str], dest_key_pass: typing.Optional[str], dest_path: str) -> bool:
+def transfer_content_rsync_upload(
+    ssh_connection_pools: Dict[str, SSHConnectionPool],
+    source_config: configparser.SectionProxy,
+    dest_config: configparser.SectionProxy,
+    rsync_options: List[str],
+    content_path: str,
+    rsync_file_name: str,
+    dest_path: str
+) -> bool:
     """
-    Transfers content to a remote machine via Rsync (upload).
-    This method runs rsync from the local machine to upload to the remote.
+    Transfers content from a remote source to a remote destination via rsync.
+    This method executes rsync on the source server to push files to the destination.
     """
     try:
-        # Ensure sshpass is available locally
-        if not _is_sshpass_installed():
-            logging.error("sshpass is not installed locally. Please install it to use rsync_upload with password authentication.")
-            return False
-
-        if not dest_password:
-            logging.error("rsync_upload requires a destination password. Key-based auth is not supported for rsync in this script.")
-            return False
-
+        source_pool = ssh_connection_pools[source_config.name]
         source_path = os.path.join(content_path, rsync_file_name)
         remote_dest_path = os.path.join(dest_path, rsync_file_name)
-        escaped_remote_dest_path = shlex.quote(remote_dest_path)
 
-        # Handle trailing slash for directory sync
-        if os.path.isdir(source_path):
-            source_path = os.path.join(source_path, '')  # Add trailing slash
+        dest_ssh_cmd = _get_ssh_command(dest_config.getint('port'))
 
-        ssh_cmd_for_rsync = _get_ssh_command(dest_port)
-
-        rsync_command = [
-            "sshpass", "-p", dest_password,
+        rsync_command_list = [
+            "sshpass", "-p", dest_config['password'],
             "rsync",
             *rsync_options,
-            "--exclude=.*",
-            f"--rsh={ssh_cmd_for_rsync}",
-            source_path,  # Local source
-            f"{dest_username}@{dest_host}:{escaped_remote_dest_path}"  # Remote destination
+            f"-e={dest_ssh_cmd}",
+            source_path,
+            f"{dest_config['username']}@{dest_config['host']}:{shlex.quote(remote_dest_path)}"
         ]
 
-        log_command = list(rsync_command)
+        rsync_command_str = shlex.join(rsync_command_list)
+
+        log_command = list(rsync_command_list)
         pass_index = log_command.index("-p") + 1
         if pass_index < len(log_command):
             log_command[pass_index] = "'********'"
-        logging.debug(f"Executing rsync upload command: {' '.join(log_command)}")
+        logging.debug(f"Executing remote rsync upload command on source: {' '.join(log_command)}")
 
         logging.info(f"Starting remote rsync upload for '{rsync_file_name}'...")
-        process = subprocess.run(rsync_command, capture_output=True, text=True, check=False)
+        with source_pool.get_connection() as (sftp, ssh):
+            stdin, stdout, stderr = ssh.exec_command(rsync_command_str)
+            exit_status = stdout.channel.recv_exit_status()
 
-        if process.returncode != 0:
-            logging.error(f"Remote rsync upload failed for '{rsync_file_name}' with exit code {process.returncode}.")
-            logging.error(f"Stderr: {process.stderr.strip()}")
-            raise Exception(f"Remote rsync transfer failed for {rsync_file_name}")
+            if exit_status != 0:
+                stderr_output = stderr.read().decode().strip()
+                logging.error(f"Remote rsync upload failed for '{rsync_file_name}' with exit code {exit_status}.")
+                logging.error(f"Stderr: {stderr_output}")
+                raise Exception(f"Remote rsync transfer failed for {rsync_file_name}")
 
         logging.info(f"Successfully transferred '{rsync_file_name}' via rsync upload.")
         return True
