@@ -10,7 +10,7 @@ import socket
 import typing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .utils import retry
-from .ssh_manager import SSHConnectionPool, sftp_mkdir_p, SSH_CONTROL_PATH
+from .ssh_manager import SSHConnectionPool, sftp_mkdir_p, _get_ssh_command
 from .ui import UIManagerV2 as UIManager
 import threading
 from typing import Any, Dict, List
@@ -770,6 +770,125 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
     logging.error(f"Transfer failed for file '{rsync_file_name}' after multiple retries.", exc_info=True)
     ui.fail_file_transfer(torrent_hash, rsync_file_name)
     raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {MAX_RETRY_ATTEMPTS} attempts.")
+
+
+def transfer_content_rsync_upload(
+    source_pool: SSHConnectionPool,
+    dest_pool: SSHConnectionPool,
+    dest_config: configparser.SectionProxy,
+    remote_source_path: str,
+    remote_dest_path: str,
+    torrent_hash: str,
+    ui: UIManager,
+    dry_run: bool = False
+) -> None:
+    """Transfers content from a source server to a destination server using rsync.
+    This function orchestrates a remote-to-remote transfer by executing an rsync
+    command on the source server, which then pushes the data to the destination server.
+    Args:
+        source_pool: The SSHConnectionPool for the source server.
+        dest_pool: The SSHConnectionPool for the destination server.
+        dest_config: The configuration section for the destination server.
+        remote_source_path: The absolute path of the source file or directory.
+        remote_dest_path: The absolute path of the destination.
+        torrent_hash: The hash of the parent torrent.
+        ui: The UI manager for progress updates.
+        dry_run: If True, simulates the transfer.
+    Raises:
+        Exception: If the rsync command fails after multiple retries.
+    """
+    rsync_file_name = os.path.basename(remote_source_path)
+    ui.start_file_transfer(torrent_hash, rsync_file_name, "uploading")
+
+    total_size = 0
+    with ui._lock:
+        if torrent_hash in ui._torrents:
+            total_size = ui._torrents[torrent_hash].get("size", 0)
+
+    if dry_run:
+        logging.info(f"[DRY RUN] Would execute remote rsync for: {rsync_file_name}")
+        if total_size > 0:
+            ui.update_torrent_progress(torrent_hash, total_size, transfer_type='upload')
+        return
+
+    try:
+        # 1. Create destination directory
+        with dest_pool.get_connection() as (sftp, ssh):
+            dest_parent_dir = os.path.dirname(remote_dest_path)
+            sftp_mkdir_p(sftp, dest_parent_dir)
+
+        # 2. Build and execute rsync command on source server
+        with source_pool.get_connection() as (sftp_source, ssh_client):
+            dest_host = dest_config['host']
+            dest_port = dest_config.getint('port')
+            dest_user = dest_config['username']
+            dest_pass = dest_config['password']
+
+            ssh_cmd_for_rsync = _get_ssh_command(dest_port)
+            remote_dest_spec = f"{dest_user}@{dest_host}:{shlex.quote(remote_dest_path)}"
+
+            # Build the command string, ensuring each argument that may contain
+            # special characters is correctly quoted for the remote shell.
+            final_command = (
+                f"sshpass -p {shlex.quote(dest_pass)} "
+                f"rsync -a --partial --inplace --info=progress2 "
+                f"--timeout={Timeouts.SSH_EXEC} "
+                f"-e {shlex.quote(ssh_cmd_for_rsync)} "
+                f"{shlex.quote(remote_source_path)} "
+                f"{remote_dest_spec}"  # Path inside is already quoted
+            )
+
+            # Create a "safe" version of the command for logging, with the password redacted.
+            safe_command_str = (
+                f"sshpass -p '********' "
+                f"rsync -a --partial --inplace --info=progress2 "
+                f"--timeout={Timeouts.SSH_EXEC} "
+                f"-e {shlex.quote(ssh_cmd_for_rsync)} "
+                f"{shlex.quote(remote_source_path)} "
+                f"{remote_dest_spec}"
+            )
+            logging.debug(f"Executing remote rsync command: {safe_command_str}")
+
+            stdin, stdout, stderr = ssh_client.exec_command(final_command)
+
+            last_total_transferred = 0
+            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
+
+            for line in iter(stdout.readline, ''):
+                line = line.strip()
+                match = progress_regex.match(line)
+                if match:
+                    try:
+                        total_transferred_str = match.group(1).replace(',', '')
+                        total_transferred = int(total_transferred_str)
+                        advance = total_transferred - last_total_transferred
+                        if advance > 0:
+                            ui.update_torrent_progress(torrent_hash, advance, transfer_type='upload')
+                            last_total_transferred = total_transferred
+                    except (ValueError, IndexError):
+                        logging.warning(f"Could not parse rsync progress line: {line}")
+                else:
+                    logging.debug(f"rsync stdout: {line}")
+
+            exit_status = stdout.channel.recv_exit_status()
+            stderr_output = stderr.read().decode('utf-8').strip()
+
+            if exit_status in [0, 24]:
+                if total_size > 0 and last_total_transferred < total_size:
+                    remaining = total_size - last_total_transferred
+                    ui.update_torrent_progress(torrent_hash, remaining, transfer_type='upload')
+                logging.info(f"Remote rsync transfer completed successfully for '{rsync_file_name}'.")
+                ui.complete_file_transfer(torrent_hash, rsync_file_name)
+            else:
+                logging.error(f"Remote rsync failed for '{rsync_file_name}' with exit code {exit_status}.")
+                logging.error(f"Stderr: {stderr_output}")
+                ui.fail_file_transfer(torrent_hash, rsync_file_name)
+                raise Exception(f"Remote rsync transfer failed for {rsync_file_name}")
+
+    except Exception as e:
+        logging.error(f"An exception occurred during remote rsync for '{rsync_file_name}': {e}", exc_info=True)
+        ui.fail_file_transfer(torrent_hash, rsync_file_name)
+        raise
 
 def transfer_content(pool: SSHConnectionPool, all_files: List[tuple[str, str]], torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, max_concurrent_downloads: int, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
     """Transfers a torrent's content from a remote SFTP server to local disk.
