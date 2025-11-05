@@ -34,7 +34,7 @@ from .qbittorrent_manager import connect_qbit, get_eligible_torrents, wait_for_r
 from .transfer_manager import (
     FileTransferTracker, TransferCheckpoint, transfer_content_rsync,
     transfer_content, transfer_content_sftp_upload, Timeouts,
-    transfer_content_rsync_upload
+    transfer_content_rsync_upload, RemoteTransferError
 )
 from .system_manager import (
     LockFile, setup_logging, destination_health_check, change_ownership,
@@ -228,14 +228,14 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
             with source_pool.get_connection() as (sftp, _):
                 is_folder = is_remote_dir(sftp, torrent.content_path)
 
-            transfer_success = transfer_content_rsync_upload(
+            transfer_content_rsync_upload(
                 ssh_connection_pools,
                 source_config,
                 dest_config,
                 rsync_options,
                 content_path=content_path,
                 rsync_file_name=rsync_file_name,
-                is_folder=torrent.is_folder,
+                is_folder=is_folder,
                 dest_path=rsync_dest_path
             )
             logging.info(f"TRANSFER: Rsync upload completed for '{name}'.")
@@ -267,10 +267,15 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
                 transfer_content(source_pool, all_files, hash_, ui, file_tracker, max_concurrent_downloads, dry_run, download_limit_bytes, sftp_chunk_size)
                 logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
         return True, "Transfer successful."
+    except RemoteTransferError as e:
+        # This is the new, specific catch block.
+        # It logs the error message from the exception, which contains the stderr.
+        logging.error(f"Transfer failed for '{name}': {e}", exc_info=False)
+        return False, f"Transfer failed: {e}"
     except Exception:
         # The transfer functions themselves are responsible for logging specific errors.
         # This catch is for any unexpected failures during the process.
-        logging.error(f"Transfer function failed for '{name}'. See above logs for details.")
+        logging.error(f"Transfer function failed for '{name}'. See above logs for details.", exc_info=True)
         return False, "Transfer function failed."
 
 def _post_transfer_actions(
