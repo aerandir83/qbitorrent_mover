@@ -212,9 +212,20 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
         elif transfer_mode == 'rsync_upload':
             logging.info(f"TRANSFER: Starting Rsync upload for '{name}'...")
             dest_config = config['DESTINATION_SERVER']
-            source_pool = ssh_connection_pools.get('SOURCE_SERVER')
-            dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
-            transfer_content_rsync_upload(source_pool, dest_pool, dest_config, source_content_path, dest_content_path, hash_, ui, dry_run)
+            rsync_options = config['SETTINGS'].get('rsync_options', '-a --partial --inplace --info=progress2').split()
+            rsync_file_name = os.path.basename(source_content_path)
+            transfer_content_rsync_upload(
+                rsync_options=rsync_options,
+                content_path=os.path.dirname(source_content_path),
+                rsync_file_name=rsync_file_name,
+                dest_host=dest_config['host'],
+                dest_port=dest_config.getint('port'),
+                dest_username=dest_config['username'],
+                dest_password=dest_config['password'],
+                dest_key_path=dest_config.get('key_path'),
+                dest_key_pass=dest_config.get('key_passphrase'),
+                dest_path=os.path.dirname(dest_content_path)
+            )
             logging.info(f"TRANSFER: Rsync upload completed for '{name}'.")
         else:
             max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)

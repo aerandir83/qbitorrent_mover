@@ -15,7 +15,9 @@ The current version is **2.7.3**. To check your version, run: `python3 -m torren
 ## Changelog
 
 ### Version 2.7.4 (Latest)
-* **fix(transfer)**: Resolved a `NameError` for `SSH_CONTROL_PATH` in `rsync_upload` mode by removing a redundant local function in `transfer_manager.py` and relying on the correctly imported function from `ssh_manager.py`.
+* **fix(transfer)**: Fixed `rsync_upload` mode.
+    * Resolved a `NameError` for `SSH_CONTROL_PATH` by removing a redundant local function in `transfer_manager.py`.
+    * Completely rewrote the `transfer_content_rsync_upload` function to correctly execute `rsync` from the local machine, fixing `sshpass: command not found` errors.
 
 ### Version 2.7.3
 * **fix(main)**: Fixed hang in `--simple` mode by refactoring all console logging logic. The script now correctly adds *only* a `StreamHandler` in simple mode and *only* a `RichHandler` in rich mode, resolving the `screen` conflict.
