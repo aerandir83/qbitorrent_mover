@@ -212,11 +212,22 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
         elif transfer_mode == 'rsync_upload':
             logging.info(f"TRANSFER: Starting Rsync upload for '{name}'...")
             content_path, rsync_file_name = os.path.split(torrent.content_path)
-            source_server_section = config['SETTINGS'].get('source_server_section')
+            source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
             source_config = config[source_server_section]
-            dest_config = config['DESTINATION_SERVER']
-            rsync_options = config['SETTINGS'].get("rsync_options")
-            rsync_dest_path = dest_content_path
+            dest_server_section = config['SETTINGS'].get('destination_server_section', 'DESTINATION_SERVER')
+            dest_config = config[dest_server_section]
+            rsync_options_str = config['SETTINGS'].get("rsync_options", "-a --partial --inplace")
+            rsync_options = shlex.split(rsync_options_str)
+            rsync_dest_path = os.path.dirname(dest_content_path)
+
+            source_pool = ssh_connection_pools.get(source_server_section)
+            if not source_pool:
+                raise ValueError(f"SSH pool '{source_server_section}' not found for rsync_upload.")
+
+            is_folder = False
+            with source_pool.get_connection() as (sftp, _):
+                is_folder = is_remote_dir(sftp, torrent.content_path)
+
             transfer_success = transfer_content_rsync_upload(
                 ssh_connection_pools,
                 source_config,
