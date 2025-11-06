@@ -10,7 +10,7 @@ Following these guidelines helps to communicate that you respect the time of the
 
 *   Python 3.8+
 *   `pip` for installing dependencies
-*   `sshpass` is required if you plan to use the `rsync` transfer mode with password authentication.
+*   `sshpass` is required if you plan to use the `rsync` or `rsync_upload` transfer modes with password authentication.
 
 ### Setting Up the Environment
 

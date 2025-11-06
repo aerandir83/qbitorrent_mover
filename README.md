@@ -10,7 +10,7 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.7.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.7.4**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
@@ -205,7 +205,7 @@ The current version is **2.7.3**. To check your version, run: `python3 -m torren
 *   **Multiple Transfer Modes**:
     *   **`sftp`**: (Default) Securely downloads files from the source to the local machine running the script.
     *   **`sftp_upload`**: Securely transfers files directly from a source SFTP server to a destination SFTP server, bypassing the local machine.
-    *   **`rsync_upload`**: Transfers files directly from the source server to the destination server via rsync. This bypasses the local machine and is often faster than sftp_upload.
+    *   **`rsync_upload`**: Transfers files by first downloading from the source server to a **local cache** (on the machine running the script) via rsync, and then uploading from the cache to the destination server via rsync. This is useful for high-speed transfers and avoids needing sshpass on the source server.
     *   **`rsync`**: Uses `rsync` for potentially faster transfers from the source to the local machine.
 *   **Concurrent Transfers**: Downloads or uploads multiple files in parallel to maximize transfer speed. The level of concurrency is configurable.
 *   **Category-Based Moving**: Only moves torrents assigned to a specific category you define (e.g., "move").
@@ -270,7 +270,7 @@ If you plan to use the `rsync` transfer mode, you must install `sshpass`.
 
 *   **For Debian/Ubuntu:** `sudo apt-get update && sudo apt-get install sshpass`
 
-**Note for `rsync_upload` mode**: This mode requires `rsync` and `sshpass` to be installed on your **source server**, as the script executes the transfer command remotely on that machine.
+**Note for `rsync` and `rsync_upload` modes**: Both modes require `rsync` and `sshpass` to be installed on the **local machine** (the one running this script).
 *   **For Fedora/CentOS/RHEL:** `sudo yum install sshpass`
 *   **For Arch Linux:** `sudo pacman -S sshpass`
 
