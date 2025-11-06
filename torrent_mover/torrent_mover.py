@@ -4,11 +4,12 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.7.3"
+__version__ = "2.7.6"
 
 # Standard Lib
 import configparser
 import sys
+import shlex  # <-- Add this line
 import logging
 import traceback
 from pathlib import Path
@@ -33,7 +34,8 @@ from .ssh_manager import (
 from .qbittorrent_manager import connect_qbit, get_eligible_torrents, wait_for_recheck_completion
 from .transfer_manager import (
     FileTransferTracker, TransferCheckpoint, transfer_content_rsync,
-    transfer_content, transfer_content_sftp_upload, Timeouts
+    transfer_content, transfer_content_sftp_upload, Timeouts,
+    transfer_content_rsync_upload, RemoteTransferError
 )
 from .system_manager import (
     LockFile, setup_logging, destination_health_check, change_ownership,
@@ -99,7 +101,7 @@ def _pre_transfer_setup(
     remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
     destination_save_path = remote_dest_base_path
     all_files: List[Tuple[str, str]] = []
-    is_remote_dest = (transfer_mode == 'sftp_upload')
+    is_remote_dest = (transfer_mode in ['sftp_upload', 'rsync_upload'])
 
     # --- 1. Check Destination Path ---
     destination_exists = False
@@ -206,8 +208,42 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
     try:
         if transfer_mode == 'rsync':
-            transfer_content_rsync(config['SOURCE_SERVER'], source_content_path, dest_content_path, hash_, ui, dry_run)
+            rsync_options_str = config['SETTINGS'].get("rsync_options", "-a --partial --inplace")
+            rsync_options = shlex.split(rsync_options_str)
+            transfer_content_rsync(config['SOURCE_SERVER'], source_content_path, dest_content_path, hash_, ui, rsync_options, dry_run)
             logging.info(f"TRANSFER: Rsync transfer completed for '{name}'.")
+        elif transfer_mode == 'rsync_upload':
+            logging.info(f"TRANSFER: Starting Rsync upload for '{name}'...")
+            content_path, rsync_file_name = os.path.split(torrent.content_path)
+            source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
+            source_config = config[source_server_section]
+            dest_server_section = config['SETTINGS'].get('destination_server_section', 'DESTINATION_SERVER')
+            dest_config = config[dest_server_section]
+            rsync_options_str = config['SETTINGS'].get("rsync_options", "-a --partial --inplace")
+            rsync_options = shlex.split(rsync_options_str)
+            rsync_dest_path = os.path.dirname(dest_content_path)
+
+            source_pool = ssh_connection_pools.get(source_server_section)
+            if not source_pool:
+                raise ValueError(f"SSH pool '{source_server_section}' not found for rsync_upload.")
+
+            is_folder = False
+            with source_pool.get_connection() as (_, ssh):
+                is_folder = is_remote_dir(ssh, torrent.content_path)
+
+            # The new call for the cache-based logic:
+            transfer_content_rsync_upload(
+                source_config,
+                dest_config,
+                rsync_options,
+                source_content_path, # This is the full path to the content on the source
+                dest_content_path,   # This is the full path to the content on the dest
+                torrent.hash,
+                ui,
+                dry_run,
+                is_folder # Pass this to correctly form paths inside the function
+            )
+            logging.info(f"TRANSFER: Rsync upload completed for '{name}'.")
         else:
             max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)
             max_concurrent_uploads = config['SETTINGS'].getint('max_concurrent_uploads', 4)
@@ -236,10 +272,15 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
                 transfer_content(source_pool, all_files, hash_, ui, file_tracker, max_concurrent_downloads, dry_run, download_limit_bytes, sftp_chunk_size)
                 logging.info(f"TRANSFER: SFTP download completed for '{name}'.")
         return True, "Transfer successful."
+    except RemoteTransferError as e:
+        # This is the new, specific catch block.
+        # It logs the error message from the exception, which contains the stderr.
+        logging.error(f"Transfer failed for '{name}': {e}", exc_info=False)
+        return False, f"Transfer failed: {e}"
     except Exception:
         # The transfer functions themselves are responsible for logging specific errors.
         # This catch is for any unexpected failures during the process.
-        logging.error(f"Transfer function failed for '{name}'. See above logs for details.")
+        logging.error(f"Transfer function failed for '{name}'. See above logs for details.", exc_info=True)
         return False, "Transfer function failed."
 
 def _post_transfer_actions(
@@ -290,7 +331,7 @@ def _post_transfer_actions(
         chown_user = config['SETTINGS'].get('chown_user', '').strip()
         chown_group = config['SETTINGS'].get('chown_group', '').strip()
         if chown_user or chown_group:
-            remote_config = config['DESTINATION_SERVER'] if transfer_mode == 'sftp_upload' else None
+            remote_config = config['DESTINATION_SERVER'] if transfer_mode in ['sftp_upload', 'rsync_upload'] else None
             change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
 
     destination_save_path_str = str(destination_save_path).replace("\\", "/")
@@ -953,7 +994,7 @@ def main() -> int:
             return 0
 
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-        if transfer_mode == 'rsync':
+        if transfer_mode == 'rsync' or transfer_mode == 'rsync_upload':
             check_sshpass_installed()
 
         _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint, file_tracker, simple_mode, rich_handler)

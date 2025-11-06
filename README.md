@@ -10,11 +10,23 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.7.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.7.5**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.7.3 (Latest)
+### Version 2.7.6 (Pending)
+* **fix(transfer)**: Fixed a bug where paths from qBittorrent containing surrounding quotes (e.g., `'/path/to/file'`) would cause `rsync` transfers to fail due to malformed, double-escaped quotes.
+
+### Version 2.7.5 (Latest)
+* **fix(main)**: Removed an incorrect startup dependency check for `sshpass` on the source server when using `rsync_upload` mode.
+* **fix(transfer)**: Corrected a logic error in `rsync_upload` mode where the download step was saving to the wrong directory, causing the upload step to fail.
+
+### Version 2.7.4
+* **fix(transfer)**: Fixed `rsync_upload` mode.
+    * Resolved a `NameError` for `SSH_CONTROL_PATH` by removing a redundant local function in `transfer_manager.py`.
+    * Completely rewrote the `transfer_content_rsync_upload` function to correctly execute `rsync` from the local machine, fixing `sshpass: command not found` errors.
+
+### Version 2.7.3
 * **fix(main)**: Fixed hang in `--simple` mode by refactoring all console logging logic. The script now correctly adds *only* a `StreamHandler` in simple mode and *only* a `RichHandler` in rich mode, resolving the `screen` conflict.
 
 ### Version 2.7.2
@@ -200,6 +212,7 @@ The current version is **2.7.3**. To check your version, run: `python3 -m torren
 *   **Multiple Transfer Modes**:
     *   **`sftp`**: (Default) Securely downloads files from the source to the local machine running the script.
     *   **`sftp_upload`**: Securely transfers files directly from a source SFTP server to a destination SFTP server, bypassing the local machine.
+    *   **`rsync_upload`**: Transfers files by first downloading from the source server to a **local cache** (on the machine running the script) via rsync, and then uploading from the cache to the destination server via rsync. This is useful for high-speed transfers and avoids needing sshpass on the source server.
     *   **`rsync`**: Uses `rsync` for potentially faster transfers from the source to the local machine.
 *   **Concurrent Transfers**: Downloads or uploads multiple files in parallel to maximize transfer speed. The level of concurrency is configurable.
 *   **Category-Based Moving**: Only moves torrents assigned to a specific category you define (e.g., "move").
@@ -263,6 +276,8 @@ pip install -r torrent_mover/requirements.txt
 If you plan to use the `rsync` transfer mode, you must install `sshpass`.
 
 *   **For Debian/Ubuntu:** `sudo apt-get update && sudo apt-get install sshpass`
+
+**Note for `rsync` and `rsync_upload` modes**: Both modes require `rsync` and `sshpass` to be installed on the **local machine** (the one running this script).
 *   **For Fedora/CentOS/RHEL:** `sudo yum install sshpass`
 *   **For Arch Linux:** `sudo pacman -S sshpass`
 

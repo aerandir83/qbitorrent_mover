@@ -129,7 +129,7 @@ class ConfigValidator:
                      'category_to_move', 'transfer_mode']
     }
 
-    VALID_TRANSFER_MODES = ['sftp', 'rsync', 'sftp_upload']
+    VALID_TRANSFER_MODES = ['sftp', 'rsync', 'sftp_upload', 'rsync_upload']
 
     def __init__(self, config: configparser.ConfigParser):
         """Initializes the ConfigValidator.
@@ -199,8 +199,8 @@ class ConfigValidator:
             self.errors.append(f"Invalid transfer_mode '{mode}'. Must be one of: {', '.join(self.VALID_TRANSFER_MODES)}")
 
         # Check mode-specific requirements
-        if mode == 'sftp_upload' and not self.config.has_section('DESTINATION_SERVER'):
-            self.errors.append("transfer_mode='sftp_upload' requires [DESTINATION_SERVER] section")
+        if mode in ['sftp_upload', 'rsync_upload'] and not self.config.has_section('DESTINATION_SERVER'):
+            self.errors.append(f"transfer_mode='{mode}' requires a [DESTINATION_SERVER] section")
 
         if mode == 'rsync' and not shutil.which('rsync'):
             self.warnings.append("rsync mode selected but 'rsync' command not found in PATH")
