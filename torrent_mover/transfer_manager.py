@@ -956,7 +956,7 @@ def transfer_content_rsync_upload(
         transfer_content_rsync(
             source_config,
             source_content_path,
-            temp_dir, # Download *into* the cache directory
+            local_cache_content_path,
             torrent_hash,
             ui,
             dry_run
