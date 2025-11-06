@@ -226,8 +226,8 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
                 raise ValueError(f"SSH pool '{source_server_section}' not found for rsync_upload.")
 
             is_folder = False
-            with source_pool.get_connection() as (sftp, _):
-                is_folder = is_remote_dir(sftp, torrent.content_path)
+            with source_pool.get_connection() as (sftp, ssh):
+                is_folder = is_remote_dir(ssh, torrent.content_path)
 
             transfer_content_rsync_upload(
                 ssh_connection_pools,
@@ -992,6 +992,24 @@ def main() -> int:
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         if transfer_mode == 'rsync':
             check_sshpass_installed()
+
+        if transfer_mode == 'rsync_upload':
+            # Verify sshpass is installed on the source server
+            source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
+            source_pool = ssh_connection_pools.get(source_server_section)
+            if source_pool:
+                try:
+                    with source_pool.get_connection() as (sftp, ssh):
+                        stdin, stdout, stderr = ssh.exec_command("which sshpass", timeout=10)
+                        exit_status = stdout.channel.recv_exit_status()
+                        if exit_status != 0:
+                            logging.error("FATAL: 'sshpass' is not installed on the source server.")
+                            logging.error("Please install 'sshpass' on the source server to use rsync_upload mode.")
+                            return 1
+                        logging.debug("'sshpass' dependency check passed on source server.")
+                except Exception as e:
+                    logging.error(f"Could not verify sshpass on source server: {e}")
+                    return 1
 
         _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint, file_tracker, simple_mode, rich_handler)
 
