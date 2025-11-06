@@ -15,7 +15,7 @@ The current version is **2.7.5**. To check your version, run: `python3 -m torren
 ## Changelog
 
 ### Version 2.7.6 (Pending)
-* **fix(transfer)**: Ensured `rsync_options` from `config.ini` are correctly passed to the `rsync` commands in all transfer modes.
+* **fix(transfer)**: Fixed a bug where paths from qBittorrent containing surrounding quotes (e.g., `'/path/to/file'`) would cause `rsync` transfers to fail due to malformed, double-escaped quotes.
 
 ### Version 2.7.5 (Latest)
 * **fix(main)**: Removed an incorrect startup dependency check for `sshpass` on the source server when using `rsync_upload` mode.
