@@ -734,7 +734,7 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                     ui.log(f"[yellow]Skipped (recheck fail): {torrent.name}[/yellow]")
                     ui.advance_analysis()
                     continue
-                paths_to_check.append(torrent.content_path)
+                paths_to_check.append(torrent.content_path.strip('\'"'))
 
             if not paths_to_check:
                 logging.info("No new torrents to analyze.")
