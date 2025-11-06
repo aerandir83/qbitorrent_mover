@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.7.3"
+__version__ = "2.7.4"
 
 # Standard Lib
 import configparser
@@ -226,18 +226,20 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
                 raise ValueError(f"SSH pool '{source_server_section}' not found for rsync_upload.")
 
             is_folder = False
-            with source_pool.get_connection() as (sftp, ssh):
+            with source_pool.get_connection() as (_, ssh):
                 is_folder = is_remote_dir(ssh, torrent.content_path)
 
+            # The new call for the cache-based logic:
             transfer_content_rsync_upload(
-                ssh_connection_pools,
                 source_config,
                 dest_config,
                 rsync_options,
-                content_path=content_path,
-                rsync_file_name=rsync_file_name,
-                is_folder=is_folder,
-                dest_path=rsync_dest_path
+                source_content_path, # This is the full path to the content on the source
+                dest_content_path,   # This is the full path to the content on the dest
+                torrent.hash,
+                ui,
+                args.dry_run,
+                is_folder # Pass this to correctly form paths inside the function
             )
             logging.info(f"TRANSFER: Rsync upload completed for '{name}'.")
         else:
@@ -990,26 +992,8 @@ def main() -> int:
             return 0
 
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-        if transfer_mode == 'rsync':
+        if transfer_mode == 'rsync' or transfer_mode == 'rsync_upload':
             check_sshpass_installed()
-
-        if transfer_mode == 'rsync_upload':
-            # Verify sshpass is installed on the source server
-            source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
-            source_pool = ssh_connection_pools.get(source_server_section)
-            if source_pool:
-                try:
-                    with source_pool.get_connection() as (sftp, ssh):
-                        stdin, stdout, stderr = ssh.exec_command("which sshpass", timeout=10)
-                        exit_status = stdout.channel.recv_exit_status()
-                        if exit_status != 0:
-                            logging.error("FATAL: 'sshpass' is not installed on the source server.")
-                            logging.error("Please install 'sshpass' on the source server to use rsync_upload mode.")
-                            return 1
-                        logging.debug("'sshpass' dependency check passed on source server.")
-                except Exception as e:
-                    logging.error(f"Could not verify sshpass on source server: {e}")
-                    return 1
 
         _run_transfer_operation(config, args, tracker_rules, script_dir, ssh_connection_pools, checkpoint, file_tracker, simple_mode, rich_handler)
 
