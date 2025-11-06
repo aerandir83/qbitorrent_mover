@@ -304,6 +304,10 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
             total_size = remote_stat.st_size
             # ui.update_file_status(torrent_hash, source_file_path, "Downloading")
             local_size = 0
+            with ui._lock:
+                if torrent_hash not in ui._file_progress:
+                    ui._file_progress[torrent_hash] = {}
+                ui._file_progress[torrent_hash][source_file_path] = (local_size, total_size)
             if local_cache_path.exists():
                 try:
                     local_size = local_cache_path.stat().st_size
@@ -334,6 +338,9 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
                         local_f.write(chunk)
                         increment = len(chunk)
                         local_size += increment
+                        with ui._lock:
+                            if torrent_hash in ui._file_progress:
+                                ui._file_progress[torrent_hash][source_file_path] = (local_size, total_size)
                         ui.update_torrent_progress(torrent_hash, increment, transfer_type='download')
                         # ui.advance_overall_progress(increment)
                         file_tracker.record_file_progress(torrent_hash, source_file_path, local_size)
@@ -374,6 +381,10 @@ def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path
     try:
         ui.start_file_transfer(torrent_hash, source_file_path, "uploading")
         total_size = local_cache_path.stat().st_size
+        with ui._lock:
+            if torrent_hash not in ui._file_progress:
+                ui._file_progress[torrent_hash] = {}
+            ui._file_progress[torrent_hash][source_file_path] = (0, total_size)
         # ui.update_file_status(torrent_hash, source_file_path, "Uploading")
         with dest_pool.get_connection() as (sftp, ssh):
             dest_size = 0
@@ -400,8 +411,11 @@ def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path
                         if not chunk: break
                         dest_f.write(chunk)
                         increment = len(chunk)
+                        dest_size += increment
+                        with ui._lock:
+                            if torrent_hash in ui._file_progress:
+                                ui._file_progress[torrent_hash][source_file_path] = (dest_size, total_size)
                         ui.update_torrent_progress(torrent_hash, increment, transfer_type='upload')
-                        # ui.advance_overall_progress(increment)
             if sftp.stat(dest_file_path).st_size != total_size:
                 raise Exception("Final size mismatch during cached upload.")
             # ui.update_file_status(torrent_hash, source_file_path, "[green]Completed[/green]")
@@ -450,6 +464,10 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
             if total_size == 0:
                 logging.warning(f"Skipping zero-byte source file: {file_name}")
                 return
+            with ui._lock:
+                if torrent_hash not in ui._file_progress:
+                    ui._file_progress[torrent_hash] = {}
+                ui._file_progress[torrent_hash][source_file_path] = (0, total_size)
             dest_size = file_tracker.get_file_progress(torrent_hash, source_file_path)
             try:
                 remote_dest_size = dest_sftp.stat(dest_file_path).st_size
@@ -490,6 +508,9 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
                         dest_f.write(chunk)
                         increment = len(chunk)
                         dest_size += increment
+                        with ui._lock:
+                            if torrent_hash in ui._file_progress:
+                                ui._file_progress[torrent_hash][source_file_path] = (dest_size, total_size)
                         ui.update_torrent_progress(torrent_hash, increment, transfer_type='upload')
                         # ui.advance_overall_progress(increment)
                         file_tracker.record_file_progress(torrent_hash, source_file_path, dest_size)
@@ -571,6 +592,10 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
                     local_size = 0
             else:
                 file_tracker.record_file_progress(torrent_hash, remote_file, 0)
+            with ui._lock:
+                if torrent_hash not in ui._file_progress:
+                    ui._file_progress[torrent_hash] = {}
+                ui._file_progress[torrent_hash][remote_file] = (local_size, total_size)
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {file_name}")
                 ui.update_torrent_progress(torrent_hash, total_size - local_size, transfer_type='download')
@@ -603,6 +628,9 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
                         local_f.write(chunk)
                         increment = len(chunk)
                         local_size += increment
+                        with ui._lock:
+                            if torrent_hash in ui._file_progress:
+                                ui._file_progress[torrent_hash][remote_file] = (local_size, total_size)
                         ui.update_torrent_progress(torrent_hash, increment, transfer_type='download')
                         # ui.advance_overall_progress(increment)
                         file_tracker.record_file_progress(torrent_hash, remote_file, local_size)
@@ -789,55 +817,64 @@ def transfer_content_rsync_upload(
     by executing rsync on the source server.
     """
     try:
-        source_pool = ssh_connection_pools[source_config.name]
+        source_server_section = source_config.name
+        source_pool = ssh_connection_pools.get(source_server_section)
+
+        if not source_pool:
+            raise ValueError(f"SSH pool '{source_server_section}' not found for rsync_upload.")
 
         if is_folder:
             source_path = os.path.join(content_path, rsync_file_name) + "/"
+            # Ensure trailing slash for rsync to copy contents *into* the dir
             remote_dest_path = os.path.join(dest_path, rsync_file_name) + "/"
         else:
             source_path = os.path.join(content_path, rsync_file_name)
-            remote_dest_path = os.path.join(dest_path, rsync_file_name)
+             # No trailing slash on file, but trailing slash on destination dir
+            remote_dest_path = dest_path + "/"
 
+        # Build the SSH command for rsync's -e option
         dest_ssh_cmd = _get_ssh_command(dest_config.getint('port'))
 
-        rsync_command = [
-            "sshpass", "-p", dest_config['password'],
-            "rsync", *rsync_options,
-            f"-e={dest_ssh_cmd}",
-            source_path,
-            f"{dest_config['username']}@{dest_config['host']}:{shlex.quote(remote_dest_path)}"
+        # Build the rsync command to be executed on the source server
+        # Note: We need to escape the command properly for remote execution
+        rsync_cmd_parts = [
+            "SSHPASS=" + shlex.quote(dest_config['password']),
+            "sshpass", "-e",
+            "rsync"
         ]
+        rsync_cmd_parts.extend(rsync_options)
+        rsync_cmd_parts.extend([
+            "-e", shlex.quote(dest_ssh_cmd),
+            shlex.quote(source_path),
+            f"{dest_config['username']}@{dest_config['host']}:{shlex.quote(remote_dest_path)}"
+        ])
 
-        rsync_command_str = shlex.join(rsync_command)
+        # Join into a single command string
+        rsync_command_str = " ".join(rsync_cmd_parts)
 
-        # Create a log-safe version of the command
-        log_command = list(rsync_command)
-        try:
-            pass_index = log_command.index("-p") + 1
-            if pass_index < len(log_command):
-                log_command[pass_index] = "'********'"
-        except ValueError:
-            pass # '-p' not found
+        # Create a log-safe version
+        log_command = rsync_command_str.replace(dest_config['password'], "'********'")
 
-        # Add detailed logging before execution
         logger.info(f"Attempting remote rsync upload for '{rsync_file_name}'...")
-        logger.info(f"Executing remote rsync command on {source_config.name}: {shlex.join(log_command)}")
+        logger.debug(f"Executing on {source_server_section}: {log_command}")
 
         with source_pool.get_connection() as (sftp, ssh):
-            stdin, stdout, stderr = ssh.exec_command(rsync_command_str)
+            stdin, stdout, stderr = ssh.exec_command(rsync_command_str, timeout=Timeouts.SSH_EXEC)
             exit_status = stdout.channel.recv_exit_status()
-            stderr_output = stderr.read().decode().strip()
 
-            if exit_status == 0:
+            if exit_status == 0 or exit_status == 24:  # 24 = some files vanished
                 logger.info(f"Remote rsync upload successful for '{rsync_file_name}'.")
                 return True
             else:
+                stderr_output = stderr.read().decode().strip()
+                stdout_output = stdout.read().decode().strip()
                 logger.error(f"Remote rsync upload failed for '{rsync_file_name}' with exit code {exit_status}.")
+                logger.error(f"Stdout: {stdout_output}")
                 logger.error(f"Stderr: {stderr_output}")
-                raise RemoteTransferError(f"Remote rsync transfer failed for {rsync_file_name}")
+                raise RemoteTransferError(f"Remote rsync failed (exit {exit_status}): {stderr_output}")
 
     except Exception as e:
-        logger.error(f"An exception occurred during remote rsync upload for '{rsync_file_name}': {e}", exc_info=True)
+        logger.error(f"Exception during remote rsync upload for '{rsync_file_name}': {e}", exc_info=True)
         raise RemoteTransferError(f"Remote rsync transfer failed for {rsync_file_name}") from e
 
 def transfer_content(pool: SSHConnectionPool, all_files: List[tuple[str, str]], torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, max_concurrent_downloads: int, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
