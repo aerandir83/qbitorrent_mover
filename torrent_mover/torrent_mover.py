@@ -10,6 +10,7 @@ __version__ = "2.7.6"
 import configparser
 import sys
 import shlex  # <-- Add this line
+import subprocess
 import logging
 import traceback
 from pathlib import Path
@@ -131,8 +132,18 @@ def _pre_transfer_setup(
                 if os.path.exists(dest_content_path):
                     destination_exists = True
                     if os.path.isdir(dest_content_path):
-                        # Calculate local directory size (this can be slow, but necessary)
-                        destination_size = sum(f.stat().st_size for f in Path(dest_content_path).glob('**/*') if f.is_file())
+                        try:
+                            # Use 'du' for fast local size check
+                            result = subprocess.run(['du', '-sb', dest_content_path], capture_output=True, text=True, check=True, encoding='utf-8')
+                            destination_size = int(result.stdout.split()[0])
+                        except Exception as e:
+                            logging.warning(f"Failed to use 'du' for local size check, falling back to slow method. Error: {e}")
+                            # Fallback to slow method
+                            try:
+                                destination_size = sum(f.stat().st_size for f in Path(dest_content_path).glob('**/*') if f.is_file())
+                            except Exception as glob_e:
+                                logging.error(f"Fallback size check also failed for {dest_content_path}: {glob_e}")
+                                destination_size = -1 # Indicate failure
                     else:
                         destination_size = os.path.getsize(dest_content_path)
 
