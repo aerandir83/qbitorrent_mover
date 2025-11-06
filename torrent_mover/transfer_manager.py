@@ -680,7 +680,8 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
     # Ensure the remote *parent* directory exists.
     # rsync will create the final content directory.
     remote_parent_dir = os.path.dirname(remote_path)
-    remote_spec = f"{username}@{host}:{shlex.quote(remote_parent_dir)}"
+    cleaned_remote_parent_dir = remote_parent_dir.strip('\'"')
+    remote_spec = f"{username}@{host}:{shlex.quote(cleaned_remote_parent_dir)}"
 
     rsync_cmd = [
         "sshpass", "-p", password,
@@ -815,7 +816,8 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
     password = sftp_config['password']
     local_parent_dir = os.path.dirname(local_path)
     Path(local_parent_dir).mkdir(parents=True, exist_ok=True)
-    remote_spec = f"{username}@{host}:{shlex.quote(remote_path)}"
+    cleaned_remote_path = remote_path.strip('\'"')
+    remote_spec = f"{username}@{host}:{shlex.quote(cleaned_remote_path)}"
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
