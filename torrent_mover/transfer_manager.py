@@ -664,7 +664,7 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
         raise
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
-def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionProxy, local_path: str, remote_path: str, torrent_hash: str, ui: UIManager, dry_run: bool = False) -> None:
+def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionProxy, local_path: str, remote_path: str, torrent_hash: str, ui: UIManager, rsync_options: List[str], dry_run: bool = False) -> None:
     """
     Transfers content from a local path to a remote server using rsync.
     This is the UPLOAD part of the cache-based rsync_upload mode.
@@ -685,7 +685,7 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
-        "-a", "--partial", "--inplace",
+        *rsync_options,
         "--info=progress2",
         f"--timeout={Timeouts.SSH_EXEC}",
         "-e", _get_ssh_command(port),
@@ -786,7 +786,7 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
     raise RemoteTransferError(f"Rsync upload for '{file_name}' failed after {MAX_RETRY_ATTEMPTS} attempts.")
 
 
-def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: str, local_path: str, torrent_hash: str, ui: UIManager, dry_run: bool = False) -> None:
+def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: str, local_path: str, torrent_hash: str, ui: UIManager, rsync_options: List[str], dry_run: bool = False) -> None:
     """Transfers content from a remote server to a local path using rsync.
 
     This function constructs and executes an `rsync` command via `sshpass` to
@@ -799,6 +799,7 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
         local_path: The absolute path of the local destination.
         torrent_hash: The hash of the parent torrent.
         ui: The UI manager for progress updates.
+        rsync_options: A list of options to pass to the rsync command.
         dry_run: If True, simulates the transfer.
 
     Raises:
@@ -818,7 +819,7 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
     rsync_cmd = [
         "sshpass", "-p", password,
         "rsync",
-        "-a", "--partial", "--inplace",
+        *rsync_options,
         "--info=progress2",
         f"--timeout={Timeouts.SSH_EXEC}",
         "-e", _get_ssh_command(port),
@@ -928,7 +929,7 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
 def transfer_content_rsync_upload(
     source_config: configparser.SectionProxy,
     dest_config: configparser.SectionProxy,
-    rsync_options: List[str], # Note: rsync_options are not used in this impl, but kept for signature
+    rsync_options: List[str],
     source_content_path: str,
     dest_content_path: str,
     torrent_hash: str,
@@ -959,6 +960,7 @@ def transfer_content_rsync_upload(
             local_cache_content_path,
             torrent_hash,
             ui,
+            rsync_options,
             dry_run
         )
         logging.info(f"Rsync-Upload: Download to cache complete for '{file_name}'.")
@@ -974,6 +976,7 @@ def transfer_content_rsync_upload(
             dest_content_path,
             torrent_hash,
             ui,
+            rsync_options,
             dry_run
         )
         logging.info(f"Rsync-Upload: Upload from cache complete for '{file_name}'.")
