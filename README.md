@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.7.4**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.7.5**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.7.4 (Latest)
+### Version 2.7.5 (Latest)
+* **fix(transfer)**: Corrected a logic error in `rsync_upload` mode where the download step was saving to the wrong directory, causing the upload step to fail.
+
+### Version 2.7.4
 * **fix(transfer)**: Fixed `rsync_upload` mode.
     * Resolved a `NameError` for `SSH_CONTROL_PATH` by removing a redundant local function in `transfer_manager.py`.
     * Completely rewrote the `transfer_content_rsync_upload` function to correctly execute `rsync` from the local machine, fixing `sshpass: command not found` errors.
