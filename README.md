@@ -14,7 +14,11 @@ The current version is **2.7.5**. To check your version, run: `python3 -m torren
 
 ## Changelog
 
+### Version 2.7.6 (Pending)
+* **fix(transfer)**: Ensured `rsync_options` from `config.ini` are correctly passed to the `rsync` commands in all transfer modes.
+
 ### Version 2.7.5 (Latest)
+* **fix(main)**: Removed an incorrect startup dependency check for `sshpass` on the source server when using `rsync_upload` mode.
 * **fix(transfer)**: Corrected a logic error in `rsync_upload` mode where the download step was saving to the wrong directory, causing the upload step to fail.
 
 ### Version 2.7.4
