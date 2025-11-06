@@ -219,7 +219,7 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
     try:
         if transfer_mode == 'rsync':
-            rsync_options_str = config['SETTINGS'].get("rsync_options", "-a --partial --inplace")
+            rsync_options_str = config['SETTINGS'].get("rsync_options", "-a --partial --inplace --whole-file")
             rsync_options = shlex.split(rsync_options_str)
             transfer_content_rsync(config['SOURCE_SERVER'], source_content_path, dest_content_path, hash_, ui, rsync_options, dry_run)
             logging.info(f"TRANSFER: Rsync transfer completed for '{name}'.")
@@ -230,7 +230,7 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
             source_config = config[source_server_section]
             dest_server_section = config['SETTINGS'].get('destination_server_section', 'DESTINATION_SERVER')
             dest_config = config[dest_server_section]
-            rsync_options_str = config['SETTINGS'].get("rsync_options", "-a --partial --inplace")
+            rsync_options_str = config['SETTINGS'].get("rsync_options", "-a --partial --inplace --whole-file")
             rsync_options = shlex.split(rsync_options_str)
             rsync_dest_path = os.path.dirname(dest_content_path)
 
