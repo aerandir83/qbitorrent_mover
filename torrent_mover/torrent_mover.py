@@ -238,7 +238,7 @@ def _execute_transfer(torrent: 'qbittorrentapi.TorrentDictionary', total_size: i
                 dest_content_path,   # This is the full path to the content on the dest
                 torrent.hash,
                 ui,
-                args.dry_run,
+                dry_run,
                 is_folder # Pass this to correctly form paths inside the function
             )
             logging.info(f"TRANSFER: Rsync upload completed for '{name}'.")
