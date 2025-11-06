@@ -304,10 +304,6 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
             total_size = remote_stat.st_size
             # ui.update_file_status(torrent_hash, source_file_path, "Downloading")
             local_size = 0
-            with ui._lock:
-                if torrent_hash not in ui._file_progress:
-                    ui._file_progress[torrent_hash] = {}
-                ui._file_progress[torrent_hash][source_file_path] = (local_size, total_size)
             if local_cache_path.exists():
                 try:
                     local_size = local_cache_path.stat().st_size
@@ -316,6 +312,10 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
             else:
                 file_tracker.record_file_progress(torrent_hash, source_file_path, 0)
 
+            with ui._lock:
+                if torrent_hash not in ui._file_progress:
+                    ui._file_progress[torrent_hash] = {}
+                ui._file_progress[torrent_hash][source_file_path] = (local_size, total_size)
             if local_size == total_size:
                 logging.info(f"Skipping (exists and size matches): {os.path.basename(source_file_path)}")
                 ui.update_torrent_progress(torrent_hash, total_size - local_size, transfer_type='download')
@@ -663,6 +663,129 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
         logging.error(f"Download failed for {file_name}: {e}")
         raise
 
+@retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
+def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionProxy, local_path: str, remote_path: str, torrent_hash: str, ui: UIManager, dry_run: bool = False) -> None:
+    """
+    Transfers content from a local path to a remote server using rsync.
+    This is the UPLOAD part of the cache-based rsync_upload mode.
+    """
+    file_name = os.path.basename(local_path)
+    ui.start_file_transfer(torrent_hash, file_name, "uploading")
+
+    host = dest_config['host']
+    port = dest_config.getint('port')
+    username = dest_config['username']
+    password = dest_config['password']
+
+    # Ensure the remote *parent* directory exists.
+    # rsync will create the final content directory.
+    remote_parent_dir = os.path.dirname(remote_path)
+    remote_spec = f"{username}@{host}:{shlex.quote(remote_parent_dir)}"
+
+    rsync_cmd = [
+        "sshpass", "-p", password,
+        "rsync",
+        "-a", "--partial", "--inplace",
+        "--info=progress2",
+        f"--timeout={Timeouts.SSH_EXEC}",
+        "-e", _get_ssh_command(port),
+        local_path, # Source is local
+        remote_spec # Destination is remote
+    ]
+    safe_rsync_cmd = list(rsync_cmd)
+    safe_rsync_cmd[2] = "'********'"
+
+    total_size = 0
+    with ui._lock:
+        if torrent_hash in ui._torrents:
+            # We divide by 2 because this is the second half of a 2x multiplier transfer
+            total_size = ui._torrents[torrent_hash].get("size", 0) / 2
+
+    if dry_run:
+        logging.info(f"[DRY RUN] Would execute rsync upload for: {file_name}")
+        logging.debug(f"[DRY RUN] Command: {' '.join(safe_rsync_cmd)}")
+        if total_size > 0:
+            ui.update_torrent_progress(torrent_hash, total_size, transfer_type='upload')
+        ui.complete_file_transfer(torrent_hash, file_name)
+        return
+
+    logging.info(f"Starting rsync upload from cache for '{file_name}'")
+    logging.debug(f"Executing rsync upload: {' '.join(safe_rsync_cmd)}")
+
+    for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+        if attempt > 1:
+            logging.info(f"Rsync upload attempt {attempt}/{MAX_RETRY_ATTEMPTS} for '{file_name}'...")
+            time.sleep(RETRY_DELAY_SECONDS)
+
+        process = None
+        try:
+            process = subprocess.Popen(
+                rsync_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1
+            )
+            last_total_transferred = 0
+            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
+
+            if process.stdout:
+                for line in iter(process.stdout.readline, ''):
+                    line = line.strip()
+                    match = progress_regex.match(line)
+                    if match:
+                        try:
+                            total_transferred_str = match.group(1).replace(',', '')
+                            total_transferred = int(total_transferred_str)
+                            advance = total_transferred - last_total_transferred
+                            if advance > 0:
+                                ui.update_torrent_progress(torrent_hash, advance, transfer_type='upload')
+                                last_total_transferred = total_transferred
+                        except (ValueError, IndexError):
+                            logging.warning(f"Could not parse rsync upload progress line: {line}")
+                    else:
+                        logging.debug(f"rsync upload stdout: {line}")
+
+            process.wait()
+            stderr_output = process.stderr.read() if process.stderr else ""
+
+            if process.returncode == 0 or process.returncode == 24:
+                if total_size > 0 and last_total_transferred < total_size:
+                    remaining = total_size - last_total_transferred
+                    ui.update_torrent_progress(torrent_hash, remaining, transfer_type='upload')
+
+                logging.info(f"Rsync upload from cache completed for '{file_name}'.")
+                ui.log(f"[green]Rsync upload complete: {file_name}[/green]")
+                ui.complete_file_transfer(torrent_hash, file_name)
+                return
+            elif process.returncode == 30:
+                logging.warning(f"Rsync upload timed out for '{file_name}'. Retrying...")
+                continue
+            else:
+                logging.error(f"Rsync upload failed for '{file_name}' with non-retryable exit code {process.returncode}.\n"
+                              f"Rsync stderr: {stderr_output}")
+                ui.log(f"[bold red]Rsync Upload FAILED for {file_name}[/bold red]")
+                ui.fail_file_transfer(torrent_hash, file_name)
+                raise RemoteTransferError(f"Rsync upload failed (exit {process.returncode}): {stderr_output}")
+
+        except Exception as e:
+            logging.error(f"An exception occurred during rsync upload for '{file_name}': {e}", exc_info=True)
+            if process:
+                process.kill()
+            if attempt < MAX_RETRY_ATTEMPTS:
+                logging.warning("Retrying...")
+                continue
+            else:
+                ui.fail_file_transfer(torrent_hash, file_name)
+                raise e
+
+    logging.error(f"Upload from cache failed for '{file_name}' after multiple retries.", exc_info=True)
+    ui.fail_file_transfer(torrent_hash, file_name)
+    raise RemoteTransferError(f"Rsync upload for '{file_name}' failed after {MAX_RETRY_ATTEMPTS} attempts.")
+
+
 def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: str, local_path: str, torrent_hash: str, ui: UIManager, dry_run: bool = False) -> None:
     """Transfers content from a remote server to a local path using rsync.
 
@@ -803,79 +926,69 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
 
 
 def transfer_content_rsync_upload(
-    ssh_connection_pools: Dict[str, SSHConnectionPool],
     source_config: configparser.SectionProxy,
     dest_config: configparser.SectionProxy,
-    rsync_options: List[str],
-    content_path: str,
-    rsync_file_name: str,
-    is_folder: bool,
-    dest_path: str
+    rsync_options: List[str], # Note: rsync_options are not used in this impl, but kept for signature
+    source_content_path: str,
+    dest_content_path: str,
+    torrent_hash: str,
+    ui: UIManager,
+    dry_run: bool,
+    is_folder: bool
 ) -> bool:
     """
-    Transfers content from a remote source server to a remote destination server
-    by executing rsync on the source server.
+    Transfers content from a remote source to a remote destination
+    by downloading to a local cache via rsync, then uploading
+    from the cache to the destination via rsync.
     """
+    file_name = os.path.basename(source_content_path)
+    temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{torrent_hash}"
+    temp_dir.mkdir(exist_ok=True)
+
+    # The local path for the *content itself* inside the cache dir
+    local_cache_content_path = str(temp_dir / file_name)
+
     try:
-        source_server_section = source_config.name
-        source_pool = ssh_connection_pools.get(source_server_section)
+        # --- 1. Download from Source to Cache ---
+        logging.info(f"Rsync-Upload: Downloading '{file_name}' to cache...")
+        # We pass temp_dir as the local_path, so rsync downloads
+        # the content *into* this directory.
+        transfer_content_rsync(
+            source_config,
+            source_content_path,
+            temp_dir, # Download *into* the cache directory
+            torrent_hash,
+            ui,
+            dry_run
+        )
+        logging.info(f"Rsync-Upload: Download to cache complete for '{file_name}'.")
 
-        if not source_pool:
-            raise ValueError(f"SSH pool '{source_server_section}' not found for rsync_upload.")
+        # --- 2. Upload from Cache to Destination ---
+        logging.info(f"Rsync-Upload: Uploading '{file_name}' from cache to destination...")
 
-        if is_folder:
-            source_path = os.path.join(content_path, rsync_file_name) + "/"
-            # Ensure trailing slash for rsync to copy contents *into* the dir
-            remote_dest_path = os.path.join(dest_path, rsync_file_name) + "/"
-        else:
-            source_path = os.path.join(content_path, rsync_file_name)
-             # No trailing slash on file, but trailing slash on destination dir
-            remote_dest_path = dest_path + "/"
+        # We pass the path to the *content* in the cache
+        # and the *parent* directory on the destination.
+        _transfer_content_rsync_upload_from_cache(
+            dest_config,
+            local_cache_content_path, # Upload the content
+            dest_content_path,
+            torrent_hash,
+            ui,
+            dry_run
+        )
+        logging.info(f"Rsync-Upload: Upload from cache complete for '{file_name}'.")
 
-        # Build the SSH command for rsync's -e option
-        dest_ssh_cmd = _get_ssh_command(dest_config.getint('port'))
+        # --- 3. Cleanup Cache ---
+        if not dry_run:
+            logging.debug(f"Cleaning up cache directory: {temp_dir}")
+            shutil.rmtree(temp_dir)
 
-        # Build the rsync command to be executed on the source server
-        # Note: We need to escape the command properly for remote execution
-        rsync_cmd_parts = [
-            "SSHPASS=" + shlex.quote(dest_config['password']),
-            "sshpass", "-e",
-            "rsync"
-        ]
-        rsync_cmd_parts.extend(rsync_options)
-        rsync_cmd_parts.extend([
-            "-e", shlex.quote(dest_ssh_cmd),
-            shlex.quote(source_path),
-            f"{dest_config['username']}@{dest_config['host']}:{shlex.quote(remote_dest_path)}"
-        ])
-
-        # Join into a single command string
-        rsync_command_str = " ".join(rsync_cmd_parts)
-
-        # Create a log-safe version
-        log_command = rsync_command_str.replace(dest_config['password'], "'********'")
-
-        logger.info(f"Attempting remote rsync upload for '{rsync_file_name}'...")
-        logger.debug(f"Executing on {source_server_section}: {log_command}")
-
-        with source_pool.get_connection() as (sftp, ssh):
-            stdin, stdout, stderr = ssh.exec_command(rsync_command_str, timeout=Timeouts.SSH_EXEC)
-            exit_status = stdout.channel.recv_exit_status()
-
-            if exit_status == 0 or exit_status == 24:  # 24 = some files vanished
-                logger.info(f"Remote rsync upload successful for '{rsync_file_name}'.")
-                return True
-            else:
-                stderr_output = stderr.read().decode().strip()
-                stdout_output = stdout.read().decode().strip()
-                logger.error(f"Remote rsync upload failed for '{rsync_file_name}' with exit code {exit_status}.")
-                logger.error(f"Stdout: {stdout_output}")
-                logger.error(f"Stderr: {stderr_output}")
-                raise RemoteTransferError(f"Remote rsync failed (exit {exit_status}): {stderr_output}")
+        return True
 
     except Exception as e:
-        logger.error(f"Exception during remote rsync upload for '{rsync_file_name}': {e}", exc_info=True)
-        raise RemoteTransferError(f"Remote rsync transfer failed for {rsync_file_name}") from e
+        logging.error(f"Exception during rsync_upload for '{file_name}': {e}", exc_info=True)
+        # Don't clean up cache on failure, so it can be resumed
+        raise RemoteTransferError(f"Rsync_upload transfer failed for {file_name}") from e
 
 def transfer_content(pool: SSHConnectionPool, all_files: List[tuple[str, str]], torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, max_concurrent_downloads: int, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
     """Transfers a torrent's content from a remote SFTP server to local disk.
