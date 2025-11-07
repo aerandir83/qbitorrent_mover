@@ -674,12 +674,10 @@ class UIManagerV2(BaseUIManager):
                         current_dl_speed = bytes_since_last / time_since_last_dl
                         self._stats["current_dl_speed"] = current_dl_speed
                         self._dl_speed_history.append(current_dl_speed)
-                    elif len(self._dl_speed_history) > 0:
-                        # No new data, but keep last known speed
-                        current_dl_speed = self._stats.get("current_dl_speed", 0.0)
                     else:
-                        # No history and no data, reset to 0
+                        # No new data, reset speed to 0
                         self._stats["current_dl_speed"] = 0.0
+                        current_dl_speed = 0.0 # Also update local var
 
                     self._stats["last_dl_bytes"] = self._stats["transferred_dl_bytes"]
                     self._stats["last_dl_speed_check"] = time.time()
@@ -693,10 +691,10 @@ class UIManagerV2(BaseUIManager):
                         current_ul_speed = bytes_since_last / time_since_last_ul
                         self._stats["current_ul_speed"] = current_ul_speed
                         self._ul_speed_history.append(current_ul_speed)
-                    elif len(self._ul_speed_history) > 0:
-                        current_ul_speed = self._stats.get("current_ul_speed", 0.0)
                     else:
+                        # No new data, reset speed to 0
                         self._stats["current_ul_speed"] = 0.0
+                        current_ul_speed = 0.0 # Also update local var
 
                     self._stats["last_ul_bytes"] = self._stats["transferred_ul_bytes"]
                     self._stats["last_ul_speed_check"] = time.time()
