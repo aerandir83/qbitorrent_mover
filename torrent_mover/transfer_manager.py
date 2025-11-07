@@ -732,19 +732,20 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
                 bufsize=1
             )
             last_total_transferred = 0
-            # This regex looks for the byte count on lines that end with a parenthesis ')'
-            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*?\)$")
+            # This regex looks for the byte count on lines that contain
+            # the total progress indicators like "(xfer#" or "(to-check="
+            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*?(\(xfer#|\(to-check=)")
 
             if process.stdout:
                 for line in iter(process.stdout.readline, ''):
                     line = line.strip()
-                    match = progress_regex.match(line) # This regex now only matches total progress lines
+                    match = progress_regex.match(line) # Using the new, more robust regex
                     if match:
                         try:
                             total_transferred_str = match.group(1).replace(',', '')
                             total_transferred = int(total_transferred_str)
 
-                            # This is the new logic: advance *to* this total, not *by* it
+                            # This logic is correct: advance *to* this total, not *by* it
                             advance = total_transferred - last_total_transferred
                             if advance > 0:
                                 # Use 'upload' for _transfer_content_rsync_upload_from_cache
@@ -874,18 +875,19 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                 bufsize=1
             )
             last_total_transferred = 0
-            # This regex looks for the byte count on lines that end with a parenthesis ')'
-            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*?\)$")
+            # This regex looks for the byte count on lines that contain
+            # the total progress indicators like "(xfer#" or "(to-check="
+            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*?(\(xfer#|\(to-check=)")
             if process.stdout:
                 for line in iter(process.stdout.readline, ''):
                     line = line.strip()
-                    match = progress_regex.match(line) # This regex now only matches total progress lines
+                    match = progress_regex.match(line) # Using the new, more robust regex
                     if match:
                         try:
                             total_transferred_str = match.group(1).replace(',', '')
                             total_transferred = int(total_transferred_str)
 
-                            # This is the new logic: advance *to* this total, not *by* it
+                            # This logic is correct: advance *to* this total, not *by* it
                             advance = total_transferred - last_total_transferred
                             if advance > 0:
                                 # Use 'download' for transfer_content_rsync
