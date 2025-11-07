@@ -732,8 +732,8 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
                 bufsize=1
             )
             last_total_transferred = 0
-            # This regex looks for the byte count on lines that contain the total progress indicator "(xfer#"
-            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*?\(xfer#")
+            # This regex looks for the byte count on lines that end with a parenthesis ')'
+            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*?\)$")
 
             if process.stdout:
                 for line in iter(process.stdout.readline, ''):
@@ -747,6 +747,7 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
                             # This is the new logic: advance *to* this total, not *by* it
                             advance = total_transferred - last_total_transferred
                             if advance > 0:
+                                # Use 'upload' for _transfer_content_rsync_upload_from_cache
                                 ui.update_torrent_progress(torrent_hash, advance, transfer_type='upload')
                                 last_total_transferred = total_transferred
                         except (ValueError, IndexError):
@@ -873,8 +874,8 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                 bufsize=1
             )
             last_total_transferred = 0
-            # This regex looks for the byte count on lines that contain the total progress indicator "(xfer#"
-            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*?\(xfer#")
+            # This regex looks for the byte count on lines that end with a parenthesis ')'
+            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*?\)$")
             if process.stdout:
                 for line in iter(process.stdout.readline, ''):
                     line = line.strip()
@@ -887,6 +888,7 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                             # This is the new logic: advance *to* this total, not *by* it
                             advance = total_transferred - last_total_transferred
                             if advance > 0:
+                                # Use 'download' for transfer_content_rsync
                                 ui.update_torrent_progress(torrent_hash, advance, transfer_type='download')
                                 last_total_transferred = total_transferred
                         except (ValueError, IndexError):
