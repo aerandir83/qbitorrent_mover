@@ -732,24 +732,28 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
                 bufsize=1
             )
             last_total_transferred = 0
-            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
+            # This regex looks for the byte count on lines that contain the total progress indicator "(xfer#"
+            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*?\(xfer#")
 
             if process.stdout:
                 for line in iter(process.stdout.readline, ''):
                     line = line.strip()
-                    match = progress_regex.match(line)
+                    match = progress_regex.match(line) # This regex now only matches total progress lines
                     if match:
                         try:
                             total_transferred_str = match.group(1).replace(',', '')
                             total_transferred = int(total_transferred_str)
+
+                            # This is the new logic: advance *to* this total, not *by* it
                             advance = total_transferred - last_total_transferred
                             if advance > 0:
                                 ui.update_torrent_progress(torrent_hash, advance, transfer_type='upload')
                                 last_total_transferred = total_transferred
                         except (ValueError, IndexError):
-                            logging.warning(f"Could not parse rsync upload progress line: {line}")
+                            logging.warning(f"Could not parse rsync progress line: {line}")
                     else:
-                        logging.debug(f"rsync upload stdout: {line}")
+                        # This line is not a total progress line, log it for debugging
+                        logging.debug(f"rsync stdout (per-file): {line}")
 
             process.wait()
             stderr_output = process.stderr.read() if process.stderr else ""
@@ -869,15 +873,18 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                 bufsize=1
             )
             last_total_transferred = 0
-            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
+            # This regex looks for the byte count on lines that contain the total progress indicator "(xfer#"
+            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*?\(xfer#")
             if process.stdout:
                 for line in iter(process.stdout.readline, ''):
                     line = line.strip()
-                    match = progress_regex.match(line)
+                    match = progress_regex.match(line) # This regex now only matches total progress lines
                     if match:
                         try:
                             total_transferred_str = match.group(1).replace(',', '')
                             total_transferred = int(total_transferred_str)
+
+                            # This is the new logic: advance *to* this total, not *by* it
                             advance = total_transferred - last_total_transferred
                             if advance > 0:
                                 ui.update_torrent_progress(torrent_hash, advance, transfer_type='download')
@@ -885,7 +892,8 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                         except (ValueError, IndexError):
                             logging.warning(f"Could not parse rsync progress line: {line}")
                     else:
-                        logging.debug(f"rsync stdout: {line}")
+                        # This line is not a total progress line, log it for debugging
+                        logging.debug(f"rsync stdout (per-file): {line}")
             process.wait()
             stderr_output = process.stderr.read() if process.stderr else ""
             if process.returncode == 0 or process.returncode == 24:
