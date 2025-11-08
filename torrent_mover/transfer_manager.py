@@ -12,9 +12,13 @@ import threading
 import time
 import typing
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List
 
+import paramiko
+
+from .resilient_queue import ResilientTransferQueue
 from .ssh_manager import SSHConnectionPool, sftp_mkdir_p, _get_ssh_command
 from .ui import UIManagerV2 as UIManager
 from .utils import RemoteTransferError, retry
@@ -25,6 +29,15 @@ if typing.TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TransferFile:
+    """Normalized file representation."""
+    source_path: str
+    dest_path: str
+    size: int
+    torrent_hash: str
 
 
 def _is_sshpass_installed() -> bool:
@@ -551,8 +564,7 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
         logging.error(f"Upload failed for {file_name}: {e}")
         raise
 
-@retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
-def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: str, torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
+def _sftp_download_file_core(pool: SSHConnectionPool, file: TransferFile, ui: UIManager, file_tracker: FileTransferTracker, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
     """Downloads a single file from a remote SFTP server to a local path.
 
     This function is used for the `sftp` transfer mode. It is wrapped in a
@@ -561,9 +573,7 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
 
     Args:
         pool: The SSHConnectionPool for the source server.
-        remote_file: The absolute path of the file on the source server.
-        local_file: The absolute path of the destination on the local machine.
-        torrent_hash: The hash of the parent torrent.
+        file: The TransferFile object with source, dest, and size.
         ui: The UI manager for progress updates.
         file_tracker: The tracker for recording file progress.
         dry_run: If True, simulates the transfer.
@@ -573,6 +583,9 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
     Raises:
         Exception: Propagates exceptions from the underlying SFTP operations.
     """
+    remote_file = file.source_path
+    local_file = file.dest_path
+    torrent_hash = file.torrent_hash
     local_path = Path(local_file)
     file_name = os.path.basename(remote_file)
     try:
@@ -662,6 +675,44 @@ def _sftp_download_file(pool: SSHConnectionPool, remote_file: str, local_file: s
         ui.fail_file_transfer(torrent_hash, remote_file)
         logging.error(f"Download failed for {file_name}: {e}")
         raise
+
+
+def _sftp_download_file_resilient(
+    pool: SSHConnectionPool,
+    file: TransferFile,
+    queue: ResilientTransferQueue,
+    ui: UIManager,
+    file_tracker: FileTransferTracker,
+    attempt_count: int,
+    server_key: str,
+    dry_run: bool = False,
+    download_limit_bytes_per_sec: int = 0,
+    sftp_chunk_size: int = 65536
+) -> None:
+    """Wrapper for _sftp_download_file_core that integrates with ResilientTransferQueue."""
+    try:
+        _sftp_download_file_core(
+            pool, file, ui, file_tracker, dry_run,
+            download_limit_bytes_per_sec, sftp_chunk_size
+        )
+        queue.record_success(file, server_key)
+    except (socket.timeout, TimeoutError, paramiko.SSHException) as e:
+        should_retry = queue.record_failure(file, server_key, e, attempt_count)
+        if not should_retry:
+            logging.error(f"SFTP download failed permanently for {file.source_path} due to network error: {e}", exc_info=True)
+            raise  # Re-raise to signal permanent failure
+    except (PermissionError, FileNotFoundError) as e:
+        # These are permanent failures, do not retry
+        queue.record_failure(file, server_key, e, 999) # 999 ensures it's marked as failed
+        logging.error(f"SFTP download failed permanently for {file.source_path} due to file/permission error: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        # For other unexpected errors, treat as potentially transient
+        should_retry = queue.record_failure(file, server_key, e, attempt_count)
+        if not should_retry:
+            logging.error(f"SFTP download failed permanently for {file.source_path} due to unexpected error: {e}", exc_info=True)
+            raise
+
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionProxy, local_path: str, remote_path: str, torrent_hash: str, ui: UIManager, rsync_options: List[str], dry_run: bool = False) -> None:
@@ -999,30 +1050,60 @@ def transfer_content_rsync_upload(
         # Don't clean up cache on failure, so it can be resumed
         raise RemoteTransferError(f"Rsync_upload transfer failed for {file_name}") from e
 
-def transfer_content(pool: SSHConnectionPool, all_files: List[tuple[str, str]], torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, max_concurrent_downloads: int, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
-    """Transfers a torrent's content from a remote SFTP server to local disk.
 
-    This function uses a `ThreadPoolExecutor` to download multiple files in
-    parallel, orchestrating the calls to the `_sftp_download_file` function.
+def transfer_content_with_queue(
+    pool: SSHConnectionPool,
+    all_files: List[TransferFile],
+    torrent_hash: str,
+    ui: UIManager,
+    file_tracker: FileTransferTracker,
+    max_concurrent_downloads: int,
+    dry_run: bool = False,
+    download_limit_bytes_per_sec: int = 0,
+    sftp_chunk_size: int = 65536
+) -> None:
+    """Transfers torrent content using a resilient queue."""
+    queue = ResilientTransferQueue(max_retries=5)
+    for file in all_files:
+        queue.add(file)
 
-    Args:
-        pool: The SSHConnectionPool for the source server.
-        all_files: A list of (remote_path, local_path) tuples.
-        torrent_hash: The hash of the parent torrent.
-        ui: The UI manager for progress updates.
-        file_tracker: The tracker for recording file progress.
-        max_concurrent_downloads: The maximum number of files to download in parallel.
-        dry_run: If True, simulates the transfer.
-        download_limit_bytes_per_sec: The download speed limit.
-        sftp_chunk_size: The chunk size for SFTP transfers.
-    """
-    with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as file_executor:
-        futures = [
-            file_executor.submit(_sftp_download_file, pool, remote_f, local_f, torrent_hash, ui, file_tracker, dry_run, download_limit_bytes_per_sec, sftp_chunk_size)
-            for remote_f, local_f in all_files
-        ]
+    # Simplified server key for now
+    server_key = f"{pool.host}:{pool.port}"
+
+    def worker():
+        while True:
+            result = queue.get_next(server_key)
+            if not result:
+                # Check if there are still pending items (e.g. in backoff)
+                stats = queue.get_stats()
+                if stats["pending"] > 0:
+                    time.sleep(1) # Wait for items in backoff
+                    continue
+                break # No more items to process
+
+            file, attempt_count = result
+            try:
+                _sftp_download_file_resilient(
+                    pool, file, queue, ui, file_tracker, attempt_count,
+                    server_key, dry_run, download_limit_bytes_per_sec, sftp_chunk_size
+                )
+            except Exception:
+                # Permanent failures are logged in _resilient wrapper
+                # And re-raised to stop the executor
+                pass # Continue to next file
+
+    with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as executor:
+        futures = [executor.submit(worker) for _ in range(max_concurrent_downloads)]
         for future in as_completed(futures):
+            # This will re-raise exceptions from workers if any occurred
             future.result()
+
+    final_stats = queue.get_stats()
+    if final_stats["failed"] > 0:
+        logging.error(f"{final_stats['failed']} files failed to transfer for torrent {torrent_hash}.")
+        # Optionally, you can raise an exception to mark the whole torrent failed
+        raise RemoteTransferError(f"{final_stats['failed']} files failed for torrent {torrent_hash}")
+
 
 def transfer_content_sftp_upload(
     source_pool: SSHConnectionPool, dest_pool: SSHConnectionPool, all_files: List[tuple[str, str]], torrent_hash: str, ui: UIManager,
