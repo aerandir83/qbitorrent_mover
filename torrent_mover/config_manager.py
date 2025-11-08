@@ -222,6 +222,7 @@ class ConfigValidator:
         numeric_options = {
             'max_concurrent_downloads': (1, 20),
             'max_concurrent_uploads': (1, 20),
+            'pool_wait_timeout': (30, 3600),
         }
 
         for option, (min_val, max_val) in numeric_options.items():

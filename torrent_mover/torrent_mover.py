@@ -975,6 +975,10 @@ def main() -> int:
         validator = ConfigValidator(config)
         if not validator.validate():
             return 1
+
+        # Read the new timeout value
+        pool_wait_timeout_seconds = config['SETTINGS'].getint('pool_wait_timeout', 300)
+
         server_sections = [s for s in config.sections() if s.endswith('_SERVER')]
         for section_name in server_sections:
             max_sessions = config[section_name].getint('max_concurrent_ssh_sessions', 8)
@@ -985,7 +989,7 @@ def main() -> int:
                 password=config[section_name]['password'],
                 max_size=max_sessions,
                 connect_timeout=Timeouts.SSH_CONNECT,
-                pool_wait_timeout=Timeouts.POOL_WAIT
+                pool_wait_timeout=pool_wait_timeout_seconds
             )
             logging.info(f"Initialized SSH connection pool for '{section_name}' with size {max_sessions}.")
 
