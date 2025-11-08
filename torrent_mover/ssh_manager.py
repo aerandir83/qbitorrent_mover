@@ -484,7 +484,7 @@ def batch_get_remote_sizes(ssh_client: paramiko.SSHClient, paths: typing.List[st
             escaped = path.replace("'", "'\\''")
             # Output format: SIZE\tPATH
             # This ensures we get output even if 'du' fails (e.g., no permissions)
-            cmd_parts.append(f"du -sb '{escaped}' 2>/dev/null || echo '0\t{escaped}'")
+            cmd_parts.append(f"du -sb '{escaped}' 2>/dev/null")
 
         command = "; ".join(cmd_parts)
 
