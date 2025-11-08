@@ -31,15 +31,6 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class TransferFile:
-    """Normalized file representation."""
-    source_path: str
-    dest_path: str
-    size: int
-    torrent_hash: str
-
-
 def _is_sshpass_installed() -> bool:
     """Checks if sshpass is installed and available in the system's PATH."""
     return shutil.which("sshpass") is not None
