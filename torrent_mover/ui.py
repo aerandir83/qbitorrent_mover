@@ -2,6 +2,104 @@ import os
 from rich.console import Console, Group, RenderResult
 from rich.live import Live
 from rich.panel import Panel
+from typing import Dict, Any
+
+
+class ResponsiveLayout:
+    """Manages UI layout configurations based on terminal width."""
+    def __init__(self, console: Console):
+        """Initializes the ResponsiveLayout.
+
+        Args:
+            console: The rich Console object to get terminal dimensions from.
+        """
+        self._console = console
+        self._last_width = 0
+        self._last_config: Dict[str, Any] = {}
+
+    def get_layout_config(self) -> Dict[str, Any]:
+        """Returns a layout configuration dictionary based on current terminal width.
+
+        Caches the result and only re-computes when the width changes.
+
+        Returns:
+            A dictionary with layout settings.
+        """
+        width = self._console.width
+        if width == self._last_width:
+            return self._last_config
+
+        self._last_width = width
+        if width < 80:  # Narrow
+            config = {
+                "terminal_width": "narrow",
+                "left_ratio": 1,
+                "right_ratio": 0,  # Hide stats panel
+                "show_speed": False,
+                "show_eta": False,
+                "log_lines": 5,
+                "torrent_name_width": 25,
+                "file_name_width": 20,
+            }
+        elif width < 120:  # Normal
+            config = {
+                "terminal_width": "normal",
+                "left_ratio": 2,
+                "right_ratio": 1,
+                "show_speed": True,
+                "show_eta": False,
+                "log_lines": 10,
+                "torrent_name_width": 40,
+                "file_name_width": 35,
+            }
+        else:  # Wide
+            config = {
+                "terminal_width": "wide",
+                "left_ratio": 3,
+                "right_ratio": 1,
+                "show_speed": True,
+                "show_eta": True,
+                "log_lines": 15,
+                "torrent_name_width": 60,
+                "file_name_width": 50,
+            }
+        self._last_config = config
+        return config
+
+def smart_truncate(text: str, max_width: int, min_width: int = 20) -> str:
+    """Intelligently truncates a string, especially for file paths.
+
+    - If the string is short enough, it's returned as is.
+    - If it's a path, it attempts to truncate the middle part.
+    - If it's a regular string, it truncates the end and adds '...'.
+
+    Args:
+        text: The string to truncate.
+        max_width: The maximum desired width.
+        min_width: The minimum width for middle truncation to be effective.
+
+    Returns:
+        The truncated string.
+    """
+    if len(text) <= max_width:
+        return text
+
+    # Handle file paths specially
+    if '/' in text or '\\' in text:
+        # Use os.path to handle both separators
+        import os
+        parts = text.split(os.sep)
+        if len(parts) > 2 and max_width > min_width:
+            start = parts[0]
+            end = parts[-1]
+            # Check if just the start and end are too long
+            if len(start) + len(end) + 5 > max_width: # 5 for "/.../"
+                 return text[:max_width - 3] + "..."
+            middle = "/.../"
+            return f"{start}{middle}{end}"
+
+    # Standard truncation
+    return text[:max_width - 3] + "..."
 from rich.progress import (
 Progress,
 TextColumn,
@@ -20,7 +118,6 @@ import threading
 from collections import OrderedDict, deque
 from typing import Dict, Any, Optional, Deque, Tuple, List, Type
 from rich.layout import Layout
-import time
 import re
 import abc
 
@@ -490,7 +587,9 @@ class UIManagerV2(BaseUIManager):
         self._rich_handler_ref = rich_handler
         self._um_log_handler = UMLoggingHandler(self)
         self.transfer_mode = "" # For transfer mode
-        self._log_buffer: Deque[Text] = deque(maxlen=20) # For log panel
+        self._responsive_layout = ResponsiveLayout(self.console)
+        self._layout_config = self._responsive_layout.get_layout_config()
+        self._log_buffer: Deque[Text] = deque(maxlen=self._layout_config["log_lines"]) # For log panel
         self._current_header_string_template: str = ""
         self._last_header_text_part: str = ""
         self._current_status: Optional[str] = None
@@ -568,21 +667,31 @@ class UIManagerV2(BaseUIManager):
 
     def _setup_progress(self):
         """Setup progress bars with better formatting. FIXED: Use custom column."""
-        self.main_progress = Progress(
+        config = self._layout_config
+
+        columns = [
             TextColumn("[bold]{task.description}", justify="left"),
             BarColumn(bar_width=None, complete_style="green", finished_style="bold green"),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             "•",
             DownloadColumn(binary_units=True),
-            "•",
-            # FIX: Pass the ui_manager instance and use the _stats key name
-            _SpeedColumn("current_dl_speed", "DL", "green", ui_manager=self),
-            "•",
-            _SpeedColumn("current_ul_speed", "UL", "yellow", ui_manager=self),
-            "•",
-            TimeRemainingColumn(),
-            expand=True,
-        )
+        ]
+
+        if config["show_speed"]:
+            columns.extend([
+                "•",
+                _SpeedColumn("current_dl_speed", "DL", "green", ui_manager=self),
+                "•",
+                _SpeedColumn("current_ul_speed", "UL", "yellow", ui_manager=self),
+            ])
+
+        if config["show_eta"]:
+            columns.extend([
+                "•",
+                TimeRemainingColumn(),
+            ])
+
+        self.main_progress = Progress(*columns, expand=True)
 
         self.analysis_task = self.main_progress.add_task(
             "[cyan]📊 Analysis", total=100, visible=False
@@ -670,9 +779,28 @@ class UIManagerV2(BaseUIManager):
         with self._lock:
             self._current_status = message
 
+    def _check_and_update_layout(self):
+        """Checks for terminal width changes and updates the layout accordingly."""
+        new_config = self._responsive_layout.get_layout_config()
+        if new_config["terminal_width"] != self._layout_config["terminal_width"]:
+            self._layout_config = new_config
+            # Update layout ratios
+            self.layout["body"].split_row(
+                Layout(name="left", ratio=new_config["left_ratio"]),
+                Layout(name="right", ratio=new_config["right_ratio"])
+            )
+            # Update log buffer size, preserving recent logs
+            self._log_buffer = deque(list(self._log_buffer), maxlen=new_config["log_lines"])
+
     def _stats_updater(self):
         """Background thread to update stats and progress bars."""
+        last_layout_check = time.time()
         while not self._stats_thread_stop.wait(1.0):
+            if time.time() - last_layout_check > 5.0:
+                with self._lock:
+                    self._check_and_update_layout()
+                last_layout_check = time.time()
+
             with self._lock:
                 # --- Calculate Speeds ---
                 current_dl_speed = 0.0
