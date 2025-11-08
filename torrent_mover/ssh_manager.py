@@ -130,7 +130,7 @@ def is_remote_dir(ssh_client: paramiko.SSHClient, path: str) -> bool:
                       f"Technical details: {e}")
         return False
 
-def _get_all_files_recursive(sftp: paramiko.SFTPClient, remote_path: str, base_dest_path: str, file_list: typing.List[typing.Tuple[str, str]]) -> None:
+def _get_all_files_recursive(sftp: paramiko.SFTPClient, remote_path: str, base_dest_path: str, file_list: typing.List[typing.Tuple[str, str, int]]) -> None:
     """
     Recursively walks a remote directory to build a flat list of all files to transfer.
     `base_dest_path` is the corresponding destination path for the initial `remote_path`.
@@ -150,7 +150,7 @@ def _get_all_files_recursive(sftp: paramiko.SFTPClient, remote_path: str, base_d
             if stat_info.st_mode & 0o40000:  # S_ISDIR
                 _get_all_files_recursive(sftp, remote_item_path, dest_item_path, file_list)
             else:
-                file_list.append((remote_item_path, dest_item_path))
+                file_list.append((remote_item_path, dest_item_path, stat_info.st_size))
         except FileNotFoundError:
             logging.warning(f"File or directory vanished during scan: {remote_item_path}")
             continue
