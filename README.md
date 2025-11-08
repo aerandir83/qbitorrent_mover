@@ -303,6 +303,7 @@ Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your
     *   `transfer_mode`: `sftp`, `sftp_upload`, or `rsync`.
     *   `max_concurrent_file_transfers`: Number of files to transfer in parallel (e.g., `5`).
     *   `category_to_move`: The category in your source client that triggers a move.
+    *   `pool_wait_timeout`: (Optional) Time in seconds to wait for a connection from the SSH pool if it's full. Defaults to `300`. Increase this if you get `TimeoutError` logs.
 
 ## Basic Usage
 
