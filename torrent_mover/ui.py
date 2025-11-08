@@ -637,10 +637,22 @@ class UIManagerV2(BaseUIManager):
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._live:
             self._stats_thread_stop.set()
+            # Join the thread with a timeout
+            self._stats_thread.join(timeout=5.0)
+            # Check if the thread is still alive
             if self._stats_thread.is_alive():
-                self._stats_thread.join(timeout=2.0)
-            self.main_progress.stop()
-            self._live.stop()
+                logging.warning("Stats thread did not stop cleanly and will be left running.")
+            # Ensure progress bars and live display are stopped
+            try:
+                self.main_progress.stop()
+            except Exception as e:
+                logging.error(f"Error stopping main progress: {e}")
+
+            try:
+                self._live.stop()
+            except Exception as e:
+                logging.error(f"Error stopping live display: {e}")
+
         root_logger = logging.getLogger()
         root_logger.removeHandler(self._um_log_handler)
         if self._rich_handler_ref:

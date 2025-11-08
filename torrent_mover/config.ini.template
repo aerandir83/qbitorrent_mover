@@ -110,4 +110,4 @@ sftp_chunk_size_kb = 64
 # (Optional) Time in seconds to wait for a connection from the SSH pool if it's full.
 # If you see 'TimeoutError: Timeout waiting for SSH connection' in your logs
 # during large parallel transfers, increase this value.
-pool_wait_timeout = 300
+pool_wait_timeout = 60
