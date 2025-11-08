@@ -14,7 +14,7 @@ import typing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import paramiko
 
@@ -215,13 +215,26 @@ class FileTransferTracker:
         self._lock = threading.Lock()
 
     def _load(self) -> Dict[str, Any]:
+        """Loads the tracker state from disk.
+
+        If the file doesn't exist or is corrupt, it initializes a new state.
+        It also ensures backward compatibility by adding new keys if they are missing.
+
+        Returns:
+            The loaded or initialized state dictionary.
+        """
         if self.file.exists():
             try:
-                return json.loads(self.file.read_text())
+                data = json.loads(self.file.read_text())
+                # For backward compatibility, add new keys if missing
+                data.setdefault("files", {})
+                data.setdefault("cached_files", {})
+                data.setdefault("corruption_hashes", {})
+                return data
             except json.JSONDecodeError:
                 logging.warning(f"Could not decode file transfer tracker file '{self.file}'. Starting fresh.")
-                return {"files": {}}
-        return {"files": {}}
+        return {"files": {}, "cached_files": {}, "corruption_hashes": {}}
+
 
     def record_file_progress(self, torrent_hash: str, file_path: str, bytes_transferred: int) -> None:
         """Records the number of bytes transferred for a specific file.
@@ -256,6 +269,88 @@ class FileTransferTracker:
         with self._lock:
             key = f"{torrent_hash}:{file_path}"
             return self.state["files"].get(key, {}).get("bytes", 0)
+
+    def record_cache_location(self, torrent_hash: str, file_path: str, cache_path: str, size: int):
+        """Stores the location and size of a cached file."""
+        with self._lock:
+            key = f"{torrent_hash}:{file_path}"
+            self.state["cached_files"][key] = {
+                "path": cache_path,
+                "size": size,
+                "timestamp": time.time()
+            }
+            self._save()
+
+    def get_cache_location(self, torrent_hash: str, file_path: str) -> Optional[str]:
+        """Retrieves a valid cache path if it exists and matches the expected size."""
+        with self._lock:
+            key = f"{torrent_hash}:{file_path}"
+            cache_info = self.state["cached_files"].get(key)
+
+            if not cache_info:
+                return None
+
+            cache_path_str = cache_info.get("path")
+            expected_size = cache_info.get("size")
+
+            if not cache_path_str or expected_size is None:
+                del self.state["cached_files"][key]
+                self._save()
+                return None
+
+            cache_path = Path(cache_path_str)
+            if self.verify_file_integrity(cache_path, expected_size):
+                return cache_path_str
+            else:
+                logging.warning(f"Cached file for '{file_path}' is invalid (missing or size mismatch). Removing entry.")
+                del self.state["cached_files"][key]
+                self._save()
+                return None
+
+    def record_corruption(self, torrent_hash: str, file_path: str, checksum: Optional[str] = None):
+        """Marks a file as corrupted."""
+        with self._lock:
+            key = f"{torrent_hash}:{file_path}"
+            corruption_info = self.state["corruption_hashes"].get(key, {"attempts": 0})
+            corruption_info["timestamp"] = time.time()
+            corruption_info["attempts"] += 1
+            if checksum:
+                corruption_info["checksum"] = checksum
+            self.state["corruption_hashes"][key] = corruption_info
+            self._save()
+            logging.warning(f"Recorded corruption for file '{file_path}' (Attempt {corruption_info['attempts']}).")
+
+    def is_corrupted(self, torrent_hash: str, file_path: str) -> bool:
+        """Checks if a file is marked as corrupted and shouldn't be retried."""
+        with self._lock:
+            key = f"{torrent_hash}:{file_path}"
+            corruption_info = self.state["corruption_hashes"].get(key)
+
+            if not corruption_info:
+                return False
+
+            # Allow retry after 24 hours
+            if time.time() - corruption_info.get("timestamp", 0) > 86400: # 24 * 60 * 60
+                logging.info(f"Corruption marker for '{file_path}' has expired. Allowing a new attempt.")
+                del self.state["corruption_hashes"][key]
+                self._save()
+                return False
+
+            # Deny retry if attempts exceed threshold
+            if corruption_info.get("attempts", 0) >= 3:
+                logging.warning(f"File '{file_path}' is marked as corrupted and has reached max retry attempts.")
+                return True
+
+            return False
+
+    def verify_file_integrity(self, file_path: Path, expected_size: int) -> bool:
+        """Checks if a file exists and has the expected size."""
+        if not file_path.exists():
+            return False
+        try:
+            return file_path.stat().st_size == expected_size
+        except FileNotFoundError:
+            return False
 
     def _save(self) -> None:
         try:
