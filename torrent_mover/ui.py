@@ -1,4 +1,5 @@
 import os
+import time
 from rich.console import Console, Group, RenderResult
 from rich.live import Live
 from rich.panel import Panel
