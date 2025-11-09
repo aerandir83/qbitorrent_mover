@@ -157,16 +157,16 @@ class _StatsPanel:
         with self.ui_manager._lock:
             stats = self.ui_manager._stats
             recent_completions = self.ui_manager._recent_completions
+            config = self.ui_manager._layout_config
             elapsed = time.time() - stats["start_time"]
 
-            # Use last calculated speeds
             current_dl_speed = stats.get("current_dl_speed", 0.0)
             current_ul_speed = stats.get("current_ul_speed", 0.0)
-            avg_speed_hist = sum(self.ui_manager._dl_speed_history) + sum(self.ui_manager._ul_speed_history)
-            avg_speed_hist /= (len(self.ui_manager._dl_speed_history) + len(self.ui_manager._ul_speed_history)) if (self.ui_manager._dl_speed_history or self.ui_manager._ul_speed_history) else 1
+            avg_speed_hist = (sum(self.ui_manager._dl_speed_history) + sum(self.ui_manager._ul_speed_history)) / \
+                            (len(self.ui_manager._dl_speed_history) + len(self.ui_manager._ul_speed_history)) if \
+                            (self.ui_manager._dl_speed_history or self.ui_manager._ul_speed_history) else 1
 
-            # Create stats table
-            stats_table = Table.grid(padding=(0, 2))
+            stats_table = Table.grid(padding=(0, 1))
             stats_table.add_column(style="bold cyan", justify="right", no_wrap=True)
             stats_table.add_column()
 
@@ -174,41 +174,38 @@ class _StatsPanel:
             total_gb = stats['total_bytes'] / (1024**3)
             remaining_gb = max(0, total_gb - transferred_gb)
 
-            stats_table.add_row("📊 Transferred:", f"[white]{transferred_gb:.2f} / {total_gb:.2f} GB[/white]")
-            stats_table.add_row("⏳ Remaining:", f"[white]{remaining_gb:.2f} GB[/white]")
-            stats_table.add_row("⚡ DL Speed:", f"[green]{current_dl_speed / (1024**2):.2f} MB/s[/green]")
-            stats_table.add_row("⚡ UL Speed:", f"[yellow]{current_ul_speed / (1024**2):.2f} MB/s[/yellow]")
-            stats_table.add_row("📈 Avg Speed:", f"[dim]{avg_speed_hist / (1024**2):.2f} MB/s[/dim]")
-            stats_table.add_row("🔥 Peak Speed:", f"[dim]{stats['peak_speed'] / (1024**2):.2f} MB/s[/dim]")
-            stats_table.add_row("", "") # Spacer
-            stats_table.add_row("🔄 Active:", f"[white]{stats['active_transfers']}[/white]")
-            stats_table.add_row("✅ Completed:", f"[white]{stats['completed_transfers']}[/white]")
-            stats_table.add_row("❌ Failed:", f"[white]{stats['failed_transfers']}[/white]")
+            stats_table.add_row("📊 Progress", f"[white]{transferred_gb:.2f}/{total_gb:.2f} GB ({remaining_gb:.2f} GB rem.)[/]")
+            stats_table.add_row("⚡ Speed", f"[green]DL:{current_dl_speed / (1024**2):.1f}[/] [yellow]UL:{current_ul_speed / (1024**2):.1f}[/] MB/s")
+            stats_table.add_row("📈 Avg/Peak", f"[dim]{avg_speed_hist / (1024**2):.1f}/{stats['peak_speed'] / (1024**2):.1f} MB/s[/]")
 
-            total_files_overall = sum(t.get('total_files', 0) for t in self.ui_manager._torrents.values())
-            completed_files_overall = sum(t.get('completed_files', 0) for t in self.ui_manager._torrents.values())
-            stats_table.add_row("📂 Files:", f"[white]{completed_files_overall} / {total_files_overall}[/white]")
-            stats_table.add_row("", "") # Spacer
+            # Compacted counts
+            active = stats['active_transfers']
+            completed = stats['completed_transfers']
+            failed = stats['failed_transfers']
+            stats_table.add_row("🔄 Counts", f"[white]A:{active}[/] [green]C:{completed}[/] [red]F:{failed}[/]")
 
-            hours, rem = divmod(elapsed, 3600)
-            minutes, seconds = divmod(rem, 60)
-            time_str = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
-            stats_table.add_row("⏱️ Elapsed:", f"[dim]{time_str}[/dim]")
+            total_files = sum(t.get('total_files', 0) for t in self.ui_manager._torrents.values())
+            completed_files = sum(t.get('completed_files', 0) for t in self.ui_manager._torrents.values())
+            stats_table.add_row("📂 Files", f"[white]{completed_files}/{total_files}[/]")
 
+            # Compacted Time
+            h, rem = divmod(elapsed, 3600); m, s = divmod(rem, 60)
+            time_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
+            eta_str = "-:--"
             if remaining_gb > 0 and avg_speed_hist > 0:
-                eta_seconds = (remaining_gb * 1024**3) / avg_speed_hist
-                eta_hours, eta_rem = divmod(eta_seconds, 3600)
-                eta_minutes, _ = divmod(eta_rem, 60)
-                eta_str = f"{int(eta_hours):02d}:{int(eta_minutes):02d}"
-                stats_table.add_row("⏳ ETA:", f"[cyan]{eta_str}[/]")
+                eta_s = (remaining_gb * 1024**3) / avg_speed_hist
+                eta_h, eta_rem = divmod(eta_s, 3600); eta_m, _ = divmod(eta_rem, 60)
+                eta_str = f"{int(eta_h):02d}:{int(eta_m):02d}"
+            stats_table.add_row("⏱️ Time", f"[dim]E:{time_str}[/] [cyan]ETA:{eta_str}[/]")
 
-            # Create recent completions table
-            if recent_completions:
+            # Create recent completions table (if space allows)
+            max_recent = config.get("recent_completions", 0)
+            if recent_completions and max_recent > 0:
                 recent_table = Table.grid(padding=(0, 1))
                 recent_table.add_column(style="dim", no_wrap=True)
                 recent_table.add_column(style="dim")
-                for name, size, duration in list(recent_completions)[-3:]:
-                    display_name = name[:25] + "..." if len(name) > 28 else name
+                for name, size, duration in list(recent_completions)[-max_recent:]:
+                    display_name = smart_truncate(name, 30)
                     speed = size / duration if duration > 0 else 0
                     recent_table.add_row(f"✓ {display_name}", f"{speed / (1024**2):.1f} MB/s")
 
@@ -246,9 +243,14 @@ class _ActiveTorrentsPanel:
         with self.ui_manager._lock:
             torrents = self.ui_manager._torrents
             stats = self.ui_manager._stats
+            config = self.ui_manager._layout_config
 
             table = Table.grid(padding=(0, 1), expand=True)
-            table.add_column(style="bold", no_wrap=True, width=18) # Progress %
+            # Use adaptive columns
+            if config["show_progress_bars"]:
+                table.add_column(style="bold", no_wrap=True, width=18) # Progress bar
+            else:
+                table.add_column(style="bold", no_wrap=True, width=5) # "XX%"
             table.add_column() # Name & File List
 
             active_count = 0
@@ -256,11 +258,8 @@ class _ActiveTorrentsPanel:
                 if torrent["status"] == "transferring":
                     active_count += 1
                     name = torrent["name"]
-                    display_name = name[:40] + "..." if len(name) > 43 else name
+                    display_name = smart_truncate(name, config["torrent_name_width"])
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
-
-                    # Call torrent progress bar helper
-                    progress_bar = self._render_progress_bar(progress)
 
                     # Build file list
                     file_renderables: List[Text] = [] # Changed from file_lines
@@ -275,48 +274,46 @@ class _ActiveTorrentsPanel:
                         return 3 # completed
 
                     sorted_files = sorted(files.items(), key=sort_key)
+                    max_files = min(7, config.get("terminal_height", 100) // 10)
 
-                    for file_path, status in sorted_files[:5]: # Limit to 5 files
-                        file_name = file_path.split('/')[-1]
-                        file_name = file_name[:35] + "..." if len(file_name) > 38 else file_name
+                    for file_path, status in sorted_files[:max_files]:
+                        file_name = smart_truncate(file_path.split('/')[-1], config["file_name_width"])
+                        progress_display = Text("")
 
-                        progress_bar_text = Text("")
-                        # Get per-file progress data
                         file_progress_data = self.ui_manager._file_progress.get(hash_, {}).get(file_path)
-
-                        # Only show progress bar for active files
                         if file_progress_data and status in ["downloading", "uploading"]:
                             transferred, total = file_progress_data
-                            if total > 0:
-                                file_percent = (transferred / total * 100)
-                                progress_bar_text = self._render_file_progress_bar(file_percent)
-                            elif transferred > 0: # Case where total is 0 but bytes seen
-                                progress_bar_text = Text.from_markup(" [[yellow]...[/]]")
+                            file_percent = (transferred / total * 100) if total > 0 else 0
+                            if config["show_progress_bars"]:
+                                progress_display = self._render_file_progress_bar(file_percent)
+                            else:
+                                progress_display = Text(f" {file_percent:>3.0f}%")
 
-                        if status == "downloading":
-                            # Changed to blue
-                            file_renderables.append(Text.from_markup(f" [blue]⇩ {file_name}[/blue]").append(progress_bar_text))
-                        elif status == "uploading":
-                            file_renderables.append(Text.from_markup(f" [yellow]⇧ {file_name}[/yellow]").append(progress_bar_text))
-                        elif status == "failed":
-                            file_renderables.append(Text.from_markup(f" [bold red]✖ {file_name}[/bold red]"))
-                        elif status == "completed":
-                            file_renderables.append(Text.from_markup(f" [dim]✓ {file_name}[/dim]"))
-                        else: # queued
-                            file_renderables.append(Text.from_markup(f" [dim]· {file_name}[/dim]"))
+                        # Append progress to the correct style of text
+                        style_map = {
+                            "downloading": f" [blue]⇩ {file_name}[/blue]",
+                            "uploading": f" [yellow]⇧ {file_name}[/yellow]",
+                            "failed": f" [bold red]✖ {file_name}[/bold red]",
+                            "completed": f" [dim]✓ {file_name}[/dim]",
+                            "queued": f" [dim]· {file_name}[/dim]"
+                        }
+                        file_text = Text.from_markup(style_map.get(status, f" [dim]· {file_name}[/dim]"))
+                        file_text.append(progress_display)
+                        file_renderables.append(file_text)
 
-                    if len(files) > 5:
-                        file_renderables.append(Text.from_markup(f" [dim]... and {len(files) - 5} more.[/dim]"))
 
-                    # Join Text objects
+                    if len(files) > max_files:
+                        file_renderables.append(Text.from_markup(f" [dim]... and {len(files) - max_files} more.[/dim]"))
+
                     files_panel_content = Text("\n").join(file_renderables)
                     completed_files = torrent.get('completed_files', 0)
                     total_files = torrent.get('total_files', 0)
 
-                    # Main torrent entry
+                    # Main torrent entry with adaptive progress display
+                    progress_display = self._render_progress_bar(progress) if config["show_progress_bars"] else f"{progress:>3.0f}%"
                     table.add_row(
-                        progress_bar, # Use progress bar
-                        Group( # Group Text objects
+                        progress_display,
+                        Group(
                             Text.from_markup(f"[bold cyan]{display_name}[/bold cyan] [dim]({completed_files}/{total_files} files)[/dim]"),
                             files_panel_content
                         )
