@@ -352,7 +352,7 @@ def transfer_torrent(
             ui.update_torrent_progress(hash_, total_size_calc * transfer_multiplier)
         elif pre_transfer_status == "exists_same_size":
             ui.log(f"[green]Content exists for {name}. Skipping transfer.[/green]")
-            ui.update_torrent_progress(hash_, total_size_calc * transfer_multiplier)
+            ui.update_torrent_progress(hash_, total_size_calc * transfer_multiplier, transfer_type='download')
             transfer_executed = False
         elif pre_transfer_status == "exists_different_size":
             ui.log(f"[yellow]Mismatch size for {name}. Deleting destination content...[/yellow]")
@@ -421,7 +421,7 @@ def transfer_torrent(
                     transfer_content_rsync_upload(
                         source_config, dest_config, rsync_options,
                         source_content_path, dest_content_path,
-                        hash_, ui, dry_run, is_folder
+                        hash_, ui, file_tracker, dry_run, is_folder
                     )
 
                 transfer_executed = True
@@ -439,17 +439,18 @@ def transfer_torrent(
         if post_transfer_success:
             logging.info(f"SUCCESS: Successfully processed torrent: {name} (Message: {post_transfer_msg})")
             ui.log(f"[bold green]Success: {name}[/bold green]")
+            ui.complete_torrent_transfer(hash_, success=True) # <-- MOVED HERE
             return "success", post_transfer_msg
         else:
             logging.error(f"Post-transfer actions FAILED for {name}: {post_transfer_msg}")
+            ui.complete_torrent_transfer(hash_, success=False) # <-- MOVED HERE
             return "failed", post_transfer_msg
 
     except Exception as e:
         log_message = f"An unexpected error occurred while processing {name}: {e}"
         logging.exception(log_message)
+        ui.complete_torrent_transfer(hash_, success=False) # <-- ADD THIS LINE
         return "failed", f"Unexpected error: {e}"
-    finally:
-        ui.complete_torrent_transfer(hash_, success=True)
 
 def _handle_utility_commands(args: argparse.Namespace, config: configparser.ConfigParser, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, file_tracker: FileTransferTracker) -> bool:
     """Handles command-line arguments that perform a specific action and exit.
