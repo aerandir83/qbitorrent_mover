@@ -20,6 +20,7 @@ import paramiko
 
 from .resilient_queue import ResilientTransferQueue
 from .ssh_manager import SSHConnectionPool, sftp_mkdir_p, _get_ssh_command
+from .transfer_strategies import TransferFile
 from .ui import UIManagerV2 as UIManager
 from .utils import RemoteTransferError, retry
 
