@@ -56,12 +56,28 @@ class SFTPStrategy(TransferStrategy):
     def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
         """
         Recursively lists all files from the source SFTP server and prepares them for transfer.
+        Handles both single-file and multi-file (directory) torrents.
         """
         from .ssh_manager import _get_all_files_recursive
         source_path = torrent.content_path.rstrip('/\\')
-        file_list: List[Tuple[str, str, int]] = []
+        file_list_tuples: List[Tuple[str, str, int]] = []
+
         with self.pool.get_connection() as (sftp, ssh):
-            _get_all_files_recursive(sftp, source_path, dest_path, file_list)
+            try:
+                stat_info = sftp.stat(source_path)
+                is_dir = stat_info.st_mode & 0o40000
+
+                if is_dir:
+                    # It's a directory, recurse
+                    _get_all_files_recursive(sftp, source_path, dest_path, file_list_tuples)
+                else:
+                    # It's a single file.
+                    # The dest_path provided by the caller is already the full destination file path.
+                    file_list_tuples.append((source_path, dest_path, stat_info.st_size))
+
+            except FileNotFoundError:
+                logger.warning(f"Source path not found, skipping: {source_path}")
+                # Return empty list
 
         return [
             TransferFile(
@@ -69,7 +85,7 @@ class SFTPStrategy(TransferStrategy):
                 dest_path=dest,
                 size=size,
                 torrent_hash=torrent.hash
-            ) for src, dest, size in file_list
+            ) for src, dest, size in file_list_tuples
         ]
 
 class RsyncStrategy(TransferStrategy):
@@ -116,9 +132,24 @@ class SFTPUploadStrategy(TransferStrategy):
     def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
         from .ssh_manager import _get_all_files_recursive
         source_path = torrent.content_path.rstrip('/\\')
-        file_list: List[Tuple[str, str, int]] = []
+        file_list_tuples: List[Tuple[str, str, int]] = []
+
         with self.pool.get_connection() as (sftp, ssh):
-            _get_all_files_recursive(sftp, source_path, dest_path, file_list)
+            try:
+                stat_info = sftp.stat(source_path)
+                is_dir = stat_info.st_mode & 0o40000
+
+                if is_dir:
+                    # It's a directory, recurse
+                    _get_all_files_recursive(sftp, source_path, dest_path, file_list_tuples)
+                else:
+                    # It's a single file.
+                    # The dest_path provided by the caller is already the full destination file path.
+                    file_list_tuples.append((source_path, dest_path, stat_info.st_size))
+
+            except FileNotFoundError:
+                logger.warning(f"Source path not found, skipping: {source_path}")
+                # Return empty list
 
         return [
             TransferFile(
@@ -126,7 +157,7 @@ class SFTPUploadStrategy(TransferStrategy):
                 dest_path=dest,
                 size=size,
                 torrent_hash=torrent.hash
-            ) for src, dest, size in file_list
+            ) for src, dest, size in file_list_tuples
         ]
 
 
