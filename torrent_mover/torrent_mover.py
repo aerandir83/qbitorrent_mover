@@ -108,7 +108,7 @@ def _pre_transfer_setup(
         try:
             if is_remote_dest:
                 # Remote check for 'sftp_upload'
-                dest_server_section = config['SETTINGS'].get('destination_server_section', 'DESTINATION_SERVER')
+                dest_server_section = 'DESTINATION_SERVER' # Hardcode to the correct section name
                 dest_pool = ssh_connection_pools.get(dest_server_section)
                 if not dest_pool:
                     return "failed", f"SSH pool '{dest_server_section}' not found.", None, None, None
@@ -381,7 +381,7 @@ def transfer_torrent(
                 elif transfer_mode == 'sftp_upload':
                     source_pool = ssh_connection_pools.get(config['SETTINGS']['source_server_section'])
                     if not source_pool: raise ValueError("Source SSH pool not found.")
-                    dest_pool = ssh_connection_pools.get(config['SETTINGS']['destination_server_section'])
+                    dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
                     if not dest_pool: raise ValueError("Destination SSH pool not found.")
                     max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)
                     max_concurrent_uploads = config['SETTINGS'].getint('max_concurrent_uploads', 4)
@@ -408,7 +408,7 @@ def transfer_torrent(
                 elif transfer_mode == 'rsync_upload':
                     source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
                     source_config = config[source_server_section]
-                    dest_server_section = config['SETTINGS'].get('destination_server_section', 'DESTINATION_SERVER')
+                    dest_server_section = 'DESTINATION_SERVER' # Hardcode to the correct section name
                     dest_config = config[dest_server_section]
                     rsync_options = shlex.split(config['SETTINGS'].get("rsync_options", "-a --partial --inplace"))
                     source_pool = ssh_connection_pools.get(source_server_section)
