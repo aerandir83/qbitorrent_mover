@@ -1064,7 +1064,7 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                 logging.warning(f"Rsync timed out for '{os.path.basename(remote_path)}'. Retrying...")
                 continue
             else:
-                    file_tracker.record_corruption(torrent_hash, remote_path)
+                file_tracker.record_corruption(torrent_hash, remote_path)
                 if "permission denied" in stderr_output.lower():
                     logging.error(f"Rsync failed due to a permission error on the local machine.\n"
                                   f"Please check that the user running the script has write permissions for the destination path: {local_parent_dir}")
