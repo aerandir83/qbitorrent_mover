@@ -107,7 +107,34 @@ def _pre_transfer_setup(
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
     source_content_path = _normalize_path(torrent.content_path.rstrip('/\\'))
     dest_base_path = config['DESTINATION_PATHS']['destination_path']
-    content_name = os.path.basename(source_content_path)
+    # Determine the correct content name, preserving the root folder
+    # for single-file torrents that are in a directory.
+    try:
+        # Find path of content relative to the torrent's save path
+        # e.g., "My.Movie.2023/My.Movie.2023.mkv"
+        relative_path = os.path.normpath(os.path.relpath(source_content_path, torrent.save_path))
+        # The content name is the first part of that relative path
+        # e.g., "My.Movie.2023"
+        content_name = relative_path.split(os.sep)[0]
+
+        # If the determined content_name is different from the basename of the
+        # original content_path, it means we have a file inside a folder.
+        # We must update the source_content_path to point to the FOLDER,
+        # not the file, to ensure the whole folder is moved.
+        original_basename = os.path.basename(source_content_path)
+        if content_name != original_basename:
+            source_content_path = os.path.join(torrent.save_path, content_name)
+            logging.debug(
+                f"Adjusted source path for single-file torrent in folder. "
+                f"New source: '{source_content_path}'"
+            )
+
+    except ValueError:
+        # This can happen if save_path and content_path are on different drives (Windows)
+        # Fallback to the original, less accurate method
+        logging.warning(f"Could not determine relative path for '{torrent.name}'. Falling back to basename.")
+        content_name = os.path.basename(source_content_path)
+
     dest_content_path = os.path.join(dest_base_path, content_name)
     remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
     destination_save_path = remote_dest_base_path
