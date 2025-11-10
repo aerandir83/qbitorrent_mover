@@ -802,6 +802,11 @@ class UIManagerV2(BaseUIManager):
     def _stats_updater(self):
         """Background thread to update stats and progress bars."""
         last_layout_check = time.time()
+
+        # FIX 5: Track when we last saw any transfer activity
+        last_activity_time = time.time()
+        idle_timeout = 5.0  # Reset speed after 5 seconds of no activity
+
         while not self._stats_thread_stop.wait(1.0):
             if time.time() - last_layout_check > 5.0:
                 with self._lock:
@@ -815,17 +820,27 @@ class UIManagerV2(BaseUIManager):
                 time_since_last_dl = time.time() - self._stats["last_dl_speed_check"]
                 time_since_last_ul = time.time() - self._stats["last_ul_speed_check"]
 
+                # FIX 5: Track if we have any activity
+                had_activity = False
+
                 if time_since_last_dl >= 1.0:
                     bytes_since_last = self._stats["transferred_dl_bytes"] - self._stats["last_dl_bytes"]
-                    if bytes_since_last > 0: # Only calculate if data was transferred
+                    if bytes_since_last > 0:
                         current_dl_speed = bytes_since_last / time_since_last_dl
                         self._stats["current_dl_speed"] = current_dl_speed
                         self._dl_speed_history.append(current_dl_speed)
+                        had_activity = True
+                        last_activity_time = time.time()
                     elif len(self._dl_speed_history) > 0:
-                        # No new data, but keep last known speed
-                        current_dl_speed = self._stats.get("current_dl_speed", 0.0)
+                        # FIX 5: Check if we've been idle too long
+                        if time.time() - last_activity_time > idle_timeout:
+                            # Reset speed to 0 after idle timeout
+                            self._stats["current_dl_speed"] = 0.0
+                            self._dl_speed_history.clear()
+                        else:
+                            # Keep last known speed for a short time
+                            current_dl_speed = self._stats.get("current_dl_speed", 0.0)
                     else:
-                        # No history and no data, reset to 0
                         self._stats["current_dl_speed"] = 0.0
 
                     self._stats["last_dl_bytes"] = self._stats["transferred_dl_bytes"]
@@ -833,15 +848,23 @@ class UIManagerV2(BaseUIManager):
                 else:
                     current_dl_speed = self._stats.get("current_dl_speed", 0.0)
 
-                # Similar for upload speed
                 if time_since_last_ul >= 1.0:
                     bytes_since_last = self._stats["transferred_ul_bytes"] - self._stats["last_ul_bytes"]
                     if bytes_since_last > 0:
                         current_ul_speed = bytes_since_last / time_since_last_ul
                         self._stats["current_ul_speed"] = current_ul_speed
                         self._ul_speed_history.append(current_ul_speed)
+                        had_activity = True
+                        last_activity_time = time.time()
                     elif len(self._ul_speed_history) > 0:
-                        current_ul_speed = self._stats.get("current_ul_speed", 0.0)
+                        # FIX 5: Check if we've been idle too long
+                        if time.time() - last_activity_time > idle_timeout:
+                            # Reset speed to 0 after idle timeout
+                            self._stats["current_ul_speed"] = 0.0
+                            self._ul_speed_history.clear()
+                        else:
+                            # Keep last known speed for a short time
+                            current_ul_speed = self._stats.get("current_ul_speed", 0.0)
                     else:
                         self._stats["current_ul_speed"] = 0.0
 
@@ -850,9 +873,29 @@ class UIManagerV2(BaseUIManager):
                 else:
                     current_ul_speed = self._stats.get("current_ul_speed", 0.0)
 
+                # FIX 5: Update peak speed only if we have current activity
                 current_total_speed = current_dl_speed + current_ul_speed
                 if current_total_speed > self._stats["peak_speed"]:
                     self._stats["peak_speed"] = current_total_speed
+
+                # --- Update Averages ---
+                if len(self._dl_speed_history) > 10:
+                    self._dl_speed_history.pop(0)
+                if len(self._ul_speed_history) > 10:
+                    self._ul_speed_history.pop(0)
+
+                avg_dl_speed = sum(self._dl_speed_history) / len(self._dl_speed_history) if self._dl_speed_history else 0.0
+                avg_ul_speed = sum(self._ul_speed_history) / len(self._ul_speed_history) if self._ul_speed_history else 0.0
+
+                self._stats["avg_dl_speed"] = avg_dl_speed
+                self._stats["avg_ul_speed"] = avg_ul_speed
+
+                # --- Update UI Elements ---
+                if self._stats_table:
+                    self._update_stats_table()
+
+                if self._torrent_progress_table:
+                    self._update_torrent_progress_table()
 
     # ===== Public API (keeping existing methods) =====
 
