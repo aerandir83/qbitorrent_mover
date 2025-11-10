@@ -982,13 +982,13 @@ def transfer_content_rsync(
         "-e", f"sshpass -p {shlex.quote(password)} ssh -p {port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
     ]
 
-    remote_spec = f"{username}@{host}:{shlex.quote(remote_path)}"
+    remote_spec = f"{username}@{host}:{remote_path}"
 
     MAX_RETRY_ATTEMPTS = 3
     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
         process = None
         try:
-            rsync_command = [*rsync_command_base, remote_spec, local_path]
+            rsync_command = [*rsync_command_base, remote_spec, local_parent_dir]
 
             if dry_run:
                 logging.info(f"[DRY_RUN] Would execute: {' '.join(rsync_command)}")
