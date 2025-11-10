@@ -15,8 +15,12 @@ The current version is **2.7.5**. To check your version, run: `python3 -m torren
 ## Changelog
 
 ### Version 2.7.6 (Pending)
-* **fix(transfer)**: Fixed a bug where paths from qBittorrent containing surrounding quotes (e.g., `'/path/to/file'`) would cause `rsync` transfers to fail due to malformed, double-escaped quotes.
-* **fix(transfer)**: Resolved a critical `AttributeError` by correctly passing the `file_tracker` object to the `transfer_content_rsync` function.
+* **fix(transfer):** (Fix #1) Fixed a critical bug where paths from qBittorrent containing surrounding quotes (e.g., `'/path/to/file'`) would cause `rsync` transfers to fail due to malformed, double-escaped quotes.
+* **fix(transfer):** (Fix #2) Resolved an `AttributeError: 'bool' object has no attribute 'is_corrupted'` by correcting a type hint error in `transfer_manager.py`, re-enabling corruption checks for rsync transfers.
+* **fix(strategy):** (Fix #3) Updated transfer strategies to correctly preserve the parent folder structure for single-file torrents.
+* **fix(rsync):** (Fix #4) Optimized rsync transfers by changing the default options to `-ahHSP --partial --inplace` to handle sparse files (`-S`), preserve hard links (`-H`), show progress (`-P`), and reduce verbosity (removed `-v`).
+* **fix(ui):** (Fix #5) Corrected the UI speed display to reset to 0.00 MB/s after 5 seconds of inactivity, preventing stale speed data from persisting.
+* **fix(log):** Silenced verbose `rsync` progress lines from spamming the `DEBUG` log for both `rsync` and `rsync_upload` modes.
 
 ### Version 2.7.5 (Latest)
 * **fix(main)**: Removed an incorrect startup dependency check for `sshpass` on the source server when using `rsync_upload` mode.
