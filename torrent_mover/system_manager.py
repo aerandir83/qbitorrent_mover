@@ -561,13 +561,37 @@ def delete_destination_content(
             p_str = str(dest_content_path)
             p = Path(p_str)
             if p.exists():
-                logging.debug(f"Destination content exists. Using 'rm -rf {p_str}'")
+                # New strategy: Move to a temp "trash" dir, then delete.
+                # This is much more robust on network filesystems (NFS, SMB)
+                # which can fail `rm -rf` with "Directory not empty" on stale handles.
                 try:
-                    # Use 'rm -rf' as it's more robust on network filesystems than shutil.rmtree
-                    subprocess.run(["rm", "-rf", p_str], check=True, capture_output=True, text=True)
-                except subprocess.CalledProcessError as e:
-                    logging.error(f"Failed to delete local content '{p_str}'. Stderr: {e.stderr.strip()}")
-                    raise e # Re-raise to be caught by the calling function
+                    trash_name = f"torrent_mover_trash_{p.name}_{int(time.time())}"
+                    trash_path = Path(tempfile.gettempdir()) / trash_name
+
+                    logging.debug(f"Moving '{p_str}' to trash: '{trash_path}'")
+                    shutil.move(p_str, trash_path)
+
+                    # Now that it's "unlinked" from the network mount, delete it.
+                    logging.debug(f"Deleting from trash: '{trash_path}'")
+                    # We can use shutil.rmtree here as it's now in a local temp dir
+                    shutil.rmtree(trash_path, ignore_errors=True)
+
+                    # As a fallback, run rm -rf if shutil fails
+                    if trash_path.exists():
+                        logging.warning(f"shutil.rmtree failed on trash dir, falling back to 'rm -rf {trash_path}'")
+                        subprocess.run(["rm", "-rf", str(trash_path)], capture_output=True, text=True)
+
+                except Exception as e:
+                    logging.error(f"Failed to delete local content '{p_str}' via move-to-trash. Error: {e}")
+                    logging.error("Falling back to direct 'rm -rf'...")
+                    try:
+                        subprocess.run(["rm", "-rf", p_str], check=True, capture_output=True, text=True)
+                    except subprocess.CalledProcessError as sub_e:
+                        logging.error(f"Fallback 'rm -rf' also failed for '{p_str}'. Stderr: {sub_e.stderr.strip()}")
+                        raise sub_e # Re-raise the rm -rf error
+                    except Exception as final_e:
+                        logging.error(f"Fallback 'rm -rf' failed with unexpected error: {final_e}")
+                        raise final_e
             else:
                 logging.warning(f"Destination content not found (already deleted?): {dest_content_path}")
 
