@@ -1033,8 +1033,11 @@ def transfer_content_rsync(
 
         except FileNotFoundError as e:
             file_tracker.record_corruption(torrent_hash, remote_path)
-            logging.error("FATAL: 'rsync' or 'sshpass' command not found.")
-            logging.error(f"Transfer failed for file '{rsync_file_name}' due to missing command: {e}", exc_info=True)
+            # This error can be one of two things:
+            # 1. The Popen() call failed because 'rsync' or 'sshpass' is not installed locally.
+            # 2. The rsync command returned "No such file or directory", and we raised this exception manually.
+            logging.error(f"Rsync transfer failed with FileNotFoundError: {e}")
+            logging.error(f"This could be a missing command (rsync, sshpass) on this machine, or the source file was not found on the remote server.", exc_info=True)
             ui.fail_file_transfer(torrent_hash, rsync_file_name)
             raise
         except Exception as e:
