@@ -8,8 +8,8 @@ Torrent Mover is a Python application designed to automatically move completed t
 
 ### Core Components
 
-*   **`torrent_mover/torrent_mover.py`**: The main application entrypoint and orchestrator. It initializes all manager classes and orchestrates the main application flow (e.g., analyzing torrents, running health checks, and executing transfers).
-*   **`torrent_mover/ui.py`**: Defines the UI managers.
+*   **`torrent_mover/torrent_mover.py`**: The main application entrypoint. It initializes all manager classes and orchestrates the main application flow. `transfer_torrent` now uses the Strategy pattern to orchestrate transfers.
+*   **`torrent_mover/ui.py`**: Defines the UI managers. It now uses a responsive layout.
     * `BaseUIManager`: An abstract interface for all UI implementations.
     * `UIManagerV2`: The "rich" UI, using `rich.Live` for an interactive, multi-panel display.
     * `SimpleUIManager`: The "simple" UI (for `--simple` mode), which only prints standard log lines.
@@ -17,9 +17,12 @@ Torrent Mover is a Python application designed to automatically move completed t
 *   **`torrent_mover/config_manager.py`**: Handles loading, updating, and validating `config.ini`.
 *   **`torrent_mover/ssh_manager.py`**: Manages all SSH/SFTP/Rsync connections and utilities (e.g., `SSHConnectionPool`, `sftp_mkdir_p`).
 *   **`torrent_mover/qbittorrent_manager.py`**: Manages all direct interactions with the qBittorrent WebAPI (e.g., `connect_qbit`, `get_eligible_torrents`).
-*   **`torrent_mover/transfer_manager.py`**: Manages the logic for all file transfer modes (e.g., `transfer_content_sftp_upload`) and transfer state (e.g., `FileTransferTracker`, `TransferCheckpoint`). `TransferCheckpoint` now also tracks `recheck_failed` states.
-*   **`torrent_mover/system_manager.py`**: Manages system-level tasks like logging, lockfiles, health checks, and cache cleanup (e.g., `setup_logging`, `LockFile`, `destination_health_check`).
+*   **`torrent_mover/transfer_manager.py`**: Contains the core transfer execution logic (e.g., `transfer_content_sftp_upload`) and the `FileTransferTracker`. Orchestration is now handled by strategies.
+*   **`torrent_mover/transfer_strategies.py`**: Implements the Strategy pattern for different transfer modes.
+*   **`torrent_mover/system_manager.py`**: Manages system-level tasks like logging, health checks, and cache cleanup. The `LockFile` is now PID-aware.
 *   **`torrent_mover/tracker_manager.py`**: Manages all logic for tracker-based categorization (e.g., `load_tracker_rules`, `run_interactive_categorization`).
+*   **`torrent_mover/watchdog.py`**: Monitors for hung transfers.
+*   **`torrent_mover/resilient_queue.py`**: Manages the resilient transfer queue and circuit breaker.
 *   **`torrent_mover/config.ini.template`**: The template for `config.ini`. When adding new configuration options, always update this file. The script will automatically update a user's `config.ini` from this template.
 
 ## Development Workflow

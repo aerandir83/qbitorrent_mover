@@ -50,16 +50,30 @@ class LockFile:
         self._acquired = False
 
     def acquire(self) -> None:
-        """Acquires an exclusive, non-blocking lock on the lock file.
+        """Acquires an exclusive, non-blocking lock, handling stale locks.
 
-        If the lock is already held by another process, this method will raise
-        a RuntimeError. If successful, it writes the current process ID (PID)
-        to the lock file and registers the `release` method to be called upon
-        script exit.
+        If the lock file exists, it reads the PID and checks if the process
+        is still running. If not, the stale lock is removed. If the process
+        is running, it raises a RuntimeError.
 
         Raises:
-            RuntimeError: If the lock file is already locked by another process.
+            RuntimeError: If the lock file is already locked by another live process.
         """
+        if self.lock_path.exists():
+            pid_str = self.get_locking_pid()
+            if pid_str and pid_str.isdigit():
+                pid = int(pid_str)
+                if pid_exists(pid):
+                    raise RuntimeError(f"Script is already running with PID {pid} (lock file: {self.lock_path})")
+                else:
+                    logging.warning(f"Removing stale lock file for PID {pid} that is no longer running.")
+                    self.lock_path.unlink()
+            else:
+                # Handle empty or non-numeric pid_str
+                if pid_str is not None:
+                    logging.warning(f"Removing corrupt lock file with invalid PID: '{pid_str}'.")
+                self.lock_path.unlink(missing_ok=True)
+
         try:
             # Open the file, creating it if it doesn't exist
             self.lock_fd = open(self.lock_path, 'w')
@@ -75,7 +89,8 @@ class LockFile:
             # If locking fails, close the file descriptor if it was opened
             if self.lock_fd:
                 self.lock_fd.close()
-            # Announce that the script is already running
+            # This part should theoretically not be reached if the stale lock check works,
+            # but as a fallback it's good to keep.
             pid = self.get_locking_pid()
             if pid:
                 raise RuntimeError(f"Script is already running with PID {pid} (lock file: {self.lock_path})")

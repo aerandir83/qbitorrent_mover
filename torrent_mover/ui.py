@@ -1,7 +1,115 @@
 import os
+import time
 from rich.console import Console, Group, RenderResult
 from rich.live import Live
 from rich.panel import Panel
+from typing import Dict, Any
+
+
+class ResponsiveLayout:
+    """Manages UI layout configurations based on terminal width."""
+    def __init__(self, console: Console):
+        """Initializes the ResponsiveLayout.
+
+        Args:
+            console: The rich Console object to get terminal dimensions from.
+        """
+        self._console = console
+        self._last_width = 0
+        self._last_config: Dict[str, Any] = {}
+
+    def get_layout_config(self) -> Dict[str, Any]:
+        """Returns a layout configuration dictionary based on current terminal width.
+
+        Caches the result and only re-computes when the width changes.
+
+        Returns:
+            A dictionary with layout settings.
+        """
+        width = self._console.width
+        if width == self._last_width:
+            return self._last_config
+
+        self._last_width = width
+        if width < 80:  # Narrow
+            config = {
+                "terminal_width": "narrow",
+                "left_ratio": 1,
+                "right_ratio": 0,  # Hide stats panel
+                "show_speed": False,
+                "show_eta": False,
+                "show_progress_bars": False,
+                "recent_completions": 0,
+                "terminal_height": 24,
+                "log_lines": 5,
+                "torrent_name_width": 25,
+                "file_name_width": 20,
+            }
+        elif width < 120:  # Normal
+            config = {
+                "terminal_width": "normal",
+                "left_ratio": 2,
+                "right_ratio": 1,
+                "show_speed": True,
+                "show_eta": False,
+                "show_progress_bars": True,
+                "recent_completions": 3,
+                "terminal_height": 30,
+                "log_lines": 10,
+                "torrent_name_width": 40,
+                "file_name_width": 35,
+            }
+        else:  # Wide
+            config = {
+                "terminal_width": "wide",
+                "left_ratio": 3,
+                "right_ratio": 1,
+                "show_speed": True,
+                "show_eta": True,
+                "show_progress_bars": True,
+                "recent_completions": 5,
+                "terminal_height": 40,
+                "log_lines": 15,
+                "torrent_name_width": 60,
+                "file_name_width": 50,
+            }
+        self._last_config = config
+        return config
+
+def smart_truncate(text: str, max_width: int, min_width: int = 20) -> str:
+    """Intelligently truncates a string, especially for file paths.
+
+    - If the string is short enough, it's returned as is.
+    - If it's a path, it attempts to truncate the middle part.
+    - If it's a regular string, it truncates the end and adds '...'.
+
+    Args:
+        text: The string to truncate.
+        max_width: The maximum desired width.
+        min_width: The minimum width for middle truncation to be effective.
+
+    Returns:
+        The truncated string.
+    """
+    if len(text) <= max_width:
+        return text
+
+    # Handle file paths specially
+    if '/' in text or '\\' in text:
+        # Use os.path to handle both separators
+        import os
+        parts = text.split(os.sep)
+        if len(parts) > 2 and max_width > min_width:
+            start = parts[0]
+            end = parts[-1]
+            # Check if just the start and end are too long
+            if len(start) + len(end) + 5 > max_width: # 5 for "/.../"
+                 return text[:max_width - 3] + "..."
+            middle = "/.../"
+            return f"{start}{middle}{end}"
+
+    # Standard truncation
+    return text[:max_width - 3] + "..."
 from rich.progress import (
 Progress,
 TextColumn,
@@ -20,7 +128,6 @@ import threading
 from collections import OrderedDict, deque
 from typing import Dict, Any, Optional, Deque, Tuple, List, Type
 from rich.layout import Layout
-import time
 import re
 import abc
 
@@ -60,16 +167,16 @@ class _StatsPanel:
         with self.ui_manager._lock:
             stats = self.ui_manager._stats
             recent_completions = self.ui_manager._recent_completions
+            config = self.ui_manager._layout_config
             elapsed = time.time() - stats["start_time"]
 
-            # Use last calculated speeds
             current_dl_speed = stats.get("current_dl_speed", 0.0)
             current_ul_speed = stats.get("current_ul_speed", 0.0)
-            avg_speed_hist = sum(self.ui_manager._dl_speed_history) + sum(self.ui_manager._ul_speed_history)
-            avg_speed_hist /= (len(self.ui_manager._dl_speed_history) + len(self.ui_manager._ul_speed_history)) if (self.ui_manager._dl_speed_history or self.ui_manager._ul_speed_history) else 1
+            avg_speed_hist = (sum(self.ui_manager._dl_speed_history) + sum(self.ui_manager._ul_speed_history)) / \
+                            (len(self.ui_manager._dl_speed_history) + len(self.ui_manager._ul_speed_history)) if \
+                            (self.ui_manager._dl_speed_history or self.ui_manager._ul_speed_history) else 1
 
-            # Create stats table
-            stats_table = Table.grid(padding=(0, 2))
+            stats_table = Table.grid(padding=(0, 1))
             stats_table.add_column(style="bold cyan", justify="right", no_wrap=True)
             stats_table.add_column()
 
@@ -77,41 +184,38 @@ class _StatsPanel:
             total_gb = stats['total_bytes'] / (1024**3)
             remaining_gb = max(0, total_gb - transferred_gb)
 
-            stats_table.add_row("📊 Transferred:", f"[white]{transferred_gb:.2f} / {total_gb:.2f} GB[/white]")
-            stats_table.add_row("⏳ Remaining:", f"[white]{remaining_gb:.2f} GB[/white]")
-            stats_table.add_row("⚡ DL Speed:", f"[green]{current_dl_speed / (1024**2):.2f} MB/s[/green]")
-            stats_table.add_row("⚡ UL Speed:", f"[yellow]{current_ul_speed / (1024**2):.2f} MB/s[/yellow]")
-            stats_table.add_row("📈 Avg Speed:", f"[dim]{avg_speed_hist / (1024**2):.2f} MB/s[/dim]")
-            stats_table.add_row("🔥 Peak Speed:", f"[dim]{stats['peak_speed'] / (1024**2):.2f} MB/s[/dim]")
-            stats_table.add_row("", "") # Spacer
-            stats_table.add_row("🔄 Active:", f"[white]{stats['active_transfers']}[/white]")
-            stats_table.add_row("✅ Completed:", f"[white]{stats['completed_transfers']}[/white]")
-            stats_table.add_row("❌ Failed:", f"[white]{stats['failed_transfers']}[/white]")
+            stats_table.add_row("📊 Progress", f"[white]{transferred_gb:.2f}/{total_gb:.2f} GB ({remaining_gb:.2f} GB rem.)[/]")
+            stats_table.add_row("⚡ Speed", f"[green]DL:{current_dl_speed / (1024**2):.1f}[/] [yellow]UL:{current_ul_speed / (1024**2):.1f}[/] MB/s")
+            stats_table.add_row("📈 Avg/Peak", f"[dim]{avg_speed_hist / (1024**2):.1f}/{stats['peak_speed'] / (1024**2):.1f} MB/s[/]")
 
-            total_files_overall = sum(t.get('total_files', 0) for t in self.ui_manager._torrents.values())
-            completed_files_overall = sum(t.get('completed_files', 0) for t in self.ui_manager._torrents.values())
-            stats_table.add_row("📂 Files:", f"[white]{completed_files_overall} / {total_files_overall}[/white]")
-            stats_table.add_row("", "") # Spacer
+            # Compacted counts
+            active = stats['active_transfers']
+            completed = stats['completed_transfers']
+            failed = stats['failed_transfers']
+            stats_table.add_row("🔄 Counts", f"[white]A:{active}[/] [green]C:{completed}[/] [red]F:{failed}[/]")
 
-            hours, rem = divmod(elapsed, 3600)
-            minutes, seconds = divmod(rem, 60)
-            time_str = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
-            stats_table.add_row("⏱️ Elapsed:", f"[dim]{time_str}[/dim]")
+            total_files = sum(t.get('total_files', 0) for t in self.ui_manager._torrents.values())
+            completed_files = sum(t.get('completed_files', 0) for t in self.ui_manager._torrents.values())
+            stats_table.add_row("📂 Files", f"[white]{completed_files}/{total_files}[/]")
 
+            # Compacted Time
+            h, rem = divmod(elapsed, 3600); m, s = divmod(rem, 60)
+            time_str = f"{int(h):02d}:{int(m):02d}:{int(s):02d}"
+            eta_str = "-:--"
             if remaining_gb > 0 and avg_speed_hist > 0:
-                eta_seconds = (remaining_gb * 1024**3) / avg_speed_hist
-                eta_hours, eta_rem = divmod(eta_seconds, 3600)
-                eta_minutes, _ = divmod(eta_rem, 60)
-                eta_str = f"{int(eta_hours):02d}:{int(eta_minutes):02d}"
-                stats_table.add_row("⏳ ETA:", f"[cyan]{eta_str}[/]")
+                eta_s = (remaining_gb * 1024**3) / avg_speed_hist
+                eta_h, eta_rem = divmod(eta_s, 3600); eta_m, _ = divmod(eta_rem, 60)
+                eta_str = f"{int(eta_h):02d}:{int(eta_m):02d}"
+            stats_table.add_row("⏱️ Time", f"[dim]E:{time_str}[/] [cyan]ETA:{eta_str}[/]")
 
-            # Create recent completions table
-            if recent_completions:
+            # Create recent completions table (if space allows)
+            max_recent = config.get("recent_completions", 0)
+            if recent_completions and max_recent > 0:
                 recent_table = Table.grid(padding=(0, 1))
                 recent_table.add_column(style="dim", no_wrap=True)
                 recent_table.add_column(style="dim")
-                for name, size, duration in list(recent_completions)[-3:]:
-                    display_name = name[:25] + "..." if len(name) > 28 else name
+                for name, size, duration in list(recent_completions)[-max_recent:]:
+                    display_name = smart_truncate(name, 30)
                     speed = size / duration if duration > 0 else 0
                     recent_table.add_row(f"✓ {display_name}", f"{speed / (1024**2):.1f} MB/s")
 
@@ -149,9 +253,14 @@ class _ActiveTorrentsPanel:
         with self.ui_manager._lock:
             torrents = self.ui_manager._torrents
             stats = self.ui_manager._stats
+            config = self.ui_manager._layout_config
 
             table = Table.grid(padding=(0, 1), expand=True)
-            table.add_column(style="bold", no_wrap=True, width=18) # Progress %
+            # Use adaptive columns
+            if config["show_progress_bars"]:
+                table.add_column(style="bold", no_wrap=True, width=18) # Progress bar
+            else:
+                table.add_column(style="bold", no_wrap=True, width=5) # "XX%"
             table.add_column() # Name & File List
 
             active_count = 0
@@ -159,11 +268,8 @@ class _ActiveTorrentsPanel:
                 if torrent["status"] == "transferring":
                     active_count += 1
                     name = torrent["name"]
-                    display_name = name[:40] + "..." if len(name) > 43 else name
+                    display_name = smart_truncate(name, config["torrent_name_width"])
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
-
-                    # Call torrent progress bar helper
-                    progress_bar = self._render_progress_bar(progress)
 
                     # Build file list
                     file_renderables: List[Text] = [] # Changed from file_lines
@@ -178,48 +284,46 @@ class _ActiveTorrentsPanel:
                         return 3 # completed
 
                     sorted_files = sorted(files.items(), key=sort_key)
+                    max_files = min(7, config.get("terminal_height", 100) // 10)
 
-                    for file_path, status in sorted_files[:5]: # Limit to 5 files
-                        file_name = file_path.split('/')[-1]
-                        file_name = file_name[:35] + "..." if len(file_name) > 38 else file_name
+                    for file_path, status in sorted_files[:max_files]:
+                        file_name = smart_truncate(file_path.split('/')[-1], config["file_name_width"])
+                        progress_display = Text("")
 
-                        progress_bar_text = Text("")
-                        # Get per-file progress data
                         file_progress_data = self.ui_manager._file_progress.get(hash_, {}).get(file_path)
-
-                        # Only show progress bar for active files
                         if file_progress_data and status in ["downloading", "uploading"]:
                             transferred, total = file_progress_data
-                            if total > 0:
-                                file_percent = (transferred / total * 100)
-                                progress_bar_text = self._render_file_progress_bar(file_percent)
-                            elif transferred > 0: # Case where total is 0 but bytes seen
-                                progress_bar_text = Text.from_markup(" [[yellow]...[/]]")
+                            file_percent = (transferred / total * 100) if total > 0 else 0
+                            if config["show_progress_bars"]:
+                                progress_display = self._render_file_progress_bar(file_percent)
+                            else:
+                                progress_display = Text(f" {file_percent:>3.0f}%")
 
-                        if status == "downloading":
-                            # Changed to blue
-                            file_renderables.append(Text.from_markup(f" [blue]⇩ {file_name}[/blue]").append(progress_bar_text))
-                        elif status == "uploading":
-                            file_renderables.append(Text.from_markup(f" [yellow]⇧ {file_name}[/yellow]").append(progress_bar_text))
-                        elif status == "failed":
-                            file_renderables.append(Text.from_markup(f" [bold red]✖ {file_name}[/bold red]"))
-                        elif status == "completed":
-                            file_renderables.append(Text.from_markup(f" [dim]✓ {file_name}[/dim]"))
-                        else: # queued
-                            file_renderables.append(Text.from_markup(f" [dim]· {file_name}[/dim]"))
+                        # Append progress to the correct style of text
+                        style_map = {
+                            "downloading": f" [blue]⇩ {file_name}[/blue]",
+                            "uploading": f" [yellow]⇧ {file_name}[/yellow]",
+                            "failed": f" [bold red]✖ {file_name}[/bold red]",
+                            "completed": f" [dim]✓ {file_name}[/dim]",
+                            "queued": f" [dim]· {file_name}[/dim]"
+                        }
+                        file_text = Text.from_markup(style_map.get(status, f" [dim]· {file_name}[/dim]"))
+                        file_text.append(progress_display)
+                        file_renderables.append(file_text)
 
-                    if len(files) > 5:
-                        file_renderables.append(Text.from_markup(f" [dim]... and {len(files) - 5} more.[/dim]"))
 
-                    # Join Text objects
+                    if len(files) > max_files:
+                        file_renderables.append(Text.from_markup(f" [dim]... and {len(files) - max_files} more.[/dim]"))
+
                     files_panel_content = Text("\n").join(file_renderables)
                     completed_files = torrent.get('completed_files', 0)
                     total_files = torrent.get('total_files', 0)
 
-                    # Main torrent entry
+                    # Main torrent entry with adaptive progress display
+                    progress_display = self._render_progress_bar(progress) if config["show_progress_bars"] else f"{progress:>3.0f}%"
                     table.add_row(
-                        progress_bar, # Use progress bar
-                        Group( # Group Text objects
+                        progress_display,
+                        Group(
                             Text.from_markup(f"[bold cyan]{display_name}[/bold cyan] [dim]({completed_files}/{total_files} files)[/dim]"),
                             files_panel_content
                         )
@@ -490,7 +594,9 @@ class UIManagerV2(BaseUIManager):
         self._rich_handler_ref = rich_handler
         self._um_log_handler = UMLoggingHandler(self)
         self.transfer_mode = "" # For transfer mode
-        self._log_buffer: Deque[Text] = deque(maxlen=20) # For log panel
+        self._responsive_layout = ResponsiveLayout(self.console)
+        self._layout_config = self._responsive_layout.get_layout_config()
+        self._log_buffer: Deque[Text] = deque(maxlen=self._layout_config["log_lines"]) # For log panel
         self._current_header_string_template: str = ""
         self._last_header_text_part: str = ""
         self._current_status: Optional[str] = None
@@ -568,21 +674,31 @@ class UIManagerV2(BaseUIManager):
 
     def _setup_progress(self):
         """Setup progress bars with better formatting. FIXED: Use custom column."""
-        self.main_progress = Progress(
+        config = self._layout_config
+
+        columns = [
             TextColumn("[bold]{task.description}", justify="left"),
             BarColumn(bar_width=None, complete_style="green", finished_style="bold green"),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             "•",
             DownloadColumn(binary_units=True),
-            "•",
-            # FIX: Pass the ui_manager instance and use the _stats key name
-            _SpeedColumn("current_dl_speed", "DL", "green", ui_manager=self),
-            "•",
-            _SpeedColumn("current_ul_speed", "UL", "yellow", ui_manager=self),
-            "•",
-            TimeRemainingColumn(),
-            expand=True,
-        )
+        ]
+
+        if config["show_speed"]:
+            columns.extend([
+                "•",
+                _SpeedColumn("current_dl_speed", "DL", "green", ui_manager=self),
+                "•",
+                _SpeedColumn("current_ul_speed", "UL", "yellow", ui_manager=self),
+            ])
+
+        if config["show_eta"]:
+            columns.extend([
+                "•",
+                TimeRemainingColumn(),
+            ])
+
+        self.main_progress = Progress(*columns, expand=True)
 
         self.analysis_task = self.main_progress.add_task(
             "[cyan]📊 Analysis", total=100, visible=False
@@ -637,10 +753,22 @@ class UIManagerV2(BaseUIManager):
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._live:
             self._stats_thread_stop.set()
+            # Join the thread with a timeout
+            self._stats_thread.join(timeout=5.0)
+            # Check if the thread is still alive
             if self._stats_thread.is_alive():
-                self._stats_thread.join(timeout=2.0)
-            self.main_progress.stop()
-            self._live.stop()
+                logging.warning("Stats thread did not stop cleanly and will be left running.")
+            # Ensure progress bars and live display are stopped
+            try:
+                self.main_progress.stop()
+            except Exception as e:
+                logging.error(f"Error stopping main progress: {e}")
+
+            try:
+                self._live.stop()
+            except Exception as e:
+                logging.error(f"Error stopping live display: {e}")
+
         root_logger = logging.getLogger()
         root_logger.removeHandler(self._um_log_handler)
         if self._rich_handler_ref:
@@ -658,9 +786,28 @@ class UIManagerV2(BaseUIManager):
         with self._lock:
             self._current_status = message
 
+    def _check_and_update_layout(self):
+        """Checks for terminal width changes and updates the layout accordingly."""
+        new_config = self._responsive_layout.get_layout_config()
+        if new_config["terminal_width"] != self._layout_config["terminal_width"]:
+            self._layout_config = new_config
+            # Update layout ratios
+            self.layout["body"].split_row(
+                Layout(name="left", ratio=new_config["left_ratio"]),
+                Layout(name="right", ratio=new_config["right_ratio"])
+            )
+            # Update log buffer size, preserving recent logs
+            self._log_buffer = deque(list(self._log_buffer), maxlen=new_config["log_lines"])
+
     def _stats_updater(self):
         """Background thread to update stats and progress bars."""
+        last_layout_check = time.time()
         while not self._stats_thread_stop.wait(1.0):
+            if time.time() - last_layout_check > 5.0:
+                with self._lock:
+                    self._check_and_update_layout()
+                last_layout_check = time.time()
+
             with self._lock:
                 # --- Calculate Speeds ---
                 current_dl_speed = 0.0

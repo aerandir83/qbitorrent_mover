@@ -229,6 +229,8 @@ The current version is **2.7.5**. To check your version, run: `python3 -m torren
 *   **Flexible Configuration**: All settings are managed in a simple `config.ini` file.
 *   **Advanced Categorization**: Optionally, automatically assign categories on your destination client based on torrent trackers.
 *   **Robust Error Handling**: If a torrent fails the recheck after transfer, its data on the destination is deleted, and the torrent is marked internally to prevent automatic retries on subsequent runs. This usually indicates a persistent issue (e.g., disk corruption, permission problems after transfer, or a qBittorrent bug) requiring manual investigation.
+*   **Resilient Transfers**: Includes a resilient transfer queue with a circuit breaker to automatically retry failed transfers with exponential backoff.
+*   **Robust Resume**: Provides robust resume capabilities for interrupted transfers, checkpointing progress at the individual file level.
 
 ## Requirements
 
@@ -373,6 +375,7 @@ To run the script automatically, set up a cron job. **You must use absolute path
 | `--add-rule [DOMAIN] [CATEGORY]` | `-a` | Adds or updates a categorization rule and exits. |
 | `--delete-rule [DOMAIN]` | `-d` | Deletes a specific categorization rule and exits. |
 | `--clear-recheck-failure [TORRENT_HASH]` | | Manually removes a torrent from the internal 'recheck_failed' list, allowing the script to process it again. Use after resolving the underlying issue. |
+| `--clear-corruption [TORRENT_HASH]`    |      | Manually removes corruption markers for a specific torrent, allowing a failed transfer to be retried from scratch. |
 | `--version` | | Displays the current version of the script and exits. |
 
 ## Advanced Usage: Tracker-Based Categorization
