@@ -558,13 +558,16 @@ def delete_destination_content(
                     logging.warning(f"Destination content not found (already deleted?): {dest_content_path}")
         else:
             # Local deletion
-            p = Path(dest_content_path)
-            if p.is_dir():
-                logging.debug("Destination is a directory. Using 'shutil.rmtree'.")
-                shutil.rmtree(p)
-            elif p.is_file():
-                logging.debug("Destination is a file. Using 'p.unlink()'.")
-                p.unlink()
+            p_str = str(dest_content_path)
+            p = Path(p_str)
+            if p.exists():
+                logging.debug(f"Destination content exists. Using 'rm -rf {p_str}'")
+                try:
+                    # Use 'rm -rf' as it's more robust on network filesystems than shutil.rmtree
+                    subprocess.run(["rm", "-rf", p_str], check=True, capture_output=True, text=True)
+                except subprocess.CalledProcessError as e:
+                    logging.error(f"Failed to delete local content '{p_str}'. Stderr: {e.stderr.strip()}")
+                    raise e # Re-raise to be caught by the calling function
             else:
                 logging.warning(f"Destination content not found (already deleted?): {dest_content_path}")
 
