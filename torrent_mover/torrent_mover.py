@@ -418,7 +418,9 @@ def transfer_torrent(
                         raise ValueError("Source or destination path is missing for rsync transfer.")
                     transfer_content_rsync(
                         sftp_config, source_content_path,
-                        dest_content_path, hash_, ui, rsync_options, dry_run
+                        dest_content_path, hash_, ui, rsync_options,
+                        file_tracker,
+                        dry_run
                     )
                 elif transfer_mode == 'rsync_upload':
                     source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
