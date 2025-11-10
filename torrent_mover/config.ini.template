@@ -83,6 +83,15 @@ size_threshold_gb =
 # - sftp_upload: Transfers files directly from the source server to the destination server via SFTP.
 # - rsync_upload: Transfers files directly from the source server to the destination server via rsync.
 transfer_mode = rsync
+# (Optional) Additional command-line options for rsync.
+# The new default (-ahHSP) is highly recommended for speed and features.
+# -a: archive mode
+# -h: human-readable
+# -H: preserve hard links
+# -S: handle sparse files
+# -P: show progress and keep partial files
+# --inplace: update files in-place (faster, but risky if interrupted)
+rsync_options = -ahHSP --partial --inplace
 # For 'sftp' mode, and for 'sftp_upload' with local caching, this is the max number of concurrent downloads.
 max_concurrent_downloads = 4
 # For 'sftp_upload' mode, this is the max number of concurrent uploads.
