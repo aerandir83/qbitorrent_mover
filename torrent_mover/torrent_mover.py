@@ -9,7 +9,7 @@ __version__ = "2.7.6"
 # Standard Lib
 import configparser
 import sys
-import shlex  # <-- Add this line
+import shlex
 import logging
 import traceback
 from pathlib import Path
@@ -58,6 +58,21 @@ if TYPE_CHECKING:
 # --- Constants ---
 DEFAULT_PARALLEL_JOBS = 4
 
+def _normalize_path(path: str) -> str:
+    """Remove surrounding quotes from paths returned by qBittorrent.
+
+    qBittorrent sometimes returns paths wrapped in quotes like '/path/to/file'
+    which causes issues with rsync and other operations.
+
+    Args:
+        path: The path string to normalize
+
+    Returns:
+        The path with surrounding quotes removed
+    """
+    return path.strip('\'"')
+
+
 def _pre_transfer_setup(
     torrent: qbittorrentapi.TorrentDictionary,
     total_size: int, # Pass in the pre-calculated total_size
@@ -90,7 +105,7 @@ def _pre_transfer_setup(
             client.
     """
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-    source_content_path = torrent.content_path.rstrip('/\\')
+    source_content_path = _normalize_path(torrent.content_path.rstrip('/\\'))
     dest_base_path = config['DESTINATION_PATHS']['destination_path']
     content_name = os.path.basename(source_content_path)
     dest_content_path = os.path.join(dest_base_path, content_name)
@@ -397,7 +412,7 @@ def transfer_torrent(
                         local_cache, download_limit_bytes, upload_limit_bytes, sftp_chunk_size
                     )
                 elif transfer_mode == 'rsync':
-                    rsync_options = shlex.split(config['SETTINGS'].get("rsync_options", "-a --partial --inplace"))
+                    rsync_options = shlex.split(config['SETTINGS'].get("rsync_options", "-avhHSP --partial --inplace"))
                     sftp_config = config[config['SETTINGS']['source_server_section']]
                     if not source_content_path or not dest_content_path:
                         raise ValueError("Source or destination path is missing for rsync transfer.")
@@ -410,7 +425,7 @@ def transfer_torrent(
                     source_config = config[source_server_section]
                     dest_server_section = 'DESTINATION_SERVER' # Hardcode to the correct section name
                     dest_config = config[dest_server_section]
-                    rsync_options = shlex.split(config['SETTINGS'].get("rsync_options", "-a --partial --inplace"))
+                    rsync_options = shlex.split(config['SETTINGS'].get("rsync_options", "-avhHSP --partial --inplace"))
                     source_pool = ssh_connection_pools.get(source_server_section)
                     if not source_pool: raise ValueError(f"SSH pool '{source_server_section}' not found.")
                     is_folder = False
