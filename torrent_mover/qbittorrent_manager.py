@@ -90,7 +90,7 @@ def get_eligible_torrents(client: qbittorrentapi.Client, category: str, size_thr
             return []
         size_to_move = current_total_size - threshold_bytes
         logging.info(f"Need to move at least {size_to_move / GB_BYTES:.2f} GB of torrents.")
-        completed_torrents = [t for t in all_torrents_in_category if t.state == 'completed' or (t.progress == 1 and t.state not in ['checkingUP', 'checkingDL'])]
+        completed_torrents = [t for t in all_torrents_in_category if t.progress == 1 and t.state not in ['checkingUP', 'checkingDL']]
         eligible_torrents = sorted([t for t in completed_torrents if hasattr(t, 'added_on')], key=lambda t: t.added_on)
         torrents_to_move = []
         size_of_selected_torrents = 0
