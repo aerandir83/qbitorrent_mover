@@ -310,40 +310,50 @@ def _post_transfer_actions(
             # --- END OF NEW FIX ---
         else:
             logging.info("Destination re-check successful.")
-            # --- NEW LOGIC ---
-            # 1. Apply Category
-            if torrent.category:
-                try:
-                    logging.info(f"Applying category '{torrent.category}' to destination torrent.")
-                    destination_qbit.torrents_set_category(torrent_hash=torrent.hash, category=torrent.category)
-                except Exception as e:
-                    logging.warning(f"Failed to set category: {e}")
 
-            # 2. Start Torrent (using the new config key)
-            if config.getboolean('DESTINATION_CLIENT', 'start_torrents_after_recheck', fallback=True):
-                try:
-                    logging.info("Resuming destination torrent.")
-                    destination_qbit.torrents_resume(torrent_hashes=torrent.hash)
-                except Exception as e:
-                    logging.warning(f"Failed to resume torrent: {e}")
-            else:
-                logging.info("Skipping torrent auto-start as per config.")
-
-            # 3. Delete Source (MOVED to here, the correct location)
-            if not dry_run and not test_run:
-                if config.getboolean('SOURCE_CLIENT', 'delete_after_transfer', fallback=True):
+            try:
+                # 1. Apply Category
+                if torrent.category:
                     try:
-                        logging.info(f"Deleting torrent from source: {torrent.name}")
-                        source_qbit.torrents_delete(torrent_hashes=torrent.hash, delete_files=False)
-                    except qbittorrentapi.exceptions.NotFound404Error:
-                        logging.warning("Source torrent already deleted or not found.")
+                        logging.info(f"Applying category '{torrent.category}' to destination torrent.")
+                        destination_qbit.torrents_set_category(torrent_hash=torrent.hash, category=torrent.category)
                     except Exception as e:
-                        logging.warning(f"Failed to delete source torrent: {e}")
-            # --- END NEW LOGIC ---
+                        logging.warning(f"Failed to set category: {e}")
 
-            # --- THIS IS THE FIX ---
-            # Add this return statement to signal success
-            return True, "Post-transfer actions completed successfully."
+                # 2. Start Torrent (Corrected Logic)
+                add_paused = config.getboolean('DESTINATION_CLIENT', 'add_torrents_paused', fallback=True)
+                start_after_recheck = config.getboolean('DESTINATION_CLIENT', 'start_torrents_after_recheck', fallback=True)
+
+                if add_paused and start_after_recheck:
+                    try:
+                        logging.info("Resuming destination torrent.")
+                        destination_qbit.torrents_resume(torrent_hashes=torrent.hash)
+                    except Exception as e:
+                        logging.warning(f"Failed to resume torrent: {e}")
+                elif not add_paused:
+                    logging.info("Torrent was not added paused, so it should already be running. No action taken.")
+                elif add_paused and not start_after_recheck:
+                    logging.info("Skipping torrent auto-start as per 'start_torrents_after_recheck' config.")
+
+                # 3. Delete Source (if not dry run)
+                if not dry_run and not test_run:
+                    if config.getboolean('SOURCE_CLIENT', 'delete_after_transfer', fallback=True):
+                        try:
+                            logging.info(f"Deleting torrent from source: {torrent.name}")
+                            source_qbit.torrents_delete(torrent_hashes=torrent.hash, delete_files=False)
+                        except qbittorrentapi.exceptions.NotFound404Error:
+                            logging.warning("Source torrent already deleted or not found.")
+                        except Exception as e:
+                            logging.warning(f"Failed to delete source torrent: {e}")
+                    else:
+                        logging.info("Skipping source torrent deletion as per 'delete_after_transfer' config.")
+
+                return True, "Post-transfer actions completed successfully."
+
+            except Exception as e:
+                # Catch any unexpected error during post-transfer
+                logging.error(f"An unexpected error occurred during post-transfer actions: {e}", exc_info=True)
+                return False, f"Post-transfer actions failed: {e}"
 
 def transfer_torrent(
     torrent: qbittorrentapi.TorrentDictionary,
