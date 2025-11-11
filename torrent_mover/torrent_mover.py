@@ -808,8 +808,10 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
                                 ui.log(f"[cyan]Dry Run: {log_name} - {message}[/cyan]")
 
             except KeyboardInterrupt:
-                ui.log("[bold yellow]Process interrupted by user. Transfers cancelled.[/]")
+                ui.log("[bold yellow]Process interrupted by user. Shutting down workers...[/]")
                 ui.set_final_status("Shutdown requested.")
+                if 'executor' in locals():
+                    executor.shutdown(wait=False, cancel_futures=True)
                 raise
 
             if simple_mode:
@@ -986,6 +988,9 @@ def main() -> int:
         for pool in ssh_connection_pools.values():
             pool.close_all()
         logging.info("All SSH connections have been closed.")
+        if lock and lock._acquired:
+            lock.release()
+            logging.debug("Script lock released.")
         logging.info("--- Torrent Mover script finished ---")
     return 0
 
