@@ -17,6 +17,8 @@ username = your_username
 password = your_password
 # Set to false if you use a self-signed certificate and understand the risks.
 verify_cert = True
+# Whether to delete the torrent from the source after a successful transfer
+delete_after_transfer = true
 
 [DESTINATION_CLIENT]
 # Connection details for the DESTINATION qBittorrent client (e.g., your home server).
@@ -26,6 +28,12 @@ username = your_username
 password = your_password
 # Set to false if you use a self-signed certificate and understand the risks.
 verify_cert = True
+# (Optional) Add torrents to the destination client in a 'paused' state.
+# This is recommended to allow for re-checking before starting.
+add_torrents_paused = true
+# (Optional) Automatically start/resume the torrent after a successful re-check.
+# Only applies if 'add_torrents_paused' is true.
+start_torrents_after_recheck = true
 
 [SOURCE_SERVER]
 # Connection details for the SOURCE server where the files are stored.
@@ -83,6 +91,19 @@ size_threshold_gb =
 # - sftp_upload: Transfers files directly from the source server to the destination server via SFTP.
 # - rsync_upload: Transfers files directly from the source server to the destination server via rsync.
 transfer_mode = rsync
+# (Optional) Additional command-line options for rsync.
+# The new default (-ahHSPc) is highly recommended for speed and features.
+# -a: archive mode
+# -h: human-readable
+# -H: preserve hard links
+# -S: handle sparse files
+# -P: show progress and keep partial files
+# -c: use checksums to verify files (more reliable, slightly slower)
+# --inplace: update files in-place (faster, but risky if interrupted)
+rsync_options = -ahHSPc --partial --inplace
+# (Optional) For rsync transfers, allow a recheck to pass at 99.9%+ completion.
+# This handles minor metadata differences rsync may not sync.
+allow_near_complete_rsync = False
 # For 'sftp' mode, and for 'sftp_upload' with local caching, this is the max number of concurrent downloads.
 max_concurrent_downloads = 4
 # For 'sftp_upload' mode, this is the max number of concurrent uploads.

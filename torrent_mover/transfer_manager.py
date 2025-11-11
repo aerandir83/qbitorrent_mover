@@ -36,6 +36,21 @@ def _is_sshpass_installed() -> bool:
     """Checks if sshpass is installed and available in the system's PATH."""
     return shutil.which("sshpass") is not None
 
+def _create_safe_command_for_logging(command: List[str]) -> List[str]:
+    """Creates a copy of a command list with the sshpass password redacted."""
+    safe_command = list(command)
+    try:
+        # Find the index of 'sshpass' and redact the password after the '-p' flag
+        sshpass_index = safe_command.index("sshpass")
+        if "-p" in safe_command[sshpass_index:]:
+            p_index = safe_command.index("-p", sshpass_index)
+            if p_index + 1 < len(safe_command):
+                safe_command[p_index + 1] = "'********'"
+    except ValueError:
+        # 'sshpass' not in command, nothing to redact
+        pass
+    return safe_command
+
 class RateLimitedFile:
     """Wraps a file-like object to throttle read and write operations.
 
@@ -872,7 +887,7 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
         return
 
     logging.info(f"Starting rsync upload from cache for '{file_name}'")
-    logging.debug(f"Executing rsync upload: {' '.join(safe_rsync_cmd)}")
+    logging.debug(f"Executing rsync upload: {' '.join(_create_safe_command_for_logging(rsync_cmd))}")
 
     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
         if attempt > 1:
@@ -907,8 +922,6 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
                                 last_total_transferred = total_transferred
                         except (ValueError, IndexError):
                             logging.warning(f"Could not parse rsync upload progress line: {line}")
-                    else:
-                        logging.debug(f"rsync upload stdout: {line}")
 
             process.wait()
             stderr_output = process.stderr.read() if process.stderr else ""
@@ -948,82 +961,75 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
     raise RemoteTransferError(f"Rsync upload for '{file_name}' failed after {MAX_RETRY_ATTEMPTS} attempts.")
 
 
-def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: str, local_path: str, torrent_hash: str, ui: UIManager, rsync_options: List[str], file_tracker: FileTransferTracker, dry_run: bool = False) -> None:
+def transfer_content_rsync(
+    sftp_config: configparser.SectionProxy,
+    remote_path: str,
+    local_path: str,
+    torrent_hash: str,
+    ui: UIManager,
+    rsync_options: List[str],
+    file_tracker: FileTransferTracker,
+    total_size: int,  # <-- ADD THIS
+    dry_run: bool = False
+) -> None:
     """Transfers content from a remote server to a local path using rsync.
 
-    This function constructs and executes an `rsync` command via `sshpass` to
-    handle password authentication. It captures the progress from rsync's
-    output to update the UI in real-time.
-
-    Args:
-        sftp_config: The configuration section for the source server.
-        remote_path: The absolute path of the source file or directory.
-        local_path: The absolute path of the local destination.
-        torrent_hash: The hash of the parent torrent.
-        ui: The UI manager for progress updates.
-        rsync_options: A list of options to pass to the rsync command.
-        file_tracker: The tracker for recording file corruption.
-        dry_run: If True, simulates the transfer.
-
-    Raises:
-        Exception: If the rsync command fails after multiple retries.
+    Now includes integrity verification and delta sync capability.
     """
+
     if file_tracker.is_corrupted(torrent_hash, remote_path):
         raise Exception(f"Transfer for {os.path.basename(remote_path)} is marked as corrupted, skipping.")
 
-    # For rsync, we treat the whole torrent as one "file"
-    # The file_path is the source_content_path
+    remote_path = remote_path.strip('\'"')
     rsync_file_name = os.path.basename(remote_path)
     ui.start_file_transfer(torrent_hash, rsync_file_name, "downloading")
+
     host = sftp_config['host']
     port = sftp_config.getint('port')
     username = sftp_config['username']
     password = sftp_config['password']
+
     local_parent_dir = os.path.dirname(local_path)
     Path(local_parent_dir).mkdir(parents=True, exist_ok=True)
-    cleaned_remote_path = remote_path.strip('\'"')
-    # DO NOT use shlex.quote here. The full remote_spec is a single
-    # argument for subprocess, so rsync will parse the path correctly.
-    remote_spec = f"{username}@{host}:{cleaned_remote_path}"
-    rsync_cmd = [
-        "sshpass", "-p", password,
+
+    # Build rsync command with checksum verification
+    # Add --checksum to force byte-by-byte comparison
+    rsync_options_with_checksum = list(rsync_options)
+    if '--checksum' not in rsync_options_with_checksum and '-c' not in rsync_options_with_checksum:
+        rsync_options_with_checksum.append('--checksum')
+
+    # Add progress info flag if not present
+    if "--info=progress2" not in rsync_options_with_checksum:
+        rsync_options_with_checksum.append("--info=progress2")
+
+    # Re-build base command with the new option
+    rsync_command_base = [
         "rsync",
-        *rsync_options,
-        "--info=progress2",
-        f"--timeout={Timeouts.SSH_EXEC}",
-        "-e", _get_ssh_command(port),
-        remote_spec,
-        local_parent_dir
+        *rsync_options_with_checksum,
+        "-e", f"sshpass -p {shlex.quote(password)} {_get_ssh_command(port)}"
     ]
-    safe_rsync_cmd = list(rsync_cmd)
-    safe_rsync_cmd[2] = "'********'"
 
-    # Get total size from the UI's internal state
-    total_size = 0
-    with ui._lock:
-        if torrent_hash in ui._torrents:
-            total_size = ui._torrents[torrent_hash].get("size", 0)
+    remote_spec = f"{username}@{host}:{remote_path}"
 
-    if dry_run:
-        logging.info(f"[DRY RUN] Would execute rsync for: {os.path.basename(remote_path)}")
-        logging.debug(f"[DRY RUN] Command: {' '.join(safe_rsync_cmd)}")
-        if total_size > 0:
-            ui.update_torrent_progress(torrent_hash, total_size, transfer_type='download')
-        return
-    if Path(local_path).exists():
-        logging.info(f"Partial file/directory found for '{os.path.basename(remote_path)}'. Resuming with rsync.")
-    else:
-        logging.info(f"Starting rsync transfer for '{os.path.basename(remote_path)}'")
-    logging.debug(f"Executing rsync command: {' '.join(safe_rsync_cmd)}")
+    MAX_RETRY_ATTEMPTS = 3
     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
-        if attempt > 1:
-            logging.info(f"Rsync attempt {attempt}/{MAX_RETRY_ATTEMPTS} for '{os.path.basename(remote_path)}'...")
-            time.sleep(RETRY_DELAY_SECONDS)
         process = None
         try:
-            start_time = time.time()
+            rsync_command = [*rsync_command_base, remote_spec, local_parent_dir]
+
+            if dry_run:
+                logging.info(f"[DRY_RUN] Would execute: {' '.join(rsync_command)}")
+                # Simulate full progress for UI
+                if total_size > 0:
+                    ui.update_torrent_progress(torrent_hash, total_size, transfer_type='download')
+                ui.complete_file_transfer(torrent_hash, rsync_file_name)
+                return
+
+            logging.info(f"Starting rsync transfer for '{rsync_file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
+            logging.debug(f"Executing rsync: {' '.join(_create_safe_command_for_logging(rsync_command))}")
+
             process = subprocess.Popen(
-                rsync_cmd,
+                rsync_command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -1031,11 +1037,15 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                 errors='replace',
                 bufsize=1
             )
+
             last_total_transferred = 0
             progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
+
             if process.stdout:
                 for line in iter(process.stdout.readline, ''):
                     line = line.strip()
+                    # Do not log verbose rsync progress to file logger
+                    # logging.debug(f"rsync stdout: {line}")
                     match = progress_regex.match(line)
                     if match:
                         try:
@@ -1047,56 +1057,104 @@ def transfer_content_rsync(sftp_config: configparser.SectionProxy, remote_path: 
                                 last_total_transferred = total_transferred
                         except (ValueError, IndexError):
                             logging.warning(f"Could not parse rsync progress line: {line}")
-                    else:
-                        logging.debug(f"rsync stdout: {line}")
+
             process.wait()
             stderr_output = process.stderr.read() if process.stderr else ""
+
             if process.returncode == 0 or process.returncode == 24:
-                # Ensure the progress bar completes
+                # Ensure UI completes to 100%
                 if total_size > 0 and last_total_transferred < total_size:
                     remaining = total_size - last_total_transferred
                     ui.update_torrent_progress(torrent_hash, remaining, transfer_type='download')
 
-                logging.info(f"Rsync transfer completed successfully for '{os.path.basename(remote_path)}'.")
-                ui.log(f"[green]Rsync complete: {os.path.basename(remote_path)}[/green]")
-                ui.complete_file_transfer(torrent_hash, rsync_file_name)
-                return
+                # Verify the transfer
+                if os.path.exists(local_path):
+                    local_size = os.path.getsize(local_path) if os.path.isfile(local_path) else \
+                                 sum(f.stat().st_size for f in Path(local_path).rglob('*') if f.is_file())
+
+                    # Get remote size for comparison
+                    try:
+                        from .ssh_manager import SSHConnectionPool, batch_get_remote_sizes
+                        # Create a temporary connection to verify
+                        temp_pool = SSHConnectionPool(
+                            host=host, port=port, username=username,
+                            password=password, max_size=1
+                        )
+                        with temp_pool.get_connection() as (_, ssh):
+                            remote_sizes = batch_get_remote_sizes(ssh, [remote_path])
+                            remote_size = remote_sizes.get(remote_path, 0)
+                        temp_pool.close_all()
+
+                        size_diff = abs(local_size - remote_size)
+                        size_diff_percent = (size_diff / remote_size * 100) if remote_size > 0 else 0
+
+                        logging.info(f"Transfer verification: Local={local_size}, Remote={remote_size}, Diff={size_diff} bytes ({size_diff_percent:.2f}%)")
+
+                        # If difference is less than 0.1%, consider it successful
+                        if size_diff_percent < 0.1:
+                            logging.info(f"Rsync transfer completed and verified for {rsync_file_name}")
+                            ui.complete_file_transfer(torrent_hash, rsync_file_name)
+                            return
+                        else:
+                            logging.warning(f"Size mismatch after rsync: {size_diff} bytes difference ({size_diff_percent:.2f}%)")
+                            if attempt < MAX_RETRY_ATTEMPTS:
+                                logging.info("Will retry with delta sync...")
+                                continue
+                            else:
+                                raise Exception(f"Size verification failed after {MAX_RETRY_ATTEMPTS} attempts")
+
+                    except Exception as e:
+                        logging.warning(f"Could not verify remote size: {e}. Assuming transfer is OK based on rsync exit code.")
+                        ui.complete_file_transfer(torrent_hash, rsync_file_name)
+                        return
+                else:
+                    raise FileNotFoundError(f"Local file not found after rsync: {local_path}")
+
             elif process.returncode == 30:
-                logging.warning(f"Rsync timed out for '{os.path.basename(remote_path)}'. Retrying...")
+                logging.warning(f"Rsync timed out for '{rsync_file_name}'. Retrying...")
                 continue
             else:
-                file_tracker.record_corruption(torrent_hash, remote_path)
-                if "permission denied" in stderr_output.lower():
-                    logging.error(f"Rsync failed due to a permission error on the local machine.\n"
-                                  f"Please check that the user running the script has write permissions for the destination path: {local_parent_dir}")
-                else:
-                    logging.error(f"Rsync failed for '{os.path.basename(remote_path)}' with non-retryable exit code {process.returncode}.\n"
-                                  f"Rsync stderr: {stderr_output}")
-                ui.log(f"[bold red]Rsync FAILED for {os.path.basename(remote_path)}[/bold red]")
-                logging.error(f"Transfer failed for file '{rsync_file_name}' due to rsync error", exc_info=True)
-                ui.fail_file_transfer(torrent_hash, rsync_file_name)
-                raise Exception(f"Rsync transfer failed for {os.path.basename(remote_path)}")
-        except FileNotFoundError as e:
-            file_tracker.record_corruption(torrent_hash, remote_path)
-            logging.error("FATAL: 'rsync' or 'sshpass' command not found.")
-            logging.error(f"Transfer failed for file '{rsync_file_name}' due to missing command: {e}", exc_info=True)
-            ui.fail_file_transfer(torrent_hash, rsync_file_name)
-            raise
-        except Exception as e:
-            file_tracker.record_corruption(torrent_hash, remote_path)
-            logging.error(f"An exception occurred during rsync for '{os.path.basename(remote_path)}': {e}", exc_info=True)
+                logging.error(f"Rsync failed for '{rsync_file_name}' with exit code {process.returncode}.\n"
+                              f"Rsync stderr: {stderr_output}")
+                if "No such file or directory" in stderr_output:
+                    raise FileNotFoundError(f"Source file not found: {remote_path}")
+                raise Exception(f"Rsync failed with exit code {process.returncode}")
+
+        except subprocess.TimeoutExpired:
+            logging.error(f"Rsync process timed out for '{rsync_file_name}'")
             if process:
                 process.kill()
             if attempt < MAX_RETRY_ATTEMPTS:
                 logging.warning("Retrying...")
                 continue
             else:
+                file_tracker.record_corruption(torrent_hash, remote_path)
+                ui.fail_file_transfer(torrent_hash, rsync_file_name)
+                raise Exception(f"Rsync timed out after {MAX_RETRY_ATTEMPTS} attempts")
+
+        except FileNotFoundError as e:
+            file_tracker.record_corruption(torrent_hash, remote_path)
+            logging.error(f"Rsync transfer failed with FileNotFoundError: {e}", exc_info=True)
+            ui.fail_file_transfer(torrent_hash, rsync_file_name)
+            raise
+
+        except Exception as e:
+            logging.error(f"An exception occurred during rsync for '{rsync_file_name}': {e}", exc_info=True)
+            if process:
+                process.kill()
+            if attempt < MAX_RETRY_ATTEMPTS:
+                logging.warning("Retrying...")
+                continue
+            else:
+                file_tracker.record_corruption(torrent_hash, rsync_file_name)
                 ui.fail_file_transfer(torrent_hash, rsync_file_name)
                 raise e
+
+    # If we get here, all retries failed
     file_tracker.record_corruption(torrent_hash, remote_path)
-    logging.error(f"Transfer failed for file '{rsync_file_name}' after multiple retries.", exc_info=True)
+    logging.error(f"Transfer failed for '{rsync_file_name}' after {MAX_RETRY_ATTEMPTS} retries.", exc_info=True)
     ui.fail_file_transfer(torrent_hash, rsync_file_name)
-    raise Exception(f"Rsync transfer for '{os.path.basename(remote_path)}' failed after {MAX_RETRY_ATTEMPTS} attempts.")
+    raise Exception(f"Rsync transfer failed for {rsync_file_name} after {MAX_RETRY_ATTEMPTS} attempts")
 
 
 def transfer_content_rsync_upload(

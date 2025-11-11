@@ -10,14 +10,22 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.7.5**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.8.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.7.6 (Pending)
-* **fix(transfer)**: Fixed a bug where paths from qBittorrent containing surrounding quotes (e.g., `'/path/to/file'`) would cause `rsync` transfers to fail due to malformed, double-escaped quotes.
+### Version 2.8.0 (Latest)
+* **feat(recheck):** Implemented a new 3-stage recheck and delta-transfer workflow to significantly improve the recovery rate of partially failed transfers. This new process intelligently retries transfers, deletes only the corrupted files, and performs multiple rechecks to ensure data integrity, reducing the need for manual intervention.
 
-### Version 2.7.5 (Latest)
+### Version 2.7.6
+* **fix(transfer):** (Fix #1) Fixed a critical bug where paths from qBittorrent containing surrounding quotes (e.g., `'/path/to/file'`) would cause `rsync` transfers to fail due to malformed, double-escaped quotes.
+* **fix(transfer):** (Fix #2) Resolved an `AttributeError: 'bool' object has no attribute 'is_corrupted'` by correcting a type hint error in `transfer_manager.py`, re-enabling corruption checks for rsync transfers.
+* **fix(strategy):** (Fix #3) Updated transfer strategies to correctly preserve the parent folder structure for single-file torrents.
+* **fix(rsync):** (Fix #4) Optimized rsync transfers by changing the default options to `-ahHSP --partial --inplace` to handle sparse files (`-S`), preserve hard links (`-H`), show progress (`-P`), and reduce verbosity (removed `-v`).
+* **fix(ui):** (Fix #5) Corrected the UI speed display to reset to 0.00 MB/s after 5 seconds of inactivity, preventing stale speed data from persisting.
+* **fix(log):** Silenced verbose `rsync` progress lines from spamming the `DEBUG` log for both `rsync` and `rsync_upload` modes.
+
+### Version 2.7.5
 * **fix(main)**: Removed an incorrect startup dependency check for `sshpass` on the source server when using `rsync_upload` mode.
 * **fix(transfer)**: Corrected a logic error in `rsync_upload` mode where the download step was saving to the wrong directory, causing the upload step to fail.
 
