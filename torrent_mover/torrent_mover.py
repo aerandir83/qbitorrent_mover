@@ -317,7 +317,7 @@ def _post_transfer_actions(
 
         # For rsync mode, allow near-complete (99.9%) as success
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-        allow_near_complete = (transfer_mode == 'rsync')
+        allow_near_complete = ('rsync' in transfer_mode)
 
         recheck_ok = wait_for_recheck_completion(
             destination_qbit,
@@ -333,37 +333,45 @@ def _post_transfer_actions(
                 return False, "Re-check failed for pre-existing file."
 
             # --- DELTA TRANSFER LOGIC ---
-            logging.warning(f"Post-transfer re-check FAILED for {torrent.name}. Attempting delta transfer...")
+            logging.warning(f"Post-transfer re-check FAILED for {torrent.name}. Attempting delta/retry transfer...")
 
-            # 1. Find incomplete files on destination
-            incomplete_file_paths = get_incomplete_files(destination_qbit, torrent.hash)
-            if not incomplete_file_paths:
-                logging.error("Re-check failed, but could not find any incomplete files. Deleting content.")
-                try:
-                    delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                except Exception as e:
-                    logging.error(f"Failed to delete corrupt destination content: {e}")
-                return False, "Re-check failed, but no incomplete files found."
+            delta_files: List[TransferFile] = [] # Initialize delta_files list
 
-            # 2. Filter the original file list to get a delta list
-            # We must normalize paths for comparison. The incomplete_file_paths are already
-            # relative paths from the torrent root.
-            norm_incomplete = {p.replace('\\', '/') for p in incomplete_file_paths}
-            delta_files = [
-                f for f in all_files
-                if Path(os.path.relpath(f.dest_path, dest_content_path)).as_posix() in norm_incomplete
-            ]
+            # NEW: Check for rsync mode
+            if 'rsync' in transfer_mode:
+                logging.warning(f"Rsync mode detected. Re-running the full rsync transfer for {torrent.name}...")
+                delta_files = all_files # For rsync, the "delta" is the original full file list
+            else:
+                # This is the original logic, now nested in 'else'
+                # 1. Find incomplete files on destination
+                incomplete_file_paths = get_incomplete_files(destination_qbit, torrent.hash)
+                if not incomplete_file_paths:
+                    logging.error("Re-check failed, but could not find any incomplete files. Deleting content.")
+                    try:
+                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                    except Exception as e:
+                        logging.error(f"Failed to delete corrupt destination content: {e}")
+                    return False, "Re-check failed, but no incomplete files found."
 
-            if not delta_files:
-                logging.error(f"Incomplete files reported ({incomplete_file_paths}), but none matched the source file list. Deleting content.")
-                try:
-                    delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                except Exception as e:
-                    logging.error(f"Failed to delete corrupt destination content: {e}")
-                return False, "Re-check failed, file list mismatch."
+                # 2. Filter the original file list to get a delta list
+                # We must normalize paths for comparison. The incomplete_file_paths are already
+                # relative paths from the torrent root.
+                norm_incomplete = {p.replace('\\', '/') for p in incomplete_file_paths}
+                delta_files = [
+                    f for f in all_files
+                    if Path(os.path.relpath(f.dest_path, dest_content_path)).as_posix() in norm_incomplete
+                ]
+
+                if not delta_files:
+                    logging.error(f"Incomplete files reported ({incomplete_file_paths}), but none matched the source file list. Deleting content.")
+                    try:
+                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                    except Exception as e:
+                        logging.error(f"Failed to delete corrupt destination content: {e}")
+                    return False, "Re-check failed, file list mismatch."
 
             # 3. Execute delta transfer
-            logging.info(f"Starting delta transfer for {len(delta_files)} incomplete file(s)...")
+            logging.info(f"Starting delta/retry transfer for {len(delta_files)} item(s)...")
             delta_size = sum(f.size for f in delta_files)
 
             delta_transfer_ok = _execute_transfer(
