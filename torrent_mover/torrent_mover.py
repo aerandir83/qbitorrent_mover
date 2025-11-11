@@ -327,11 +327,6 @@ def _post_transfer_actions(
 
         if not recheck_ok:
             # Recheck failed.
-            if not transfer_executed:
-                # File already existed, but recheck failed. Don't delete it, just report.
-                logging.error(f"Re-check FAILED for existing file: {torrent.name}. Manual inspection required.")
-                return False, "Re-check failed for pre-existing file."
-
             # --- DELTA TRANSFER LOGIC ---
             logging.warning(f"Post-transfer re-check FAILED for {torrent.name}. Attempting delta/retry transfer...")
 
