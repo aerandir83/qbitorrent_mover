@@ -688,10 +688,24 @@ def _handle_utility_commands(args: argparse.Namespace, config: configparser.Conf
     Returns:
         True if a utility command was handled, False otherwise.
     """
-    if not (args.list_rules or args.add_rule or args.delete_rule or args.interactive_categorize or args.test_permissions or args.clear_recheck_failure or args.clear_corruption):
+    if not (args.list_rules or args.add_rule or args.delete_rule or args.categorize or args.interactive_categorize or args.test_permissions or args.clear_recheck_failure or args.clear_corruption):
         return False
 
     logging.info("Executing utility command...")
+
+    if args.categorize:
+        try:
+            dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
+            destination_qbit = connect_qbit(config[dest_client_section], "Destination")
+            logging.info("Fetching all completed torrents from destination for categorization...")
+            completed_torrents = [t for t in destination_qbit.torrents_info() if t.progress == 1]
+            if completed_torrents:
+                categorize_torrents(destination_qbit, completed_torrents, tracker_rules)
+            else:
+                logging.info("No completed torrents found on destination to categorize.")
+        except Exception as e:
+            logging.error(f"Failed to run categorization: {e}", exc_info=True)
+        return True
 
     if args.test_permissions:
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
@@ -826,15 +840,6 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
         for torrent in recovered_torrents:
             if torrent.hash not in eligible_hashes:
                 eligible_torrents.append(torrent)
-
-    # --- Categorize Torrents (if flag is set) ---
-    if args.categorize:
-        if eligible_torrents:
-            logging.info(f"Categorize flag set. Categorizing {len(eligible_torrents)} completed torrent(s) based on tracker rules...")
-            # Pass only the *completed* torrents to the function
-            categorize_torrents(source_qbit, eligible_torrents, tracker_rules)
-        else:
-            logging.debug("Categorize flag set, but no completed torrents found to categorize.")
 
     if not eligible_torrents:
         logging.info("No torrents to move.")
@@ -1048,7 +1053,7 @@ def main() -> int:
     parser.add_argument('-l', '--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
     parser.add_argument('-a', '--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
     parser.add_argument('-d', '--delete-rule', metavar='TRACKER_DOMAIN', help='Delete a rule and exit.')
-    parser.add_argument('-c', '--categorize', action='store_true', help='Categorize completed torrents on source client based on tracker rules before moving.')
+    parser.add_argument('-c', '--categorize', dest='categorize', action='store_true', help='Categorize all completed torrents on destination based on tracker rules.')
     parser.add_argument('-i', '--interactive-categorize', dest='interactive_categorize', action='store_true', help='Interactively categorize torrents on destination.')
     parser.add_argument('--category', help='(For -i mode) Specify a category to scan, overriding the config.')
     parser.add_argument('-nr', '--no-rules', action='store_true', help='(For -i mode) Ignore existing rules and show all torrents in the category.')
