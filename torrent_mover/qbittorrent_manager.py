@@ -209,3 +209,24 @@ def wait_for_recheck_completion(
 
     logging.error(f"Timeout: Recheck did not complete for torrent {torrent_hash[:10]} in {timeout_seconds}s. Last progress: {last_progress*100:.2f}%")
     return False
+
+def get_incomplete_files(client: qbittorrentapi.Client, torrent_hash: str) -> List[str]:
+    """
+    Gets a list of incomplete files for a given torrent.
+
+    Args:
+        client: The qBittorrent client.
+        torrent_hash: The hash of the torrent to check.
+
+    Returns:
+        A list of file names (paths relative to torrent root) that are not 100% complete.
+    """
+    try:
+        files = client.torrents_files(torrent_hash=torrent_hash)
+        incomplete_files = [f.name for f in files if f.progress < 1]
+        if incomplete_files:
+            logging.warning(f"Found {len(incomplete_files)} incomplete files for torrent {torrent_hash[:10]}...")
+        return incomplete_files
+    except Exception as e:
+        logging.error(f"Could not get file list for torrent {torrent_hash[:10]}: {e}")
+        return []
