@@ -1048,7 +1048,7 @@ def main() -> int:
     parser.add_argument('-l', '--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
     parser.add_argument('-a', '--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
     parser.add_argument('-d', '--delete-rule', metavar='TRACKER_DOMAIN', help='Delete a rule and exit.')
-    parser.add_argument('--categorize', action='store_true', help='Categorize completed torrents on source client based on tracker rules before moving.')
+    parser.add_argument('-c', '--categorize', action='store_true', help='Categorize completed torrents on source client based on tracker rules before moving.')
     parser.add_argument('-i', '--interactive-categorize', dest='interactive_categorize', action='store_true', help='Interactively categorize torrents on destination.')
     parser.add_argument('--category', help='(For -i mode) Specify a category to scan, overriding the config.')
     parser.add_argument('-nr', '--no-rules', action='store_true', help='(For -i mode) Ignore existing rules and show all torrents in the category.')
