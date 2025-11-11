@@ -678,14 +678,19 @@ def transfer_torrent(
             ui.update_torrent_progress(hash_, total_size_calc * transfer_multiplier, transfer_type='download')
             transfer_executed = False
         elif pre_transfer_status == "exists_different_size":
-            ui.log(f"[yellow]Mismatch size for {name}. Deleting destination content...[/yellow]")
-            logging.warning(f"Deleting mismatched destination content: {dest_content_path}")
-            try:
-                delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                ui.log(f"[green]Deleted mismatched content for {name}.[/green]")
-            except Exception as e:
-                logging.exception(f"Failed to delete mismatched content for {name}")
-                return "failed", f"Failed to delete mismatched content: {e}"
+            if 'rsync' in transfer_mode:
+                logging.info(f"Rsync mode: Resuming transfer for mismatched content: {dest_content_path}")
+                # Do nothing, rsync will handle the delta
+            else:
+                # Original logic for SFTP
+                ui.log(f"[yellow]Mismatch size for {name}. Deleting destination content...[/yellow]")
+                logging.warning(f"Deleting mismatched destination content: {dest_content_path}")
+                try:
+                    delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                    ui.log(f"[green]Deleted mismatched content for {name}.[/green]")
+                except Exception as e:
+                    logging.exception(f"Failed to delete mismatched content for {name}")
+                    return "failed", f"Failed to delete mismatched content: {e}"
             # Fall through to execute the transfer below
 
         # --- 4. Execute Transfer if Needed ---
