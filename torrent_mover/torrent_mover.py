@@ -193,20 +193,20 @@ def _pre_transfer_setup(
             status_message = f"Destination content exists and size matches source ({total_size} bytes). Skipping transfer."
             logging.warning(status_message)
         else:
-    status_code = "exists_different_size"
-    if 'rsync' in transfer_mode:
-        status_message = (
-            f"Destination content exists but size mismatches "
-            f"(Source: {total_size} vs Dest: {destination_size}). "
-            f"Rsync mode: Will resume transfer."
-        )
-    else:
-        status_message = (
-            f"Destination content exists but size mismatches "
-            f"(Source: {total_size} vs Dest: {destination_size}). "
-            f"Will delete and re-transfer."
-        )
-    logging.warning(status_message)
+            status_code = "exists_different_size"
+            if 'rsync' in transfer_mode:
+                status_message = (
+                    f"Destination content exists but size mismatches "
+                    f"(Source: {total_size} vs Dest: {destination_size}). "
+                    f"Rsync mode: Will resume transfer."
+                )
+            else:
+                status_message = (
+                    f"Destination content exists but size mismatches "
+                    f"(Source: {total_size} vs Dest: {destination_size}). "
+                    f"Will delete and re-transfer."
+                )
+            logging.warning(status_message)
     else:
         logging.debug(f"Destination path does not exist: {dest_content_path}")
 
