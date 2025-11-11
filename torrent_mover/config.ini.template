@@ -26,6 +26,12 @@ username = your_username
 password = your_password
 # Set to false if you use a self-signed certificate and understand the risks.
 verify_cert = True
+# (Optional) Add torrents to the destination client in a 'paused' state.
+# This is recommended to allow for re-checking before starting.
+add_torrents_paused = true
+# (Optional) Automatically start/resume the torrent after a successful re-check.
+# Only applies if 'add_torrents_paused' is true.
+start_torrents_after_recheck = true
 
 [SOURCE_SERVER]
 # Connection details for the SOURCE server where the files are stored.
