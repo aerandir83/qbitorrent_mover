@@ -83,7 +83,8 @@ def _pre_transfer_setup(
     total_size: int, # Pass in the pre-calculated total_size
     config: configparser.ConfigParser,
     ssh_connection_pools: Dict[str, SSHConnectionPool],
-    args: argparse.Namespace
+    args: argparse.Namespace,
+    transfer_mode: str
 ) -> Tuple[str, str, Optional[str], Optional[str], Optional[str]]:
     """Performs setup tasks before a torrent transfer begins.
 
@@ -193,7 +194,18 @@ def _pre_transfer_setup(
             logging.warning(status_message)
         else:
             status_code = "exists_different_size"
-            status_message = f"Destination content exists but size mismatches (Source: {total_size} vs Dest: {destination_size}). Will delete and re-transfer."
+            if 'rsync' in transfer_mode:
+                status_message = (
+                    f"Destination content exists but size mismatches "
+                    f"(Source: {total_size} vs Dest: {destination_size}). "
+                    f"Rsync mode: Will resume transfer."
+                )
+            else:
+                status_message = (
+                    f"Destination content exists but size mismatches "
+                    f"(Source: {total_size} vs Dest: {destination_size}). "
+                    f"Will delete and re-transfer."
+                )
             logging.warning(status_message)
     else:
         logging.debug(f"Destination path does not exist: {dest_content_path}")
@@ -641,7 +653,7 @@ def transfer_torrent(
             pre_transfer_status, pre_transfer_msg,
             source_content_path, dest_content_path,
             destination_save_path
-        ) = _pre_transfer_setup(torrent, total_size, config, ssh_connection_pools, args)
+        ) = _pre_transfer_setup(torrent, total_size, config, ssh_connection_pools, args, transfer_mode)
 
         if pre_transfer_status == "failed":
             return "failed", pre_transfer_msg
