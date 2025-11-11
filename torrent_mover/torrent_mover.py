@@ -247,6 +247,11 @@ def _post_transfer_actions(
             remote_config = config['DESTINATION_SERVER'] if transfer_mode in ['sftp_upload', 'rsync_upload'] else None
             change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
 
+    if not destination_qbit:
+        logging.warning("No destination client provided. Skipping post-transfer client actions.")
+        # If no destination client, we can't do anything else, so just return success.
+        return True, "Transfer complete, no destination client actions performed."
+
     destination_save_path_str = str(destination_save_path).replace("\\", "/")
 
     # --- 2. Add Torrent to Destination (if not already there) ---
@@ -288,72 +293,89 @@ def _post_transfer_actions(
         logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
 
     # --- 4. Wait for Recheck and Handle Failure ---
-    if destination_qbit and transfer_executed:
+    recheck_ok = True # Assume OK if dry_run or not transfer
+    if not dry_run:
         logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
         recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash)
+
         if not recheck_ok:
-            # --- THIS IS THE NEW FIX ---
-            logging.error(f"Post-transfer re-check FAILED for {torrent.name}. File is likely corrupt.")
-            logging.info(f"Deleting local content at '{dest_content_path}' to force a clean transfer on the next run.")
-            try:
-                delete_destination_content(
-                    dest_content_path,
-                    ssh_connection_pools['DESTINATION_SERVER'],
-                    config.get('DESTINATION_SERVER', 'type', fallback='local')
-                )
-                # Mark as corrupted so it doesn't get re-tried this session, but will be re-tried next script run
-                file_tracker.record_corruption(torrent.hash, torrent.content_path)
-                return False, "Post-transfer re-check failed; file corrupted and deleted."
-            except Exception as e:
-                logging.error(f"Failed to delete corrupt local content: {e}")
-                return False, "Post-transfer re-check failed AND cleanup failed."
-            # --- END OF NEW FIX ---
-        else:
-            logging.info("Destination re-check successful.")
+            # Recheck failed.
+            if transfer_executed:
+                # --- FIX FOR CORRUPT TRANSFERS ---
+                # Only delete if we are the ones who transferred it.
+                logging.error(f"Post-transfer re-check FAILED for {torrent.name}. File is likely corrupt.")
+                logging.info(f"Deleting destination content at '{dest_content_path}' to force a clean transfer on the next run.")
+                try:
+                    delete_destination_content(
+                        dest_content_path,
+                        transfer_mode, # Pass transfer_mode
+                        ssh_connection_pools
+                    )
+                    # Mark as corrupted so it doesn't get re-tried this session, but will be re-tried next script run
+                    file_tracker.record_corruption(torrent.hash, torrent.content_path)
+                    return False, "Post-transfer re-check failed; corrupt file(s) deleted."
+                except Exception as e:
+                    logging.error(f"Failed to delete corrupt destination content: {e}")
+                    return False, "Post-transfer re-check failed AND cleanup failed."
+                # --- END OF FIX ---
+            else:
+                # File already existed, but recheck failed.
+                # Don't delete it, just report the error.
+                logging.error(f"Re-check FAILED for existing file: {torrent.name}. Manual inspection required.")
+                return False, "Re-check failed for pre-existing file."
 
-            try:
-                # 1. Apply Category
-                if torrent.category:
-                    try:
-                        logging.info(f"Applying category '{torrent.category}' to destination torrent.")
+    # --- 5. Post-Recheck Actions (Start, Categorize, Delete Source) ---
+    if recheck_ok:
+        logging.info("Destination re-check successful.")
+        try:
+            # 1. Apply Category
+            if torrent.category:
+                try:
+                    logging.info(f"Applying category '{torrent.category}' to destination torrent.")
+                    if not dry_run:
                         destination_qbit.torrents_set_category(torrent_hash=torrent.hash, category=torrent.category)
-                    except Exception as e:
-                        logging.warning(f"Failed to set category: {e}")
+                except Exception as e:
+                    logging.warning(f"Failed to set category: {e}")
 
-                # 2. Start Torrent (Corrected Logic)
-                add_paused = config.getboolean('DESTINATION_CLIENT', 'add_torrents_paused', fallback=True)
-                start_after_recheck = config.getboolean('DESTINATION_CLIENT', 'start_torrents_after_recheck', fallback=True)
+            # 2. Start Torrent
+            add_paused = config.getboolean('DESTINATION_CLIENT', 'add_torrents_paused', fallback=True)
+            start_after_recheck = config.getboolean('DESTINATION_CLIENT', 'start_torrents_after_recheck', fallback=True)
 
-                if add_paused and start_after_recheck:
-                    try:
-                        logging.info("Resuming destination torrent.")
+            if add_paused and start_after_recheck:
+                try:
+                    logging.info("Resuming destination torrent.")
+                    if not dry_run:
                         destination_qbit.torrents_resume(torrent_hashes=torrent.hash)
+                except Exception as e:
+                    logging.warning(f"Failed to resume torrent: {e}")
+            elif not add_paused:
+                logging.info("Torrent was not added paused, so it should already be running. No action taken.")
+            elif add_paused and not start_after_recheck:
+                logging.info("Skipping torrent auto-start as per 'start_torrents_after_recheck' config.")
+
+            # 3. Delete Source
+            if not dry_run and not test_run:
+                if config.getboolean('SOURCE_CLIENT', 'delete_after_transfer', fallback=True):
+                    try:
+                        logging.info(f"Deleting torrent from source: {torrent.name}")
+                        source_qbit.torrents_delete(torrent_hashes=torrent.hash, delete_files=False)
+                    except qbittorrentapi.exceptions.NotFound404Error:
+                        logging.warning("Source torrent already deleted or not found.")
                     except Exception as e:
-                        logging.warning(f"Failed to resume torrent: {e}")
-                elif not add_paused:
-                    logging.info("Torrent was not added paused, so it should already be running. No action taken.")
-                elif add_paused and not start_after_recheck:
-                    logging.info("Skipping torrent auto-start as per 'start_torrents_after_recheck' config.")
+                        logging.warning(f"Failed to delete source torrent: {e}")
+                else:
+                    logging.info("Skipping source torrent deletion as per 'delete_after_transfer' config.")
 
-                # 3. Delete Source (if not dry run)
-                if not dry_run and not test_run:
-                    if config.getboolean('SOURCE_CLIENT', 'delete_after_transfer', fallback=True):
-                        try:
-                            logging.info(f"Deleting torrent from source: {torrent.name}")
-                            source_qbit.torrents_delete(torrent_hashes=torrent.hash, delete_files=False)
-                        except qbittorrentapi.exceptions.NotFound404Error:
-                            logging.warning("Source torrent already deleted or not found.")
-                        except Exception as e:
-                            logging.warning(f"Failed to delete source torrent: {e}")
-                    else:
-                        logging.info("Skipping source torrent deletion as per 'delete_after_transfer' config.")
+            return True, "Post-transfer actions completed successfully."
 
-                return True, "Post-transfer actions completed successfully."
+        except Exception as e:
+            # Catch any unexpected error during post-transfer
+            logging.error(f"An unexpected error occurred during post-transfer actions: {e}", exc_info=True)
+            return False, f"Post-transfer actions failed: {e}"
 
-            except Exception as e:
-                # Catch any unexpected error during post-transfer
-                logging.error(f"An unexpected error occurred during post-transfer actions: {e}", exc_info=True)
-                return False, f"Post-transfer actions failed: {e}"
+    # This line should not be reachable, but as a fallback:
+    return False, "Post-transfer actions failed due to unhandled recheck status."
+
 
 def transfer_torrent(
     torrent: qbittorrentapi.TorrentDictionary,
@@ -413,7 +435,7 @@ def transfer_torrent(
         if dry_run:
             logging.info(f"[DRY RUN] Simulating transfer for '{name}'. Status: {pre_transfer_status}")
             ui.log(f"[dim]Dry Run: {name} (Status: {pre_transfer_status})[/dim]")
-            ui.update_torrent_progress(hash_, total_size_calc * transfer_multiplier)
+            ui.update_torrent_progress(hash_, total_size_calc * transfer_multiplier, transfer_type='download') # Use a default type
         elif pre_transfer_status == "exists_same_size":
             ui.log(f"[green]Content exists for {name}. Skipping transfer.[/green]")
             ui.update_torrent_progress(hash_, total_size_calc * transfer_multiplier, transfer_type='download')
