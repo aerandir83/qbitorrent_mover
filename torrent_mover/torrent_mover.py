@@ -310,27 +310,36 @@ def _post_transfer_actions(
             # --- END OF NEW FIX ---
         else:
             logging.info("Destination re-check successful.")
+            # --- NEW LOGIC ---
+            # 1. Apply Category
+            if torrent.category:
+                try:
+                    logging.info(f"Applying category '{torrent.category}' to destination torrent.")
+                    destination_qbit.torrents_set_category(torrent_hash=torrent.hash, category=torrent.category)
+                except Exception as e:
+                    logging.warning(f"Failed to set category: {e}")
 
-    # --- 5. Recheck Succeeded: Finalize Torrent ---
-    if not dry_run:
-        logging.info(f"CLIENT: Starting torrent on Destination: {name}")
-        destination_qbit.torrents_resume(torrent_hashes=hash_)
-    else:
-        logging.info(f"[DRY RUN] Would start torrent on Destination: {name}")
+            # 2. Start Torrent (using the new config key)
+            if config.getboolean('DESTINATION_CLIENT', 'start_torrents_after_recheck', fallback=True):
+                try:
+                    logging.info("Resuming destination torrent.")
+                    destination_qbit.torrents_resume(torrent_hashes=torrent.hash)
+                except Exception as e:
+                    logging.warning(f"Failed to resume torrent: {e}")
+            else:
+                logging.info("Skipping torrent auto-start as per config.")
 
-    logging.info(f"CLIENT: Attempting to categorize torrent on Destination: {name}")
-    set_category_based_on_tracker(destination_qbit, hash_, tracker_rules, dry_run=dry_run)
-
-    # --- 6. Delete from Source ---
-    if not dry_run and not test_run:
-        logging.info(f"CLIENT: Pausing torrent on Source before deletion: {name}")
-        source_qbit.torrents_pause(torrent_hashes=hash_)
-        logging.info(f"CLIENT: Deleting torrent and data from Source: {name}")
-        source_qbit.torrents_delete(torrent_hashes=hash_, delete_files=True)
-    elif test_run:
-        logging.info(f"[TEST RUN] Skipping deletion of torrent from Source: {name}")
-    else:
-        logging.info(f"[DRY RUN] Would pause and delete torrent and data from Source: {name}")
+            # 3. Delete Source (MOVED to here, the correct location)
+            if not dry_run and not test_run:
+                if config.getboolean('SOURCE_CLIENT', 'delete_after_transfer', fallback=True):
+                    try:
+                        logging.info(f"Deleting torrent from source: {torrent.name}")
+                        source_qbit.torrents_delete(torrent_hashes=torrent.hash, delete_files=False)
+                    except qbittorrentapi.exceptions.NotFound404Error:
+                        logging.warning("Source torrent already deleted or not found.")
+                    except Exception as e:
+                        logging.warning(f"Failed to delete source torrent: {e}")
+            # --- END NEW LOGIC ---
 
     return True, "Successfully transferred and verified."
 
