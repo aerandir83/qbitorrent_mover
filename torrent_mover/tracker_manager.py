@@ -202,10 +202,17 @@ def run_interactive_categorization(client: qbittorrentapi.Client, rules: Dict[st
     try:
         if not category_to_scan:
             logging.info("No category specified. Scanning for 'uncategorized' torrents.")
-            torrents_to_check = client.torrents_info(filter='uncategorized', sort='name')
+            all_torrents_in_category = client.torrents_info(filter='uncategorized', sort='name')
         else:
             logging.info(f"Scanning for torrents in category: '{category_to_scan}'")
-            torrents_to_check = client.torrents_info(category=category_to_scan, sort='name')
+            all_torrents_in_category = client.torrents_info(category=category_to_scan, sort='name')
+
+        # Filter for completed torrents only before proceeding
+        torrents_to_check = [t for t in all_torrents_in_category if t.progress == 1]
+
+        if len(all_torrents_in_category) > len(torrents_to_check):
+            logging.info(f"Found {len(all_torrents_in_category)} total torrents, but only processing the {len(torrents_to_check)} completed ones.")
+
         if not torrents_to_check:
             logging.info(f"No torrents found in '{category_to_scan or 'uncategorized'}' that need categorization.")
             return
