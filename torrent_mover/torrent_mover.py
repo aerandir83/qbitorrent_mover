@@ -261,16 +261,28 @@ def _post_transfer_actions(
             logging.info(f"Torrent {name} not found on destination. Adding it.")
             if not dry_run:
                 logging.debug(f"Exporting .torrent file for {name}")
-                torrent_file_content = source_qbit.torrents_export(torrent_hash=hash_)
+                try:
+                    torrent_file_content = source_qbit.torrents_export(torrent_hash=hash_)
+                except qbittorrentapi.exceptions.NotFound404Error:
+                    logging.error(f"Cannot export .torrent file for {name}: torrent not found on source.")
+                    return False, "Source torrent not found for export"
+                except Exception as e:
+                    logging.error(f"Failed to export .torrent file for {name}: {e}")
+                    return False, f"Failed to export .torrent file: {e}"
+
                 logging.info(f"CLIENT: Adding torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
-                destination_qbit.torrents_add(
-                    torrent_files=torrent_file_content,
-                    save_path=destination_save_path_str,
-                    is_paused=True,
-                    category=torrent.category,
-                    use_auto_torrent_management=True
-                )
-                time.sleep(5) # Give client time to add it
+                try:
+                    destination_qbit.torrents_add(
+                        torrent_files=torrent_file_content,
+                        save_path=destination_save_path_str,
+                        is_paused=True,
+                        category=torrent.category,
+                        use_auto_torrent_management=False  # Changed to False
+                    )
+                    time.sleep(5) # Give client time to add it
+                except Exception as e:
+                    logging.error(f"Failed to add torrent to destination: {e}")
+                    return False, f"Failed to add torrent to destination: {e}"
             else:
                 logging.info(f"[DRY RUN] Would add torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
         else:
@@ -328,16 +340,26 @@ def _post_transfer_actions(
     if recheck_ok:
         logging.info("Destination re-check successful.")
         try:
-            # 1. Apply Category
+            # 1. Apply Category FIRST (before starting)
             if torrent.category:
                 try:
                     logging.info(f"Applying category '{torrent.category}' to destination torrent.")
                     if not dry_run:
-                        destination_qbit.torrents_set_category(torrent_hash=torrent.hash, category=torrent.category)
+                        destination_qbit.torrents_set_category(torrent_hashes=torrent.hash, category=torrent.category)
+                        time.sleep(1)  # Give it time to apply
                 except Exception as e:
                     logging.warning(f"Failed to set category: {e}")
 
-            # 2. Start Torrent
+            # 2. Apply tracker-based category if available
+            if tracker_rules and not dry_run:
+                try:
+                    from .tracker_manager import set_category_based_on_tracker
+                    set_category_based_on_tracker(destination_qbit, torrent.hash, tracker_rules, dry_run)
+                    time.sleep(1)
+                except Exception as e:
+                    logging.warning(f"Failed to apply tracker-based category: {e}")
+
+            # 3. Start Torrent (if configured)
             add_paused = config.getboolean('DESTINATION_CLIENT', 'add_torrents_paused', fallback=True)
             start_after_recheck = config.getboolean('DESTINATION_CLIENT', 'start_torrents_after_recheck', fallback=True)
 
@@ -346,19 +368,23 @@ def _post_transfer_actions(
                     logging.info("Resuming destination torrent.")
                     if not dry_run:
                         destination_qbit.torrents_resume(torrent_hashes=torrent.hash)
+                        time.sleep(2)  # Verify it started
+                        # Check status
+                        check_torrent = destination_qbit.torrents_info(torrent_hashes=torrent.hash)
+                        if check_torrent and check_torrent[0].state in ['uploading', 'stalledUP', 'queuedUP']:
+                            logging.info(f"Torrent successfully started: {torrent.name}")
+                        else:
+                            logging.warning(f"Torrent may not have started correctly. State: {check_torrent[0].state if check_torrent else 'unknown'}")
                 except Exception as e:
                     logging.warning(f"Failed to resume torrent: {e}")
-            elif not add_paused:
-                logging.info("Torrent was not added paused, so it should already be running. No action taken.")
-            elif add_paused and not start_after_recheck:
-                logging.info("Skipping torrent auto-start as per 'start_torrents_after_recheck' config.")
 
-            # 3. Delete Source
+            # 4. Delete Source (AFTER everything else is confirmed)
             if not dry_run and not test_run:
                 if config.getboolean('SOURCE_CLIENT', 'delete_after_transfer', fallback=True):
                     try:
-                        logging.info(f"Deleting torrent from source: {torrent.name}")
-                        source_qbit.torrents_delete(torrent_hashes=torrent.hash, delete_files=False)
+                        logging.info(f"Deleting torrent and data from source: {torrent.name}")
+                        source_qbit.torrents_delete(torrent_hashes=torrent.hash, delete_files=True)
+                        time.sleep(1)  # Give it time to process
                     except qbittorrentapi.exceptions.NotFound404Error:
                         logging.warning("Source torrent already deleted or not found.")
                     except Exception as e:

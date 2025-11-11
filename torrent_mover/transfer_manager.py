@@ -1002,20 +1002,12 @@ def transfer_content_rsync(
                 text=True
             )
 
-            # Monitor stdout for progress
-            if process.stdout:
-                # This loop consumes stdout. We only act on "to-check" lines for the UI.
-                # Other lines (like the per-file progress %) are read and discarded,
-                # preventing them from spamming the DEBUG log.
-                for line in iter(process.stdout.readline, ''):
-                    if "to-check=" in line or "to-chk" in line:
-                        ui.update_file_transfer_progress(torrent_hash, rsync_file_name, line.strip())
-
+            # Simply wait for completion - no line-by-line monitoring
             process.wait()
 
             if process.returncode == 0:
                 total_bytes = os.path.getsize(local_path) if os.path.exists(local_path) else 0
-                ui.complete_file_transfer(torrent_hash, rsync_file_name, total_bytes, "completed")
+                ui.complete_file_transfer(torrent_hash, rsync_file_name)
                 logging.info(f"Rsync transfer completed for {os.path.basename(remote_path)}")
                 return
             else:

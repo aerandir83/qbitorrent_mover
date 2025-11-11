@@ -17,6 +17,8 @@ username = your_username
 password = your_password
 # Set to false if you use a self-signed certificate and understand the risks.
 verify_cert = True
+# Whether to delete the torrent from the source after a successful transfer
+delete_after_transfer = true
 
 [DESTINATION_CLIENT]
 # Connection details for the DESTINATION qBittorrent client (e.g., your home server).
