@@ -341,7 +341,9 @@ def _post_transfer_actions(
                         logging.warning(f"Failed to delete source torrent: {e}")
             # --- END NEW LOGIC ---
 
-    return True, "Successfully transferred and verified."
+            # --- THIS IS THE FIX ---
+            # Add this return statement to signal success
+            return True, "Post-transfer actions completed successfully."
 
 def transfer_torrent(
     torrent: qbittorrentapi.TorrentDictionary,
