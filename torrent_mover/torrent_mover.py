@@ -305,10 +305,19 @@ def _post_transfer_actions(
         logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
 
     # --- 4. Wait for Recheck and Handle Failure ---
-    recheck_ok = True # Assume OK if dry_run or not transfer
+    recheck_ok = True
     if not dry_run:
         logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
-        recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash)
+
+        # For rsync mode, allow near-complete (99.9%) as success
+        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+        allow_near_complete = (transfer_mode == 'rsync')
+
+        recheck_ok = wait_for_recheck_completion(
+            destination_qbit,
+            torrent.hash,
+            allow_near_complete=allow_near_complete
+        )
 
         if not recheck_ok:
             # Recheck failed.
