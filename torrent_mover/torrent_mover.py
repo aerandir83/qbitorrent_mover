@@ -46,6 +46,7 @@ from .system_manager import (
     recover_cached_torrents, delete_destination_content
 )
 from .tracker_manager import (
+    categorize_torrents,
     load_tracker_rules, save_tracker_rules, set_category_based_on_tracker,
     run_interactive_categorization, display_tracker_rules
 )
@@ -826,6 +827,15 @@ def _run_transfer_operation(config: configparser.ConfigParser, args: argparse.Na
             if torrent.hash not in eligible_hashes:
                 eligible_torrents.append(torrent)
 
+    # --- Categorize Torrents (if flag is set) ---
+    if args.categorize:
+        if eligible_torrents:
+            logging.info(f"Categorize flag set. Categorizing {len(eligible_torrents)} completed torrent(s) based on tracker rules...")
+            # Pass only the *completed* torrents to the function
+            categorize_torrents(source_qbit, eligible_torrents, tracker_rules)
+        else:
+            logging.debug("Categorize flag set, but no completed torrents found to categorize.")
+
     if not eligible_torrents:
         logging.info("No torrents to move.")
         return
@@ -1038,9 +1048,10 @@ def main() -> int:
     parser.add_argument('-l', '--list-rules', action='store_true', help='List all tracker-to-category rules and exit.')
     parser.add_argument('-a', '--add-rule', nargs=2, metavar=('TRACKER_DOMAIN', 'CATEGORY'), help='Add or update a rule and exit.')
     parser.add_argument('-d', '--delete-rule', metavar='TRACKER_DOMAIN', help='Delete a rule and exit.')
-    parser.add_argument('-c', '--categorize', dest='interactive_categorize', action='store_true', help='Interactively categorize torrents on destination.')
-    parser.add_argument('--category', help='(For -c mode) Specify a category to scan, overriding the config.')
-    parser.add_argument('-nr', '--no-rules', action='store_true', help='(For -c mode) Ignore existing rules and show all torrents in the category.')
+    parser.add_argument('--categorize', action='store_true', help='Categorize completed torrents on source client based on tracker rules before moving.')
+    parser.add_argument('-i', '--interactive-categorize', dest='interactive_categorize', action='store_true', help='Interactively categorize torrents on destination.')
+    parser.add_argument('--category', help='(For -i mode) Specify a category to scan, overriding the config.')
+    parser.add_argument('-nr', '--no-rules', action='store_true', help='(For -i mode) Ignore existing rules and show all torrents in the category.')
     parser.add_argument('--test-permissions', action='store_true', help='Test write permissions for the configured destination_path and exit.')
     parser.add_argument('--check-config', action='store_true', help='Validate the configuration file and exit.')
     parser.add_argument('--version', action='store_true', help="Show program's version and config file path, then exit.")
