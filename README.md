@@ -10,11 +10,11 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.8.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.9.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.8.0 (Latest)
+### Version 2.9.0 (Latest)
 * **feat(recheck):** Implemented a new 3-stage recheck and delta-transfer workflow to significantly improve the recovery rate of partially failed transfers. This new process intelligently retries transfers, deletes only the corrupted files, and performs multiple rechecks to ensure data integrity, reducing the need for manual intervention.
 
 ### Version 2.7.6
@@ -221,7 +221,7 @@ The current version is **2.8.0**. To check your version, run: `python3 -m torren
     *   **`sftp`**: (Default) Securely downloads files from the source to the local machine running the script.
     *   **`sftp_upload`**: Securely transfers files directly from a source SFTP server to a destination SFTP server, bypassing the local machine.
     *   **`rsync_upload`**: Transfers files by first downloading from the source server to a **local cache** (on the machine running the script) via rsync, and then uploading from the cache to the destination server via rsync. This is useful for high-speed transfers and avoids needing sshpass on the source server.
-    *   **`rsync`**: Uses `rsync` for potentially faster transfers from the source to the local machine.
+    *   **`rsync`**: Uses `rsync` for potentially faster transfers from the source to the local machine. It now fully supports real-time transfer progress in the UI and automatically resumes partial transfers (if a file exists with a different size) instead of deleting and re-transferring.
 *   **Concurrent Transfers**: Downloads or uploads multiple files in parallel to maximize transfer speed. The level of concurrency is configurable.
 *   **Category-Based Moving**: Only moves torrents assigned to a specific category you define (e.g., "move").
 *   **Fully Automated Process**:
@@ -239,6 +239,7 @@ The current version is **2.8.0**. To check your version, run: `python3 -m torren
 *   **Robust Error Handling**: If a torrent fails the recheck after transfer, its data on the destination is deleted, and the torrent is marked internally to prevent automatic retries on subsequent runs. This usually indicates a persistent issue (e.g., disk corruption, permission problems after transfer, or a qBittorrent bug) requiring manual investigation.
 *   **Resilient Transfers**: Includes a resilient transfer queue with a circuit breaker to automatically retry failed transfers with exponential backoff.
 *   **Robust Resume**: Provides robust resume capabilities for interrupted transfers, checkpointing progress at the individual file level.
+*   **Robust 3-Stage Recheck**: If a recheck fails, the script will (1) attempt a delta-transfer and recheck again. If it still fails, it will (2) delete only the specific bad files, re-download them, and recheck a final time. This significantly improves reliability for rsync and sftp transfers.
 
 ## Requirements
 
@@ -314,6 +315,7 @@ Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your
     *   `max_concurrent_file_transfers`: Number of files to transfer in parallel (e.g., `5`).
     *   `category_to_move`: The category in your source client that triggers a move.
     *   `pool_wait_timeout`: (Optional) Time in seconds to wait for a connection from the SSH pool if it's full. Defaults to `300`. Increase this if you get `TimeoutError` logs.
+    *   `allow_near_complete_rsync`: (Optional) For rsync transfers, allows a recheck to pass at 99.9%+ completion. This is useful for minor metadata differences that rsync might not sync.
 
 ## Basic Usage
 
