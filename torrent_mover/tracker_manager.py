@@ -124,6 +124,21 @@ def get_category_from_rules(torrent: qbittorrentapi.TorrentDictionary, rules: Di
         logging.warning(f"Could not check trackers for torrent '{torrent.name}': {e}")
     return None
 
+def categorize_torrents(client: qbittorrentapi.Client, torrents: "qbittorrentapi.TorrentList", tracker_rules: Dict[str, str]) -> None:
+    """
+    Categorizes a list of torrents based on tracker rules.
+
+    Args:
+        client: An authenticated qBittorrent client instance.
+        torrents: A list of torrent objects to be categorized.
+        tracker_rules: The dictionary of tracker-to-category rules.
+    """
+    logging.info(f"Starting categorization for {len(torrents)} torrent(s)...")
+    for torrent in torrents:
+        set_category_based_on_tracker(client, torrent.hash, tracker_rules)
+    logging.info("Categorization finished.")
+
+
 def set_category_based_on_tracker(client: qbittorrentapi.Client, torrent_hash: str, tracker_rules: Dict[str, str], dry_run: bool = False) -> None:
     """Sets a torrent's category based on matching tracker rules.
 
@@ -187,10 +202,17 @@ def run_interactive_categorization(client: qbittorrentapi.Client, rules: Dict[st
     try:
         if not category_to_scan:
             logging.info("No category specified. Scanning for 'uncategorized' torrents.")
-            torrents_to_check = client.torrents_info(filter='uncategorized', sort='name')
+            all_torrents_in_category = client.torrents_info(filter='uncategorized', sort='name')
         else:
             logging.info(f"Scanning for torrents in category: '{category_to_scan}'")
-            torrents_to_check = client.torrents_info(category=category_to_scan, sort='name')
+            all_torrents_in_category = client.torrents_info(category=category_to_scan, sort='name')
+
+        # Filter for completed torrents only before proceeding
+        torrents_to_check = [t for t in all_torrents_in_category if t.progress == 1]
+
+        if len(all_torrents_in_category) > len(torrents_to_check):
+            logging.info(f"Found {len(all_torrents_in_category)} total torrents, but only processing the {len(torrents_to_check)} completed ones.")
+
         if not torrents_to_check:
             logging.info(f"No torrents found in '{category_to_scan or 'uncategorized'}' that need categorization.")
             return
