@@ -600,3 +600,61 @@ def delete_destination_content(
     except Exception as e:
         logging.error(f"An error occurred while deleting destination content: {e}", exc_info=True)
         raise # Re-raise the exception to be caught by the calling function
+
+
+def delete_destination_files(
+    base_path: str,
+    relative_file_paths: List[str],
+    transfer_mode: str,
+    ssh_connection_pools: Dict[str, SSHConnectionPool]
+) -> None:
+    """
+    Deletes a specific list of files from the destination path.
+
+    This function handles both local and remote deletion based on the transfer_mode.
+
+    Args:
+        base_path: The absolute root path of the torrent content.
+        relative_file_paths: A list of file paths, relative to the base_path,
+            that should be deleted.
+        transfer_mode: The current transfer mode (e.g., 'sftp_upload', 'rsync').
+        ssh_connection_pools: A dictionary of SSH connection pools, required for
+            remote deletion.
+    """
+    is_remote = (transfer_mode in ['sftp_upload', 'rsync_upload'])
+    logging.warning(f"Attempting to delete {len(relative_file_paths)} specific files from: {base_path}")
+
+    if is_remote:
+        # Remote deletion
+        dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
+        if not dest_pool:
+            logging.error("Cannot delete remote files: Destination SSH pool not found.")
+            return
+
+        try:
+            with dest_pool.get_connection() as (sftp, ssh):
+                for rel_path in relative_file_paths:
+                    # Ensure we use forward slashes for remote paths
+                    full_path = (Path(base_path) / rel_path).as_posix()
+                    logging.debug(f"Deleting remote file: {full_path}")
+                    try:
+                        sftp.remove(full_path)
+                    except FileNotFoundError:
+                        logging.warning(f"File not found (already deleted?): {full_path}")
+                    except Exception as e:
+                        logging.error(f"Failed to delete remote file: {full_path}. Error: {e}")
+            logging.info(f"Partial deletion of {len(relative_file_paths)} remote files complete.")
+        except Exception as e:
+            logging.error(f"An error occurred during remote partial file deletion: {e}", exc_info=True)
+
+    else:
+        # Local deletion
+        for rel_path in relative_file_paths:
+            full_path = Path(base_path) / rel_path
+            logging.debug(f"Deleting local file: {full_path}")
+            try:
+                full_path.unlink(missing_ok=True)
+            except Exception as e:
+                # This could be a PermissionError or IsADirectoryError, etc.
+                logging.error(f"Failed to delete local file: {full_path}. Error: {e}")
+        logging.info(f"Partial deletion of {len(relative_file_paths)} local files complete.")
