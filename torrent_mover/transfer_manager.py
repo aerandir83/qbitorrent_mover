@@ -36,6 +36,21 @@ def _is_sshpass_installed() -> bool:
     """Checks if sshpass is installed and available in the system's PATH."""
     return shutil.which("sshpass") is not None
 
+def _create_safe_command_for_logging(command: List[str]) -> List[str]:
+    """Creates a copy of a command list with the sshpass password redacted."""
+    safe_command = list(command)
+    try:
+        # Find the index of 'sshpass' and redact the password after the '-p' flag
+        sshpass_index = safe_command.index("sshpass")
+        if "-p" in safe_command[sshpass_index:]:
+            p_index = safe_command.index("-p", sshpass_index)
+            if p_index + 1 < len(safe_command):
+                safe_command[p_index + 1] = "'********'"
+    except ValueError:
+        # 'sshpass' not in command, nothing to redact
+        pass
+    return safe_command
+
 class RateLimitedFile:
     """Wraps a file-like object to throttle read and write operations.
 
@@ -872,7 +887,7 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
         return
 
     logging.info(f"Starting rsync upload from cache for '{file_name}'")
-    logging.debug(f"Executing rsync upload: {' '.join(safe_rsync_cmd)}")
+    logging.debug(f"Executing rsync upload: {' '.join(_create_safe_command_for_logging(rsync_cmd))}")
 
     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
         if attempt > 1:
@@ -954,6 +969,7 @@ def transfer_content_rsync(
     ui: UIManager,
     rsync_options: List[str],
     file_tracker: FileTransferTracker,
+    total_size: int,  # <-- ADD THIS
     dry_run: bool = False
 ) -> None:
     """Transfers content from a remote server to a local path using rsync.
@@ -982,10 +998,15 @@ def transfer_content_rsync(
     if '--checksum' not in rsync_options_with_checksum and '-c' not in rsync_options_with_checksum:
         rsync_options_with_checksum.append('--checksum')
 
+    # Add progress info flag if not present
+    if "--info=progress2" not in rsync_options_with_checksum:
+        rsync_options_with_checksum.append("--info=progress2")
+
+    # Re-build base command with the new option
     rsync_command_base = [
         "rsync",
         *rsync_options_with_checksum,
-        "-e", f"sshpass -p {shlex.quote(password)} ssh -p {port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+        "-e", f"sshpass -p {shlex.quote(password)} {_get_ssh_command(port)}"
     ]
 
     remote_spec = f"{username}@{host}:{remote_path}"
@@ -998,23 +1019,54 @@ def transfer_content_rsync(
 
             if dry_run:
                 logging.info(f"[DRY_RUN] Would execute: {' '.join(rsync_command)}")
+                # Simulate full progress for UI
+                if total_size > 0:
+                    ui.update_torrent_progress(torrent_hash, total_size, transfer_type='download')
                 ui.complete_file_transfer(torrent_hash, rsync_file_name)
                 return
 
             logging.info(f"Starting rsync transfer for '{rsync_file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
-            logging.debug(f"Executing rsync: {' '.join(rsync_command)}")
+            logging.debug(f"Executing rsync: {' '.join(_create_safe_command_for_logging(rsync_command))}")
 
             process = subprocess.Popen(
                 rsync_command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1
             )
 
-            # Wait for completion
-            stdout, stderr = process.communicate(timeout=600)  # 10 minute timeout
+            last_total_transferred = 0
+            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
+
+            if process.stdout:
+                for line in iter(process.stdout.readline, ''):
+                    line = line.strip()
+                    # Do not log verbose rsync progress to file logger
+                    # logging.debug(f"rsync stdout: {line}")
+                    match = progress_regex.match(line)
+                    if match:
+                        try:
+                            total_transferred_str = match.group(1).replace(',', '')
+                            total_transferred = int(total_transferred_str)
+                            advance = total_transferred - last_total_transferred
+                            if advance > 0:
+                                ui.update_torrent_progress(torrent_hash, advance, transfer_type='download')
+                                last_total_transferred = total_transferred
+                        except (ValueError, IndexError):
+                            logging.warning(f"Could not parse rsync progress line: {line}")
+
+            process.wait()
+            stderr_output = process.stderr.read() if process.stderr else ""
 
             if process.returncode == 0 or process.returncode == 24:
+                # Ensure UI completes to 100%
+                if total_size > 0 and last_total_transferred < total_size:
+                    remaining = total_size - last_total_transferred
+                    ui.update_torrent_progress(torrent_hash, remaining, transfer_type='download')
+
                 # Verify the transfer
                 if os.path.exists(local_path):
                     local_size = os.path.getsize(local_path) if os.path.isfile(local_path) else \
@@ -1063,8 +1115,8 @@ def transfer_content_rsync(
                 continue
             else:
                 logging.error(f"Rsync failed for '{rsync_file_name}' with exit code {process.returncode}.\n"
-                              f"Rsync stderr: {stderr}")
-                if "No such file or directory" in stderr:
+                              f"Rsync stderr: {stderr_output}")
+                if "No such file or directory" in stderr_output:
                     raise FileNotFoundError(f"Source file not found: {remote_path}")
                 raise Exception(f"Rsync failed with exit code {process.returncode}")
 

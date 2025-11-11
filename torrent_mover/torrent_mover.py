@@ -529,7 +529,8 @@ def _execute_transfer(
                 sftp_config, source_content_path,
                 dest_content_path, hash_, ui, rsync_options,
                 file_tracker,
-                dry_run
+                total_size=total_size_calc,  # <-- ADD THIS
+                dry_run=dry_run
             )
         elif transfer_mode == 'rsync_upload':
             source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
