@@ -529,7 +529,7 @@ def delete_destination_content(
     Raises:
         Exception: Propagates exceptions that occur during the deletion process.
     """
-    is_remote = (transfer_mode == 'sftp_upload')
+    is_remote = (transfer_mode in ['sftp_upload', 'rsync_upload'])
 
     logging.warning(f"Attempting to delete destination content: {dest_content_path}")
     try:
