@@ -198,15 +198,16 @@ def _pre_transfer_setup(
 def _post_transfer_actions(
     torrent: qbittorrentapi.TorrentDictionary,
     source_qbit: qbittorrentapi.Client,
-    destination_qbit: qbittorrentapi.Client,
+    destination_qbit: Optional[qbittorrentapi.Client],
     config: configparser.ConfigParser,
     tracker_rules: Dict[str, str],
     ssh_connection_pools: Dict[str, SSHConnectionPool],
     dest_content_path: str,
     destination_save_path: str,
-    transfer_executed: bool, # <-- NEW ARGUMENT
-    dry_run: bool = False,
-    test_run: bool = False
+    transfer_executed: bool,
+    dry_run: bool,
+    test_run: bool,
+    file_tracker: FileTransferTracker
 ) -> Tuple[bool, str]:
     """Manages tasks after the file transfer is complete.
 
@@ -287,28 +288,28 @@ def _post_transfer_actions(
         logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
 
     # --- 4. Wait for Recheck and Handle Failure ---
-    if not wait_for_recheck_completion(destination_qbit, hash_, dry_run=dry_run):
-        # RECHECK FAILED!
-        msg = f"Recheck FAILED for {name}. Destination data is corrupt or incomplete."
-        logging.error(msg)
-
-        # If we didn't just transfer, this is the "existing file" scenario.
-        # We must delete the bad data so it re-transfers next time.
-        if not transfer_executed:
-            logging.warning(f"Deleting corrupt destination data for {name} to force re-transfer on next run.")
-            if not dry_run:
-                try:
-                    delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                except Exception as e:
-                    msg = f"Recheck failed, AND failed to delete corrupt data: {e}"
-                    logging.exception(msg)
-                    return False, msg
-            else:
-                logging.info(f"[DRY RUN] Would delete corrupt destination data at: {dest_content_path}")
-
-        # Mark recheck as failed so it's skipped in future runs until checkpoint is cleared
-        # (This logic is handled by transfer_torrent returning 'failed')
-        return False, msg
+    if destination_qbit and transfer_executed:
+        logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
+        recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash)
+        if not recheck_ok:
+            # --- THIS IS THE NEW FIX ---
+            logging.error(f"Post-transfer re-check FAILED for {torrent.name}. File is likely corrupt.")
+            logging.info(f"Deleting local content at '{dest_content_path}' to force a clean transfer on the next run.")
+            try:
+                delete_destination_content(
+                    dest_content_path,
+                    ssh_connection_pools['DESTINATION_SERVER'],
+                    config.get('DESTINATION_SERVER', 'type', fallback='local')
+                )
+                # Mark as corrupted so it doesn't get re-tried this session, but will be re-tried next script run
+                file_tracker.record_corruption(torrent.hash, torrent.content_path)
+                return False, "Post-transfer re-check failed; file corrupted and deleted."
+            except Exception as e:
+                logging.error(f"Failed to delete corrupt local content: {e}")
+                return False, "Post-transfer re-check failed AND cleanup failed."
+            # --- END OF NEW FIX ---
+        else:
+            logging.info("Destination re-check successful.")
 
     # --- 5. Recheck Succeeded: Finalize Torrent ---
     if not dry_run:
@@ -477,7 +478,8 @@ def transfer_torrent(
         post_transfer_success, post_transfer_msg = _post_transfer_actions(
             torrent, source_qbit, destination_qbit, config, tracker_rules,
             ssh_connection_pools, dest_content_path, destination_save_path,
-            transfer_executed, dry_run, test_run
+            transfer_executed, dry_run, test_run,
+            file_tracker
         )
 
         if post_transfer_success:
