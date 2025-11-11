@@ -36,6 +36,21 @@ def _is_sshpass_installed() -> bool:
     """Checks if sshpass is installed and available in the system's PATH."""
     return shutil.which("sshpass") is not None
 
+def _create_safe_command_for_logging(command: List[str]) -> List[str]:
+    """Creates a copy of a command list with the sshpass password redacted."""
+    safe_command = list(command)
+    try:
+        # Find the index of 'sshpass' and redact the password after the '-p' flag
+        sshpass_index = safe_command.index("sshpass")
+        if "-p" in safe_command[sshpass_index:]:
+            p_index = safe_command.index("-p", sshpass_index)
+            if p_index + 1 < len(safe_command):
+                safe_command[p_index + 1] = "'********'"
+    except ValueError:
+        # 'sshpass' not in command, nothing to redact
+        pass
+    return safe_command
+
 class RateLimitedFile:
     """Wraps a file-like object to throttle read and write operations.
 
@@ -872,7 +887,7 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
         return
 
     logging.info(f"Starting rsync upload from cache for '{file_name}'")
-    logging.debug(f"Executing rsync upload: {' '.join(safe_rsync_cmd)}")
+    logging.debug(f"Executing rsync upload: {' '.join(_create_safe_command_for_logging(rsync_cmd))}")
 
     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
         if attempt > 1:
@@ -1011,7 +1026,7 @@ def transfer_content_rsync(
                 return
 
             logging.info(f"Starting rsync transfer for '{rsync_file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
-            logging.debug(f"Executing rsync: {' '.join(rsync_command)}")
+            logging.debug(f"Executing rsync: {' '.join(_create_safe_command_for_logging(rsync_command))}")
 
             process = subprocess.Popen(
                 rsync_command,
