@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.7.6"
+__version__ = "2.8.0"
 
 # Standard Lib
 import configparser
@@ -43,7 +43,8 @@ from .transfer_manager import (
 from .system_manager import (
     LockFile, setup_logging, destination_health_check, change_ownership,
     test_path_permissions, cleanup_orphaned_cache,
-    recover_cached_torrents, delete_destination_content
+    recover_cached_torrents, delete_destination_content,
+    delete_destination_files  # <-- ADD THIS
 )
 from .tracker_manager import (
     categorize_torrents,
@@ -328,80 +329,134 @@ def _post_transfer_actions(
         )
 
         if not recheck_ok:
-            # Recheck failed.
-            # --- DELTA TRANSFER LOGIC ---
-            logging.warning(f"Post-transfer re-check FAILED for {torrent.name}. Attempting delta/retry transfer...")
+            # --- STAGE 1: DELTA TRANSFER ---
+            logging.warning(f"Recheck 1 FAILED for {torrent.name}. Attempting Delta 1...")
 
-            delta_files: List[TransferFile] = [] # Initialize delta_files list
-
-            # NEW: Check for rsync mode
+            delta_files_1: List[TransferFile] = []
             if 'rsync' in transfer_mode:
-                logging.warning(f"Rsync mode detected. Re-running the full rsync transfer for {torrent.name}...")
-                delta_files = all_files # For rsync, the "delta" is the original full file list
+                logging.info("Rsync mode: Delta 1 will be a full rsync.")
+                delta_files_1 = all_files
             else:
-                # This is the original logic, now nested in 'else'
-                # 1. Find incomplete files on destination
-                incomplete_file_paths = get_incomplete_files(destination_qbit, torrent.hash)
-                if not incomplete_file_paths:
-                    logging.error("Re-check failed, but could not find any incomplete files. Deleting content.")
+                logging.info("SFTP mode: Delta 1 will be based on incomplete files.")
+                incomplete_files_1 = get_incomplete_files(destination_qbit, torrent.hash)
+                if not incomplete_files_1:
+                    logging.error("Recheck 1 failed, but no incomplete files found. Deleting content.")
                     try:
                         delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
                     except Exception as e:
                         logging.error(f"Failed to delete corrupt destination content: {e}")
-                    return False, "Re-check failed, but no incomplete files found."
+                    return False, "Recheck 1 failed, no incomplete files found."
 
-                # 2. Filter the original file list to get a delta list
-                # We must normalize paths for comparison. The incomplete_file_paths are already
-                # relative paths from the torrent root.
-                norm_incomplete = {p.replace('\\', '/') for p in incomplete_file_paths}
-                delta_files = [
+                norm_incomplete_1 = {p.replace('\\', '/') for p in incomplete_files_1}
+                delta_files_1 = [
                     f for f in all_files
-                    if Path(os.path.relpath(f.dest_path, dest_content_path)).as_posix() in norm_incomplete
+                    if Path(os.path.relpath(f.dest_path, dest_content_path)).as_posix() in norm_incomplete_1
                 ]
-
-                if not delta_files:
-                    logging.error(f"Incomplete files reported ({incomplete_file_paths}), but none matched the source file list. Deleting content.")
+                if not delta_files_1:
+                    logging.error(f"Recheck 1 file list mismatch. Deleting content.")
                     try:
                         delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
                     except Exception as e:
                         logging.error(f"Failed to delete corrupt destination content: {e}")
-                    return False, "Re-check failed, file list mismatch."
+                    return False, "Recheck 1 failed, file list mismatch."
 
-            # 3. Execute delta transfer
-            logging.info(f"Starting delta/retry transfer for {len(delta_files)} item(s)...")
-            delta_size = sum(f.size for f in delta_files)
-
-            delta_transfer_ok = _execute_transfer(
-                transfer_mode, delta_files, torrent, delta_size, config,
+            logging.info(f"Starting Delta 1 for {len(delta_files_1)} item(s)...")
+            delta_size_1 = sum(f.size for f in delta_files_1)
+            delta_1_ok = _execute_transfer(
+                transfer_mode, delta_files_1, torrent, delta_size_1, config,
                 ui, file_tracker, ssh_connection_pools, dry_run
             )
+            if not delta_1_ok:
+                logging.error(f"Delta 1 FAILED for {torrent.name}. Leaving content for review.")
+                return False, "Delta 1 transfer failed."
 
-            if not delta_transfer_ok:
-                logging.error(f"Delta transfer FAILED for {torrent.name}. Leaving content for manual review.")
-                return False, "Delta transfer failed."
-
-            # 4. Trigger a second recheck
-            logging.info(f"Delta transfer complete. Triggering second recheck for {torrent.name}...")
+            # --- STAGE 2: RECHECK 2 ---
+            logging.info(f"Delta 1 complete. Triggering Recheck 2 for {torrent.name}...")
             try:
                 destination_qbit.torrents_recheck(torrent_hashes=hash_)
             except qbittorrentapi.exceptions.NotFound404Error:
-                return False, "Torrent disappeared during delta recheck."
+                return False, "Torrent disappeared during Recheck 2."
 
-            second_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash)
+            second_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, allow_near_complete=allow_near_complete)
 
-            if not second_recheck_ok:
-                logging.error(f"Second recheck FAILED for {torrent.name} after delta transfer. Deleting content.")
+            if second_recheck_ok:
+                logging.info(f"Recheck 2 successful for {torrent.name}.")
+                recheck_ok = True  # Set to True to fall through to success block
+            else:
+                # --- STAGE 3: PARTIAL DELETE + DELTA 2 ---
+                logging.warning(f"Recheck 2 FAILED for {torrent.name}. Attempting Delta 2 (partial delete)...")
+                incomplete_files_2 = get_incomplete_files(destination_qbit, torrent.hash)
+                if not incomplete_files_2:
+                    logging.error("Recheck 2 failed, but no incomplete files found. Deleting all content.")
+                    try:
+                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                    except Exception as e:
+                        logging.error(f"Failed to delete corrupt destination content: {e}")
+                    return False, "Recheck 2 failed, no incomplete files."
+
+                logging.info(f"Deleting {len(incomplete_files_2)} specific failed files...")
                 try:
-                    delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                    delete_destination_files(dest_content_path, incomplete_files_2, transfer_mode, ssh_connection_pools)
                 except Exception as e:
-                    logging.error(f"Failed to delete corrupt destination content after delta failure: {e}")
-                return False, "Delta transfer failed to fix torrent."
+                    logging.error(f"Failed to delete specific files: {e}. Deleting all content.")
+                    try:
+                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                    except Exception as e_del:
+                        logging.error(f"Failed to delete corrupt destination content: {e_del}")
+                    return False, f"Partial delete failed: {e}"
 
-            # If the second recheck *succeeded*, we set recheck_ok to True
-            # so the *next* block of code can run.
-            logging.info(f"Delta transfer and second recheck successful for {torrent.name}.")
-            recheck_ok = True
-            # --- END OF DELTA TRANSFER LOGIC ---
+                delta_files_2: List[TransferFile] = []
+                if 'rsync' in transfer_mode:
+                    logging.info("Rsync mode: Delta 2 will be a full rsync.")
+                    delta_files_2 = all_files
+                else:
+                    logging.info("SFTP mode: Delta 2 will be based on new incomplete file list.")
+                    norm_incomplete_2 = {p.replace('\\', '/') for p in incomplete_files_2}
+                    delta_files_2 = [
+                        f for f in all_files
+                        if Path(os.path.relpath(f.dest_path, dest_content_path)).as_posix() in norm_incomplete_2
+                    ]
+                    if not delta_files_2:
+                        logging.error("Recheck 2 file list mismatch. Deleting content.")
+                        try:
+                            delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                        except Exception as e:
+                            logging.error(f"Failed to delete corrupt destination content: {e}")
+                        return False, "Recheck 2 failed, file list mismatch."
+
+                logging.info(f"Starting Delta 2 for {len(delta_files_2)} item(s)...")
+                delta_size_2 = sum(f.size for f in delta_files_2)
+                delta_2_ok = _execute_transfer(
+                    transfer_mode, delta_files_2, torrent, delta_size_2, config,
+                    ui, file_tracker, ssh_connection_pools, dry_run
+                )
+                if not delta_2_ok:
+                    logging.error(f"Delta 2 FAILED for {torrent.name}. Deleting content.")
+                    try:
+                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                    except Exception as e:
+                        logging.error(f"Failed to delete corrupt destination content: {e}")
+                    return False, "Delta 2 transfer failed."
+
+                # --- STAGE 4: RECHECK 3 (FINAL) ---
+                logging.info(f"Delta 2 complete. Triggering Recheck 3 (final) for {torrent.name}...")
+                try:
+                    destination_qbit.torrents_recheck(torrent_hashes=hash_)
+                except qbittorrentapi.exceptions.NotFound404Error:
+                    return False, "Torrent disappeared during Recheck 3."
+
+                third_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, allow_near_complete=allow_near_complete)
+
+                if not third_recheck_ok:
+                    logging.error(f"Recheck 3 FAILED for {torrent.name}. Deleting content.")
+                    try:
+                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
+                    except Exception as e:
+                        logging.error(f"Failed to delete corrupt destination content after final failure: {e}")
+                    return False, "Recheck 3 (final) failed."
+                else:
+                    logging.info(f"Recheck 3 successful for {torrent.name}.")
+                    recheck_ok = True # Set to True to fall through to success block
 
     # --- 5. Post-Recheck Actions (Start, Categorize, Delete Source) ---
     if recheck_ok:
