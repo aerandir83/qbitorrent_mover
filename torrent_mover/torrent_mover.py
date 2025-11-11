@@ -316,9 +316,10 @@ def _post_transfer_actions(
     if not dry_run:
         logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
 
-        # For rsync mode, allow near-complete (99.9%) as success
+        # For rsync mode, allow near-complete (99.9%) as success if configured
         transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-        allow_near_complete = ('rsync' in transfer_mode)
+        rsync_near_complete = config.getboolean('SETTINGS', 'allow_near_complete_rsync', fallback=True)
+        allow_near_complete = ('rsync' in transfer_mode and rsync_near_complete)
 
         recheck_ok = wait_for_recheck_completion(
             destination_qbit,
