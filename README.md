@@ -25,194 +25,19 @@ The current version is **2.9.0**. To check your version, run: `python3 -m torren
 * **fix(ui):** (Fix #5) Corrected the UI speed display to reset to 0.00 MB/s after 5 seconds of inactivity, preventing stale speed data from persisting.
 * **fix(log):** Silenced verbose `rsync` progress lines from spamming the `DEBUG` log for both `rsync` and `rsync_upload` modes.
 
-### Version 2.7.5
-* **fix(main)**: Removed an incorrect startup dependency check for `sshpass` on the source server when using `rsync_upload` mode.
-* **fix(transfer)**: Corrected a logic error in `rsync_upload` mode where the download step was saving to the wrong directory, causing the upload step to fail.
-
-### Version 2.7.4
-* **fix(transfer)**: Fixed `rsync_upload` mode.
-    * Resolved a `NameError` for `SSH_CONTROL_PATH` by removing a redundant local function in `transfer_manager.py`.
-    * Completely rewrote the `transfer_content_rsync_upload` function to correctly execute `rsync` from the local machine, fixing `sshpass: command not found` errors.
-
-### Version 2.7.3
-* **fix(main)**: Fixed hang in `--simple` mode by refactoring all console logging logic. The script now correctly adds *only* a `StreamHandler` in simple mode and *only* a `RichHandler` in rich mode, resolving the `screen` conflict.
-
-### Version 2.7.2
-* **fix(ui)**: Implemented all stubbed methods in `SimpleUIManager` to correctly log progress to `stdout`, fixing the issue where `--simple` mode produced no output.
-
-### Version 2.7.1
-* **fix(main)**: Corrected a `NameError` for `UIManager` by updating function definition type hints to use the `BaseUIManager` interface.
-
-### Version 2.7.0
-* **feat(ui)**: Added a `--simple` flag to use a basic, non-interactive logging UI.
-* **feat(ui)**: The script now detects if it's running in `gnu screen` and will warn the user, recommending they use the `--simple` flag to avoid UI corruption.
-* **refactor(ui)**: Created a `BaseUIManager` interface to support both the "rich" (`UIManagerV2`) and new `SimpleUIManager` modes.
-
-### Version 2.6.2 (Latest)
-* **fix(ui)**: Corrected flawed logic in the `_stats_updater` thread that caused DL/UL speeds to reset to 0. Re-added `else` blocks to ensure the last known speed is used between 1-second update intervals.
-
-### Version 2.6.1
-* **fix(ui)**: Resolved a threading deadlock that caused DL/UL speeds in the "Overall Progress" bar to remain at 0.00 MB/s. The `progress.update()` call was moved outside the main UI lock.
-
-### Version 2.6.0
-* **feat(ui)**: Changed layout to 3/4 (Torrents) and 1/4 (Stats) based on user feedback.
-* **feat(ui)**: Added a visual progress bar next to each active torrent.
-* **feat(ui)**: Added visual progress bars for individual active files (requires data from `v2.5.12` backend).
-* **fix(ui)**: Changed "Downloading" file status color from red to blue.
-* **fix(ui)**: Changed "DL Speed" color in Stats panel from red to green.
-* **fix(ui)**: Fixed a bug where DL/UL speed text would render incorrectly (`DL:[gre...`) in the main progress bar.
-
-### Version 2.5.12
-* **fix(ui)**: Corrected a flawed fix that caused an `AttributeError: 'function' object has no attribute 'format'`.
-* **fix(ui)**: Replaced the incorrect `TextColumn(lambda ...)` with a proper custom `ProgressColumn` (`_SpeedColumn`) to render DL/UL speeds. This is the correct way to use callables for `rich` progress bars and resolves the startup crash.
-* **fix(ui)**: Applied the remaining fixes from the code review, including pointing `_ActiveTorrentsPanel` to `_file_status` and adding bounds checking to `complete_file_transfer`.
-
-### Version 2.5.11
-* **fix(ui)**: Applied multiple fixes to `ui.py` based on an independent review to resolve critical `AttributeError` crashes and data access issues.
-* **fix(ui)**: Corrected `TextColumn` format strings to use callables (lambda functions) instead of unsupported method calls (`.get()`).
-* **fix(ui)**: Fixed `_ActiveTorrentsPanel` to correctly access file status from `self.ui_manager._file_status` instead of the non-existent `torrent.get("files", {})`.
-* **fix(ui)**: Added more robust task existence checks in `_stats_updater` and bounds checking in `complete_file_transfer`.
-
-### Version 2.5.10
-* **fix(ui)**: Corrected a `TypeError` by removing an invalid `extra_description` argument from `TextColumn` and reverting to the standard, thread-safe `task.fields` implementation.
-
-### Version 2.5.9
-* **fix(ui)**: Refactored DL/UL speed display mechanism to avoid `task.fields` access during rendering, using direct attribute storage and column callables instead to prevent race conditions.
-
-### Version 2.5.8
-* **fix(ui)**: Refactored the entire UI rendering logic to be thread-safe, resolving a persistent crash. UI panels are now custom renderables, eliminating direct layout modification from background threads.
-
-### Version 2.5.7
-* **fix(ui)**: Implemented a more robust fix for Rich UI rendering errors by adding default fallbacks directly to DL/UL speed column formatters.
-* **fix(ui)**: Ensured DL/UL byte counters are correctly initialized in stats.
-
-### Version 2.5.6
-* **fix(ui)**: Resolved a race condition that caused the Rich UI to crash on startup by providing default values for DL/UL speed fields.
-
-### Version 2.5.5
-* **feat(ui)**: Added separate Download (DL) and Upload (UL) speed indicators to the "Overall Progress" bar.
-* **fix(ui)**: Prevented completed file count from exceeding total file count by adding checks in `complete_file_transfer`.
-* **fix(log)**: Enhanced logging in transfer functions to explicitly record the filename and error details upon transfer failure.
-
-### Version 2.5.4
-* **fix(system)**: Corrected an `AttributeError` in `delete_destination_content` by importing the `Timeouts` class from `transfer_manager` instead of `ssh_manager`.
-
-### Version 2.5.3
-* **refactor(ui)**: Rearranged layout panels: Moved "Active Torrents" to the left column and "Recent Completions" to the middle column based on user feedback.
-
-### Version 2.5.2
-* **fix(transfer)**: Correct indentation of `try...except` blocks in `_sftp_download_file` to resolve a critical `SyntaxError`.
-
-### Version 2.5.1
-* **fix(main)**: Correctly capture transfer success/failure status from `_execute_transfer` to prevent rechecks on partial or failed transfers.
-* **fix(transfer)**: Correct indentation of `try...except` blocks in `_sftp_upload_file` to resolve a `SyntaxError`.
-
-### Version 2.5.0
-* **feat(ui)**: Overhauled the "Active Queue" panel to display a detailed, color-coded file list (completed, downloading, uploading, queued) for each active torrent.
-* **refactor(ui)**: Removed the redundant "Current Torrent" progress bar and the separate "Active Files" panel to create a cleaner, more integrated layout.
-
-### Version 2.4.2
-* **fix(main)**: Correct arguments in transfer_torrent call.
-
-### Version 2.4.1
-* **fix(main)**: Add missing qbittorrentapi import.
-
-### Version 2.4.0
-* **feat(main)**: Implement pre-transfer destination size check.
-
-### Version 2.3.3
-* **fix(main)**: Correct is_remote_dir call and enhance debug logs.
-
-### Version 2.3.2
-* **fix(main)**: Remove calls to non-existent `increment_failed` and `increment_completed` UI methods.
-
-### Version 2.3.1
-* **fix(main)**: Remove calls to non-existent UI methods.
-
-### Version 2.3.0
-* **feat**: Implement detailed failure reporting to the UI, including reasons like "Destination path already exists."
-
-### Version 2.2.0
-* **feat(ui)**: Add torrent name prefix to active files list.
-
-### Version 2.1.0
-* **feat**: Enhance TransferCheckpoint to track recheck failures.
-
-### Version 2.0.0
-* **Fix (UI):** Removed the `Panel` wrapper causing a hardcoded background color, allowing the UI to use the terminal's default background.
-
-### Version 2.0.0-rc2
-* **Fix (UI):** Correctly hide analysis progress bar after completion.
-
-### Version 2.0.0-rc1
-* **Feature (UI):** Overhauled the UI with a new multi-column layout for better information density.
-* **Feature (UI):** Added a "Live Log" panel to display real-time logging output directly in the UI.
-* **Feature (UI):** Added "Files Left" (e.g., `2/5 files`) to the "Active Queue" panel.
-* **Feature (UI):** Added "Transferred" and "Remaining" size (e.g., `0.5 / 5.2 GB`) to the "Statistics" panel.
-* **Feature (UI):** Added the current `transfer_mode` (e.g., `SFTP_UPLOAD`) to the header.
-* **Feature (Resume):** Implemented robust file transfer resume logic. The script now checks if a local file exists (`os.path.exists`) before resuming, preventing errors from deleted cache files.
-* **Fix (UI):** Corrected panel background colors for a consistent dark theme.
-* **Fix (UI):** Added "Downloaded / Total" size (e.g., `100.2 MiB / 1.2 GiB`) to the "Active Files" panel.
-* **Fix (UI):** Renamed the "Current" progress bar to "Current Torrent" for clarity.
-* **Fix (UI):** Corrected header markup (e.g., `[dim]`) rendering as plain text instead of being styled.
-* **Fix (Logic):** Resolved a major bug where "Overall Progress" and "Statistics" could show different total sizes.
-* **Fix (Logic):** Corrected a bug where `local_cache_sftp_upload` mode used an incorrect total size for the "Current Torrent" progress bar.
-* **Fix (Logic):** Improved the accuracy of the "Avg Speed" calculation.
-* **Fix (Code):** Resolved an `AttributeError` for `update_footer` by implementing `set_final_status`.
-
-### Version 1.9.2
-*   **Fix**: Corrected an `IndentationError` in the `UIManagerV2` class that occurred after replacing the UI module.
-
-### Version 1.9.1
-*   **Feature**: Implemented a `FileTransferTracker` to checkpoint and resume individual file transfers, preventing restarts from scratch after failures.
-*   **Feature**: Centralized all script timeouts into a `Timeouts` class, allowing users to configure them via environment variables (`TM_SSH_CONNECT_TIMEOUT`, `TM_RECHECK_TIMEOUT`, etc.) for greater flexibility.
-*   **Feature**: Enhanced bandwidth monitoring in the UI to show the transfer speed of each individual active file, providing more granular insight into performance.
-*   **Fix**: Consolidated performance logging to provide a clear, single-line summary of a file transfer's duration and average speed at the `DEBUG` level.
-
-### Version 1.9.0
-* **Feature**: Replaced the entire UI with a new high-performance version.
-    * Uses a persistent `rich.layout.Layout` for a stable, flicker-free display.
-    * Implements a live stats panel, removing the need for `display_stats()` at the end.
-    * Dramatically reduces memory usage by using shared `Progress` objects instead of one per-file.
-    * Shows only the last 5 active file transfers to prevent visual clutter on large torrents.
-
-### Version 1.8.2
-* **Fix**: Resolved a race condition in the `SSHConnectionPool` that could cause threads to block unnecessarily when the pool contained dead connections.
-* **Fix**: Hardened the `UIManager` to prevent resource leaks by ensuring all progress bars are stopped on exit, even during a crash.
-* **Fix**: Added dynamic batch sizing to remote size calculation (`du -sb`) to prevent shell command length limit errors on torrents with thousands of files.
-
-### Version 1.8.1
-*   **Fix**: Add robust handling for destination recheck failures. If a file transfer succeeds but the torrent fails the recheck on the destination, the script now assumes the data is corrupt and deletes it to force a full re-transfer on the next run.
-
-### Version 1.8.0
-*   **Feat**: The SFTP read/write chunk size is now configurable in `config.ini` via the `sftp_chunk_size_kb` setting. This allows users to tune the chunk size for their network conditions, which can lead to significant performance improvements, especially on high-latency networks. The default is `64` KB.
-
-### Version 1.7.2
-*   **Refactor**: The UI version is now set dynamically from the canonical `__version__` variable in `torrent_mover.py`, eliminating the hardcoded version in `ui.py`.
-*   **UI Fix**: Corrected a crash caused by an improper `rich` library implementation for fixed-width columns. The per-file progress bars are now correctly aligned and no longer cause the application to hang.
-*   **UI Enhancement**: The per-file progress display now includes the completed size vs. the total size (e.g., `50.1 MB / 100.2 MB`).
-
-### Version 1.7.1
-*   **UI Fix**: Updated the overall and torrent-level progress bars to display both the transferred size and the total size (e.g., `1.2 GB / 16.3 GB`) for better clarity, instead of only showing the total size.
-
-### Version 1.7.0
-*   **Security**: Applied `shlex.quote()` to all shell command constructions to prevent command injection vulnerabilities.
-*   **Enhancement**: The `--version` output now includes the path to the configuration file being used.
-*   **Feature**: Added a `--check-config` flag to validate the configuration file without running a full transfer.
-*   **Logging**: The script now logs the path of the configuration file being used at startup.
-*   **UI**: Verified that the transfer speed is correctly displayed in the final summary.
-*   **Development**: Added a `requirements-dev.txt` file for testing tools.
-
-### Version 1.6.3
-*   **New Feature**: Introduced a Rich-based UI for real-time progress tracking of torrent analysis and transfers.
-*   **New Feature**: Implemented local caching for `sftp_upload` mode to improve reliability and performance.
-*   **Improvement**: Switched to using `du -sb` for remote size calculation, significantly speeding up the analysis phase.
-*   **Improvement**: Added a destination health check to verify disk space and permissions before starting transfers.
-*   **Improvement**: Added cleanup for orphaned cache directories from previous runs.
-
-### Version 1.3.1
-*   **Fix**: Implemented a robust, per-server SSH session throttling mechanism to prevent `Secsh channel open FAILED` errors. This resolves issues where analyzing or transferring many torrents at once could exhaust the server's available SSH session slots.
-*   **New Config Option**: Added `max_concurrent_ssh_sessions` to each server block in `config.ini.template`, allowing granular control over connection limits for both source and destination servers.
+### Older Versions (Summarized)
+*   **v2.7.5**: fix(main): Fixed incorrect dependency check for `sshpass` and corrected `rsync_upload` logic.
+*   **v2.7.4**: fix(transfer): Fixed `rsync_upload` mode by resolving a `NameError` and rewriting the transfer function.
+*   **v2.7.3**: fix(main): Fixed hang in `--simple` mode by refactoring console logging.
+*   **v2.7.2**: fix(ui): Implemented stubbed methods in `SimpleUIManager` to fix `--simple` mode output.
+*   **v2.7.1**: fix(main): Corrected a `NameError` for `UIManager`.
+*   **v2.7.0**: feat(ui): Added a `--simple` flag for a non-interactive UI and detection for `gnu screen`.
+*   **v2.6.2**: fix(ui): Corrected flawed logic in the `_stats_updater` thread that caused speeds to reset to 0.
+*   **v2.6.1**: fix(ui): Resolved a threading deadlock that caused DL/UL speeds to remain at 0.00 MB/s.
+*   **v2.6.0**: feat(ui): Changed layout, added visual progress bars, and improved UI colors.
+*   **v2.5.0 - v2.5.12**: This series of releases focused heavily on UI stability and features, including a major overhaul of the "Active Queue" panel, a thread-safe rendering logic, and fixes for multiple `AttributeError` and `TypeError` crashes.
+*   **v2.0.0 - v2.4.2**: Introduced a new multi-column UI with a live log panel, robust file transfer resume logic, pre-transfer destination size checks, and detailed failure reporting.
+*   **v1.3.1 - v1.9.2**: These initial versions introduced the first Rich-based UI, local caching for `sftp_upload` mode, per-server SSH session throttling, configurable SFTP chunk sizes, and numerous improvements to performance and reliability.
 
 ## Features
 
@@ -312,7 +137,8 @@ Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your
 *   **`[DESTINATION_PATHS]`**: The path on the destination where torrent data will be moved.
 *   **`[SETTINGS]`**: Key operational settings, including:
     *   `transfer_mode`: `sftp`, `sftp_upload`, or `rsync`.
-    *   `max_concurrent_file_transfers`: Number of files to transfer in parallel (e.g., `5`).
+    *   `max_concurrent_downloads`: Number of files to download in parallel (e.g., `4`).
+    *   `max_concurrent_uploads`: Number of files to upload in parallel (e.g., `4`).
     *   `category_to_move`: The category in your source client that triggers a move.
     *   `pool_wait_timeout`: (Optional) Time in seconds to wait for a connection from the SSH pool if it's full. Defaults to `300`. Increase this if you get `TimeoutError` logs.
     *   `allow_near_complete_rsync`: (Optional) For rsync transfers, allows a recheck to pass at 99.9%+ completion. This is useful for minor metadata differences that rsync might not sync.
