@@ -91,3 +91,36 @@ Before submitting your changes, ensure you have:
 3.  **Followed the instructions from `pre_commit_instructions`**: This is a mandatory step.
 
 When submitting, use a clear and descriptive commit message that follows the conventional commit format (e.g., `feat: ...`, `fix: ...`).
+
+## Mandatory Testing Policy
+
+To ensure code stability and prevent regressions, all new features, refactors, or bug fixes **must** be accompanied by automated tests. This is not optional.
+
+### 1. Test Framework
+
+* We use `pytest` as our testing framework.
+* We use `pytest-mock` (via the `mocker` fixture) for all mocking.
+
+### 2. Test Location
+
+* All tests must be placed in a new top-level `tests/` directory.
+* Test files should be named `test_*.py` (e.g., `tests/test_system_manager.py`).
+* Your tests will need to import the application modules (e.g., `from torrent_mover.system_manager import ...`).
+
+### 3. Mocking (Critical)
+
+This application relies heavily on external APIs and services. **You must not make live network calls in tests.**
+
+* **Pytest-Mocker**: Use the `mocker` fixture provided by `pytest-mock` to patch out external dependencies.
+* **What to Mock**:
+    * `qbittorrentapi.Client`: Mock all interactions with the qBittorrent clients (e.g., `mocker.patch('torrent_mover.qbittorrent_manager.connect_qbit')`, `mocker.patch('qbittorrentapi.Client')`).
+    * `paramiko.SSHClient` / `SSHConnectionPool`: Mock all SSH and SFTP interactions (e.g., `mocker.patch('torrent_mover.ssh_manager.SSHConnectionPool.get_connection')`).
+    * `subprocess.run`: Mock any calls to external commands like `rsync` or `sshpass`.
+    * Filesystem: For functions that read/write files, use `mocker.patch('builtins.open', mocker.mock_open())` or `pyfakefs` (if we add it later). For now, focus on mocking `open`.
+    * `time.sleep`: Patch out `time.sleep` in any function you are testing.
+
+### 4. Your Workflow
+
+1.  **When Adding a Feature**: Your task will include writing unit tests for the new logic.
+2.  **When Fixing a Bug**: Your first step should be to write a test that *fails* by replicating the bug. Your second step is to write the code that makes this test *pass*.
+3.  **Scope**: Focus on testing the business logic within each manager module (e.g., "does `get_eligible_torrents` correctly filter a mock list of torrents?"). You do not need to test the `rich` UI rendering itself.
