@@ -81,23 +81,7 @@ Key command-line flags for development and testing include:
 
 This project follows Semantic Versioning (`MAJOR.MINOR.PATCH`). The canonical version number is defined as the `__version__` variable within `torrent_mover/torrent_mover.py`.
 
-**You, the AI agent, are responsible for updating this version number on every code change that warrants it.**
-
-Use the following rules based on your conventional commit type:
-
-*   **`fix:`**: Increment the **PATCH** version (e.g., `1.6.0` -> `1.6.1`). This is for backward-compatible bug fixes.
-*   **`feat:`**: Increment the **MINOR** version and reset PATCH to zero (e.g., `1.6.0` -> `1.7.0`). This is for new, backward-compatible features.
-*   **Breaking Change (`feat!:`, `fix!:`):** Increment the **MAJOR** version and reset MINOR and PATCH to zero (e.g., `1.6.0` -> `2.0.0`). This is for any change that is not backward-compatible.
-*   **`refactor:`, `style:`, `docs:`, `chore:`, `test:`**: These types **do not** require a version bump.
-
-**Mandatory Workflow:**
-1. The user requests a code change (e.g., a new feature or a bug fix).
-2. You implement the code to fulfill the request.
-3. You determine the correct conventional commit type (e.g., `feat:`, `fix:`).
-4. If the type is `feat:` or `fix:`, you **must** open `torrent_mover/torrent_mover.py`.
-5. You **must** find the `__version__` variable and update it according to the rules above.
-6. **You must also update the version number in `README.md` and any other files where the version is displayed.**
-7. You will then proceed to the pre-commit and submission steps.
+When you submit a pull request, please **do not** bump the version number yourself. The project maintainer will update the version in `torrent_mover/torrent_mover.py`, `README.md`, and any other relevant files upon merging, based on the conventional commit type of your contribution.
 
 ### 6. Pre-Commit Steps and Submission
 

@@ -94,7 +94,10 @@ The project is organized into a modular structure to enforce separation of conce
 *   `torrent_mover/qbittorrent_manager.py`: Manages all direct interactions with the qBittorrent WebAPI.
 *   `torrent_mover/transfer_manager.py`: Manages the logic for all file transfer modes and transfer state (including `recheck_failed` states).
 *   `torrent_mover/system_manager.py`: Manages system-level tasks like logging, lockfiles, and health checks.
+*   `torrent_mover/transfer_strategies.py`: Implements the Strategy pattern for different transfer modes.
 *   `torrent_mover/tracker_manager.py`: Manages logic for tracker-based categorization.
+*   `torrent_mover/watchdog.py`: Monitors for hung transfers.
+*   `torrent_mover/resilient_queue.py`: Manages the resilient transfer queue and circuit breaker.
 *   `torrent_mover/config.ini.template`: The template for the configuration file.
 *   `torrent_mover/requirements.txt`: A list of Python dependencies.
 
