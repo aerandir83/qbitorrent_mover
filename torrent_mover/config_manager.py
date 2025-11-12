@@ -1,3 +1,14 @@
+"""Manages loading, updating, and validating the application's configuration.
+
+This module is responsible for handling the `config.ini` file. It includes
+functionality to:
+- Create a new configuration file from a template if one doesn't exist.
+- Update an existing configuration file with new options from the template
+  while preserving user-defined values.
+- Load the configuration into a `ConfigParser` object for use by the application.
+- Validate the configuration to ensure all required sections and options are
+  present and have valid values.
+"""
 import configparser
 from pathlib import Path
 import shutil
@@ -9,16 +20,23 @@ from typing import List
 
 
 def update_config(config_path: str, template_path: str) -> None:
-    """Updates the config.ini from the template, preserving existing values.
+    """Updates an existing config.ini from a template, preserving user values.
 
-    This function compares the user's configuration file with a template.
-    It adds any new sections or options from the template to the user's
-    config file while preserving existing values and comments. If changes
-    are made, a timestamped backup of the original config file is created.
+    This function compares the user's configuration file with a template. It adds
+    any new sections or options present in the template to the user's config
+    file. Existing user-defined values, comments, and file structure are
+    preserved.
+
+    If the configuration file is modified, a timestamped backup of the original
+    file is created in a `backup` subdirectory. If no configuration file exists
+    at `config_path`, one is created from the template.
 
     Args:
         config_path: The path to the user's configuration file (e.g., 'config.ini').
-        template_path: The path to the template configuration file (e.g., 'config.ini.template').
+        template_path: The path to the template file (e.g., 'config.ini.template').
+
+    Raises:
+        SystemExit: If the template file cannot be found or a new config cannot be created.
     """
     config_file = Path(config_path)
     template_file = Path(template_path)
@@ -92,10 +110,10 @@ def load_config(config_path: str = "config.ini") -> configparser.ConfigParser:
         config_path: The path to the configuration file.
 
     Returns:
-        A ConfigParser object loaded with the configuration.
+        A `ConfigParser` object loaded with the configuration settings.
 
     Raises:
-        SystemExit: If the configuration file is not found.
+        SystemExit: If the configuration file does not exist at `config_path`.
     """
     config_file = Path(config_path)
     if not config_file.is_file():
@@ -108,16 +126,19 @@ def load_config(config_path: str = "config.ini") -> configparser.ConfigParser:
 
 
 class ConfigValidator:
-    """Validates the structure and values of the configuration file.
+    """Validates the structure and values of the application's configuration.
 
-    This class checks for required sections and options, validates transfer modes,
-    checks path formats, and ensures that numeric values are within a valid
-        range.
+    This class performs a series of checks on a `ConfigParser` object to ensure
+    it meets the application's requirements. It verifies the presence of
+    required sections and options, checks for valid transfer modes, validates
+    path formats, and ensures that numeric values are within a sensible range.
 
     Attributes:
-        config: The ConfigParser object to validate.
-        errors: A list of critical error messages found during validation.
-        warnings: A list of non-critical warning messages.
+        config (configparser.ConfigParser): The configuration object to validate.
+        errors (List[str]): A list of critical error messages found. If this list
+            is not empty after validation, the configuration is considered invalid.
+        warnings (List[str]): A list of non-critical warning messages. These
+            highlight potential issues but do not invalidate the configuration.
     """
 
     REQUIRED_SECTIONS = {
@@ -132,25 +153,26 @@ class ConfigValidator:
     VALID_TRANSFER_MODES = ['sftp', 'rsync', 'sftp_upload', 'rsync_upload']
 
     def __init__(self, config: configparser.ConfigParser):
-        """Initializes the ConfigValidator.
+        """Initializes the ConfigValidator with a configuration object.
 
         Args:
-            config: A ConfigParser object loaded with the configuration to be validated.
+            config: A `ConfigParser` object loaded with the configuration
+                to be validated.
         """
         self.config = config
         self.errors: List[str] = []
         self.warnings: List[str] = []
 
     def validate(self) -> bool:
-        """Runs all validation checks and prints errors or warnings.
+        """Runs all validation checks and prints resulting errors or warnings.
 
-        This method orchestrates the validation process by calling various
-        private check methods. If any errors are found, they are printed to
-        stderr, and the method returns False. Warnings are printed to stderr,
-        but do not cause validation to fail.
+        This method orchestrates the validation process by calling all private
+        check methods. If any errors are found, they are printed to stderr, and
+        the method returns `False`. Warnings are also printed but do not cause
+        validation to fail.
 
         Returns:
-            True if the configuration is valid (no errors), False otherwise.
+            `True` if the configuration is valid (no errors), `False` otherwise.
         """
         self._check_required_sections()
         self._check_required_options()
@@ -173,13 +195,13 @@ class ConfigValidator:
         return True
 
     def _check_required_sections(self) -> None:
-        """Ensure required sections exist."""
+        """Checks if all sections defined in `REQUIRED_SECTIONS` exist in the config."""
         for section in self.REQUIRED_SECTIONS:
             if not self.config.has_section(section):
                 self.errors.append(f"Missing required section: [{section}]")
 
     def _check_required_options(self) -> None:
-        """Ensure required options exist in each section."""
+        """Checks if all required options exist and are non-empty in their respective sections."""
         for section, options in self.REQUIRED_SECTIONS.items():
             if not self.config.has_section(section):
                 continue
@@ -190,7 +212,7 @@ class ConfigValidator:
                     self.errors.append(f"Option '{option}' in [{section}] is empty")
 
     def _check_transfer_mode(self) -> None:
-        """Validate transfer mode and related requirements."""
+        """Validates the 'transfer_mode' and its related section requirements."""
         if not self.config.has_section('SETTINGS'):
             return
 
@@ -198,15 +220,16 @@ class ConfigValidator:
         if mode not in self.VALID_TRANSFER_MODES:
             self.errors.append(f"Invalid transfer_mode '{mode}'. Must be one of: {', '.join(self.VALID_TRANSFER_MODES)}")
 
-        # Check mode-specific requirements
+        # Check for mode-specific section requirements
         if mode in ['sftp_upload', 'rsync_upload'] and not self.config.has_section('DESTINATION_SERVER'):
             self.errors.append(f"transfer_mode='{mode}' requires a [DESTINATION_SERVER] section")
 
+        # Check for external command dependencies
         if mode == 'rsync' and not shutil.which('rsync'):
             self.warnings.append("rsync mode selected but 'rsync' command not found in PATH")
 
     def _check_paths(self) -> None:
-        """Validate path configurations."""
+        """Validates that configured paths are absolute."""
         if not self.config.has_section('DESTINATION_PATHS'):
             return
 
@@ -215,7 +238,7 @@ class ConfigValidator:
             self.warnings.append(f"destination_path '{dest_path}' is not an absolute path")
 
     def _check_numeric_values(self) -> None:
-        """Validate numeric configuration values."""
+        """Validates that numeric options are integers and within a recommended range."""
         if not self.config.has_section('SETTINGS'):
             return
 
@@ -229,7 +252,7 @@ class ConfigValidator:
             if self.config.has_option('SETTINGS', option):
                 try:
                     value = self.config.getint('SETTINGS', option)
-                    if value < min_val or value > max_val:
+                    if not (min_val <= value <= max_val):
                         self.warnings.append(
                             f"{option}={value} is outside recommended range [{min_val}-{max_val}]"
                         )
@@ -237,7 +260,7 @@ class ConfigValidator:
                     self.errors.append(f"Option '{option}' must be an integer")
 
     def _check_client_sections_exist(self) -> None:
-        """Verify that referenced client sections exist."""
+        """Verifies that client/server sections referenced in [SETTINGS] actually exist."""
         if not self.config.has_section('SETTINGS'):
             return
 
