@@ -909,21 +909,47 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
             # More robust regex: matches leading digits/commas and then anything else.
             # This avoids failing if rsync's progress2 output doesn't have trailing whitespace.
             progress_regex = re.compile(r"^\s*([\d,]+).*$")
+            line_buffer = ""
 
             if process.stdout:
-                for line in iter(process.stdout.readline, ''):
-                    line = line.strip()
-                    match = progress_regex.match(line)
-                    if match:
-                        try:
-                            total_transferred_str = match.group(1).replace(',', '')
-                            total_transferred = int(total_transferred_str)
-                            advance = total_transferred - last_total_transferred
-                            if advance > 0:
-                                ui.update_torrent_progress(torrent_hash, advance, transfer_type='upload')
-                                last_total_transferred = total_transferred
-                        except (ValueError, IndexError):
-                            logging.warning(f"Could not parse rsync upload progress line: {line}")
+                # Read character by character to handle carriage returns (\r)
+                while True:
+                    char = process.stdout.read(1)
+                    if not char:
+                        # End of stream, process any remaining buffer
+                        if line_buffer:
+                            line = line_buffer.strip()
+                            match = progress_regex.match(line)
+                            if match:
+                                try:
+                                    total_transferred_str = match.group(1).replace(',', '')
+                                    total_transferred = int(total_transferred_str)
+                                    advance = total_transferred - last_total_transferred
+                                    if advance > 0:
+                                        ui.update_torrent_progress(torrent_hash, advance, transfer_type='upload')
+                                        last_total_transferred = total_transferred
+                                except (ValueError, IndexError):
+                                    logging.warning(f"Could not parse rsync upload progress line: {line}")
+                        break # Exit loop
+
+                    if char == '\r' or char == '\n':
+                        if line_buffer:
+                            line = line_buffer.strip()
+                            match = progress_regex.match(line)
+                            if match:
+                                try:
+                                    total_transferred_str = match.group(1).replace(',', '')
+                                    total_transferred = int(total_transferred_str)
+                                    advance = total_transferred - last_total_transferred
+                                    if advance > 0:
+                                        ui.update_torrent_progress(torrent_hash, advance, transfer_type='upload')
+                                        last_total_transferred = total_transferred
+                                except (ValueError, IndexError):
+                                    logging.warning(f"Could not parse rsync upload progress line: {line}")
+                        line_buffer = "" # Reset buffer
+                    else:
+                        line_buffer += char
+                process.stdout.close()
 
             process.wait()
             stderr_output = process.stderr.read() if process.stderr else ""
@@ -1047,23 +1073,47 @@ def transfer_content_rsync(
             # More robust regex: matches leading digits/commas and then anything else.
             # This avoids failing if rsync's progress2 output doesn't have trailing whitespace.
             progress_regex = re.compile(r"^\s*([\d,]+).*$")
+            line_buffer = ""
 
             if process.stdout:
-                for line in iter(process.stdout.readline, ''):
-                    line = line.strip()
-                    # Do not log verbose rsync progress to file logger
-                    # logging.debug(f"rsync stdout: {line}")
-                    match = progress_regex.match(line)
-                    if match:
-                        try:
-                            total_transferred_str = match.group(1).replace(',', '')
-                            total_transferred = int(total_transferred_str)
-                            advance = total_transferred - last_total_transferred
-                            if advance > 0:
-                                ui.update_torrent_progress(torrent_hash, advance, transfer_type='download')
-                                last_total_transferred = total_transferred
-                        except (ValueError, IndexError):
-                            logging.warning(f"Could not parse rsync progress line: {line}")
+                # Read character by character to handle carriage returns (\r)
+                while True:
+                    char = process.stdout.read(1)
+                    if not char:
+                        # End of stream, process any remaining buffer
+                        if line_buffer:
+                            line = line_buffer.strip()
+                            match = progress_regex.match(line)
+                            if match:
+                                try:
+                                    total_transferred_str = match.group(1).replace(',', '')
+                                    total_transferred = int(total_transferred_str)
+                                    advance = total_transferred - last_total_transferred
+                                    if advance > 0:
+                                        ui.update_torrent_progress(torrent_hash, advance, transfer_type='download')
+                                        last_total_transferred = total_transferred
+                                except (ValueError, IndexError):
+                                    logging.warning(f"Could not parse rsync progress line: {line}")
+                        break # Exit loop
+
+                    if char == '\r' or char == '\n':
+                        if line_buffer:
+                            line = line_buffer.strip()
+                            match = progress_regex.match(line)
+                            if match:
+                                try:
+                                    total_transferred_str = match.group(1).replace(',', '')
+                                    total_transferred = int(total_transferred_str)
+                                    advance = total_transferred - last_total_transferred
+                                    if advance > 0:
+                                        ui.update_torrent_progress(torrent_hash, advance, transfer_type='download')
+                                        last_total_transferred = total_transferred
+                                except (ValueError, IndexError):
+                                    logging.warning(f"Could not parse rsync progress line: {line}")
+                        line_buffer = "" # Reset buffer
+                    else:
+                        line_buffer += char
+                process.stdout.close()
 
             process.wait()
             stderr_output = process.stderr.read() if process.stderr else ""
