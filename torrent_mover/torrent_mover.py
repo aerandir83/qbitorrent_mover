@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.9.1"
+__version__ = "2.9.2"
 
 # Standard Lib
 import configparser
@@ -360,6 +360,7 @@ def _post_transfer_actions(
         recheck_ok = wait_for_recheck_completion(
             destination_qbit,
             torrent.hash,
+            ui, # <-- ADD THIS
             allow_near_complete=allow_near_complete
         )
 
@@ -412,7 +413,7 @@ def _post_transfer_actions(
             except qbittorrentapi.exceptions.NotFound404Error:
                 return False, "Torrent disappeared during Recheck 2."
 
-            second_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, allow_near_complete=allow_near_complete)
+            second_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, ui, allow_near_complete=allow_near_complete)
 
             if second_recheck_ok:
                 logging.info(f"Recheck 2 successful for {torrent.name}.")
@@ -480,7 +481,7 @@ def _post_transfer_actions(
                 except qbittorrentapi.exceptions.NotFound404Error:
                     return False, "Torrent disappeared during Recheck 3."
 
-                third_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, allow_near_complete=allow_near_complete)
+                third_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, ui, allow_near_complete=allow_near_complete)
 
                 if not third_recheck_ok:
                     logging.error(f"Recheck 3 FAILED for {torrent.name}. Deleting content.")
