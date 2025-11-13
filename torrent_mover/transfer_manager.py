@@ -861,6 +861,7 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
 
     rsync_cmd = [
         "sshpass", "-p", password,
+        "stdbuf", "-o0", # Force unbuffered stdout
         "rsync",
         *rsync_options,
         "--info=progress2",
@@ -1035,6 +1036,7 @@ def transfer_content_rsync(
     # which is cleaner and allows our password redaction to work.
     rsync_command_base = [
         "sshpass", "-p", password,
+        "stdbuf", "-o0", # Force unbuffered stdout
         "rsync",
         *rsync_options_with_checksum,
         "-e", _get_ssh_command(port)
