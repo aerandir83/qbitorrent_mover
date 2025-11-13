@@ -617,10 +617,16 @@ def _execute_transfer(
             source_content_path = files[0].source_path
             dest_content_path = files[0].dest_path
             transfer_content_rsync(
-                sftp_config, source_content_path,
-                dest_content_path, hash_, ui, rsync_options,
-                file_tracker,
-                total_size=total_size_calc,  # <-- ADD THIS
+                sftp_config,
+                remote_path=source_content_path,
+                local_path=dest_content_path,
+                torrent_hash=hash_,
+                log_transfer=self.log_manager.log_transfer,
+                _update_transfer_progress=self._update_transfer_progress,
+                _update_transfer_speed=self._update_transfer_speed,
+                rsync_options=rsync_options,
+                file_tracker=file_tracker,
+                total_size=total_size_calc,
                 dry_run=dry_run
             )
         elif transfer_mode == 'rsync_upload':
