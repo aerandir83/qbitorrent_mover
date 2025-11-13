@@ -154,6 +154,13 @@ class _SpeedColumn(ProgressColumn):
 
         # Format the speed here, just like the Stats panel does
         speed_str = f"{speed_bytes / (1024**2):.2f} MB/s"
+
+        # Conditionally show '--' for UL speed on non-uploading modes
+        if speed_bytes == 0 and self.field_name == 'current_ul_speed':
+            mode = self.ui_manager.transfer_mode
+            if mode in ['sftp', 'rsync', 'sftp_upload']:
+                speed_str = "-- MB/s"
+
         return Text.from_markup(f"{self.label}:[{self.style}]{speed_str:>10}[/]")
 
 # --- Custom Renderable Classes ---
@@ -185,14 +192,20 @@ class _StatsPanel:
             remaining_gb = max(0, total_gb - transferred_gb)
 
             stats_table.add_row("📊 Progress", f"[white]{transferred_gb:.2f}/{total_gb:.2f} GB ({remaining_gb:.2f} GB rem.)[/]")
-            stats_table.add_row("⚡ Speed", f"[green]DL:{current_dl_speed / (1024**2):.1f}[/] [yellow]UL:{current_ul_speed / (1024**2):.1f}[/] MB/s")
+            dl_str = f"{current_dl_speed / (1024**2):.1f}"
+            ul_str = f"{current_ul_speed / (1024**2):.1f}"
+
+            # Conditionally show '--' for UL speed on non-uploading modes
+            if current_ul_speed == 0 and self.ui_manager.transfer_mode in ['sftp', 'rsync', 'sftp_upload']:
+                ul_str = "--"
+
+            stats_table.add_row("⚡ Speed", f"[green]DL:{dl_str}[/] [yellow]UL:{ul_str}[/] MB/s")
             stats_table.add_row("📈 Avg/Peak", f"[dim]{avg_speed_hist / (1024**2):.1f}/{stats['peak_speed'] / (1024**2):.1f} MB/s[/]")
 
-            # Compacted counts
-            active = stats['active_transfers']
-            completed = stats['completed_transfers']
-            failed = stats['failed_transfers']
-            stats_table.add_row("🔄 Counts", f"[white]A:{active}[/] [green]C:{completed}[/] [red]F:{failed}[/]")
+            # Detailed counts
+            stats_table.add_row("🔄 Active", f"[white]{stats['active_transfers']}[/]")
+            stats_table.add_row("✅ Completed", f"[green]{stats['completed_transfers']}[/]")
+            stats_table.add_row("❌ Failed", f"[red]{stats['failed_transfers']}[/]")
 
             total_files = sum(t.get('total_files', 0) for t in self.ui_manager._torrents.values())
             completed_files = sum(t.get('completed_files', 0) for t in self.ui_manager._torrents.values())
@@ -652,7 +665,7 @@ class UIManagerV2(BaseUIManager):
         self.layout.split(
             Layout(name="header", size=3),
             Layout(name="body", ratio=1),
-            Layout(name="footer", size=7)
+            Layout(name="footer", size=12)
         )
 
         # Split body into two columns
