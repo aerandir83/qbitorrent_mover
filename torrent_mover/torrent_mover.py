@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.9.2"
+__version__ = "2.9.3"
 
 # Standard Lib
 import configparser
@@ -313,14 +313,14 @@ def _post_transfer_actions(
                     logging.error(f"Failed to export .torrent file for {name}: {e}")
                     return False, f"Failed to export .torrent file: {e}"
 
-                logging.info(f"CLIENT: Adding torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
+                logging.info(f"CLIENT: Adding torrent to Destination (AMM=True, paused) with save path '{destination_save_path_str}': {name}")
                 try:
                     destination_qbit.torrents_add(
                         torrent_files=torrent_file_content,
                         save_path=destination_save_path_str,
                         is_paused=True,
                         category=torrent.category,
-                        use_auto_torrent_management=False  # Changed to False
+                        use_auto_torrent_management=True
                     )
                     time.sleep(5) # Give client time to add it
                 except Exception as e:
