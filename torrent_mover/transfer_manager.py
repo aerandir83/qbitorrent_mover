@@ -1111,27 +1111,27 @@ def transfer_content_rsync(
             line_buffer = b"" # Use a byte string for the buffer
 
             if process.stdout:
-                self.log_manager.log_transfer(torrent_hash, "[DEBUG] Starting stdout byte-read loop...")
+                log_manager.log_transfer(torrent_hash, "[DEBUG] Starting stdout byte-read loop...")
                 while True:
                     byte = process.stdout.read(1)
                     if not byte:
-                        self.log_manager.log_transfer(torrent_hash, f"[DEBUG] End of stdout stream. Final buffer: {line_buffer!r}")
+                        log_manager.log_transfer(torrent_hash, f"[DEBUG] End of stdout stream. Final buffer: {line_buffer!r}")
                         # End of stream, process any remaining buffer
                         if line_buffer:
                             try:
                                 line = line_buffer.decode('utf-8', errors='replace').strip()
-                                self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Final line decoded: {line!r}")
+                                log_manager.log_transfer(torrent_hash, f"[DEBUG] Final line decoded: {line!r}")
                                 match = progress_regex.match(line)
                                 if match:
                                     current_transferred_bytes = int(match.group(1).replace(',', ''))
                                     last_transferred_bytes = current_transferred_bytes
                                     progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
-                                    self._update_transfer_progress(
+                                    _update_transfer_progress(
                                         torrent_hash, progress, current_transferred_bytes, total_size
                                     )
-                                    self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Final match. Bytes: {current_transferred_bytes}")
+                                    log_manager.log_transfer(torrent_hash, f"[DEBUG] Final match. Bytes: {current_transferred_bytes}")
                             except Exception as e:
-                                self.log_manager.log_transfer(torrent_hash, f"Error processing final rsync buffer: {e}")
+                                log_manager.log_transfer(torrent_hash, f"Error processing final rsync buffer: {e}")
                         break # Exit loop
 
                     if byte == b'\r' or byte == b'\n':
@@ -1145,47 +1145,47 @@ def transfer_content_rsync(
                                     line_buffer = b""
                                     continue
 
-                                self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Raw line decoded: {line!r}")
+                                log_manager.log_transfer(torrent_hash, f"[DEBUG] Raw line decoded: {line!r}")
                                 match = progress_regex.match(line)
 
                                 if match:
                                     current_transferred_bytes = int(match.group(1).replace(',', ''))
-                                    self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Matched bytes: {current_transferred_bytes}")
+                                    log_manager.log_transfer(torrent_hash, f"[DEBUG] Matched bytes: {current_transferred_bytes}")
 
                                     # Calculate speed based on the delta
                                     transferred_delta = current_transferred_bytes - last_transferred_bytes
-                                    self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Delta: {transferred_delta}")
+                                    log_manager.log_transfer(torrent_hash, f"[DEBUG] Delta: {transferred_delta}")
 
                                     if transferred_delta > 0:
                                         elapsed_time = time.time() - last_update_time
-                                        self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Elapsed: {elapsed_time:.4f}s")
+                                        log_manager.log_transfer(torrent_hash, f"[DEBUG] Elapsed: {elapsed_time:.4f}s")
                                         if elapsed_time > 0:
                                             speed = transferred_delta / elapsed_time
-                                            self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Speed: {speed / (1024**2):.2f} MB/s")
-                                            self._update_transfer_speed(torrent_hash, speed, 0)  # 0 for UL speed in rsync
+                                            log_manager.log_transfer(torrent_hash, f"[DEBUG] Speed: {speed / (1024**2):.2f} MB/s")
+                                            _update_transfer_speed(torrent_hash, speed, 0)  # 0 for UL speed in rsync
                                             last_update_time = time.time()
 
                                     last_transferred_bytes = current_transferred_bytes
 
                                     progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
-                                    self._update_transfer_progress(
+                                    _update_transfer_progress(
                                         torrent_hash,
                                         progress,
                                         current_transferred_bytes,
                                         total_size
                                     )
                                 else:
-                                    self.log_manager.log_transfer(torrent_hash, f"[DEBUG] No match for line: {line!r}")
+                                    log_manager.log_transfer(torrent_hash, f"[DEBUG] No match for line: {line!r}")
 
                             except ValueError:
-                                self.log_manager.log_transfer(torrent_hash, f"Could not parse bytes from line: {line!r}")
+                                log_manager.log_transfer(torrent_hash, f"Could not parse bytes from line: {line!r}")
                             except Exception as e:
-                                self.log_manager.log_transfer(torrent_hash, f"Error processing rsync line: {e} | Line was: {line!r}")
+                                log_manager.log_transfer(torrent_hash, f"Error processing rsync line: {e} | Line was: {line!r}")
                         line_buffer = b"" # Reset buffer
                     else:
                         line_buffer += byte
 
-                self.log_manager.log_transfer(torrent_hash, "[DEBUG] Exited stdout loop.")
+                log_manager.log_transfer(torrent_hash, "[DEBUG] Exited stdout loop.")
                 process.stdout.close()
 
             process.wait()
