@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.9.0"
+__version__ = "2.9.1"
 
 # Standard Lib
 import configparser
@@ -264,8 +264,31 @@ def _post_transfer_actions(
         chown_user = config['SETTINGS'].get('chown_user', '').strip()
         chown_group = config['SETTINGS'].get('chown_group', '').strip()
         if chown_user or chown_group:
-            remote_config = config['DESTINATION_SERVER'] if transfer_mode in ['sftp_upload', 'rsync_upload'] else None
-            change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
+            remote_config = None
+            path_to_chown = dest_content_path
+
+            # New logic: If a DESTINATION_SERVER is defined, *always*
+            # attempt the chown on that server using the remote path.
+            if 'DESTINATION_SERVER' in config and config.has_section('DESTINATION_SERVER'):
+                try:
+                    remote_config = config['DESTINATION_SERVER']
+
+                    # We need the content name (e.g., "My.Movie.2023")
+                    content_name = os.path.basename(dest_content_path)
+
+                    # Get the remote *base* path from config
+                    dest_base_path = config['DESTINATION_PATHS']['destination_path']
+                    remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
+
+                    # Construct the full *remote* path for chown
+                    path_to_chown = os.path.join(remote_dest_base_path, content_name)
+                    logging.info(f"DESTINATION_SERVER defined. Will run chown on remote path: {path_to_chown}")
+                except Exception as e:
+                    logging.error(f"Error determining remote chown path, falling back to local. Error: {e}")
+                    remote_config = None
+                    path_to_chown = dest_content_path
+
+            change_ownership(path_to_chown, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
 
     if not destination_qbit:
         logging.warning("No destination client provided. Skipping post-transfer client actions.")
