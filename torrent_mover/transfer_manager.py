@@ -1026,10 +1026,12 @@ def transfer_content_rsync(
     remote_path: str,
     local_path: str,
     torrent_hash: str,
-    ui: UIManager,
     rsync_options: List[str],
     file_tracker: FileTransferTracker,
-    total_size: int,  # <-- ADD THIS
+    total_size: int,
+    log_transfer: typing.Callable,
+    _update_transfer_progress: typing.Callable,
+    _update_transfer_speed: typing.Callable,
     dry_run: bool = False
 ) -> None:
     """Transfers content from a remote server to a local path using rsync.
@@ -1042,7 +1044,7 @@ def transfer_content_rsync(
 
     remote_path = remote_path.strip('\'"')
     rsync_file_name = os.path.basename(remote_path)
-    ui.start_file_transfer(torrent_hash, rsync_file_name, "downloading")
+    log_transfer(torrent_hash, f"Starting rsync transfer for '{rsync_file_name}'")
 
     host = sftp_config['host']
     port = sftp_config.getint('port')
@@ -1084,8 +1086,8 @@ def transfer_content_rsync(
                 logging.info(f"[DRY_RUN] Would execute: {' '.join(rsync_command)}")
                 # Simulate full progress for UI
                 if total_size > 0:
-                    ui.update_torrent_progress(torrent_hash, total_size, transfer_type='download')
-                ui.complete_file_transfer(torrent_hash, rsync_file_name)
+                    _update_transfer_progress(torrent_hash, 1.0, total_size, total_size)
+                log_transfer(torrent_hash, f"[DRY RUN] Completed rsync transfer for {rsync_file_name}")
                 return
 
             logging.info(f"Starting rsync transfer for '{rsync_file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
@@ -1114,14 +1116,14 @@ def transfer_content_rsync(
                     if byte == b'\r' or byte == b'\n':
                         if line_buffer:
                             line = line_buffer.decode('utf-8', errors='replace').strip()
-                            ui.log(f"[DEBUG] Raw rsync line: {line}")
+                            log_transfer(torrent_hash, f"[DEBUG] Raw rsync line: {line}")
                             line_buffer = b"" # Reset buffer
 
                             match = progress_regex.match(line)
                             if match:
                                 human_readable_bytes_str = match.group(1)
                                 current_transferred_bytes = _parse_human_readable_bytes(human_readable_bytes_str)
-                                ui.log(f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
+                                log_transfer(torrent_hash, f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
 
                                 transferred_delta = current_transferred_bytes - last_transferred_bytes
                                 if transferred_delta > 0:
@@ -1152,8 +1154,7 @@ def transfer_content_rsync(
             if process.returncode == 0 or process.returncode == 24:
                 # Ensure UI completes to 100%
                 if total_size > 0 and last_transferred_bytes < total_size:
-                    remaining = total_size - last_transferred_bytes
-                    ui.update_torrent_progress(torrent_hash, remaining, transfer_type='download')
+                    _update_transfer_progress(torrent_hash, 1.0, total_size, total_size)
 
                 # Verify the transfer
                 if os.path.exists(local_path):
@@ -1181,7 +1182,7 @@ def transfer_content_rsync(
                         # If difference is less than 0.1%, consider it successful
                         if size_diff_percent < 0.1:
                             logging.info(f"Rsync transfer completed and verified for {rsync_file_name}")
-                            ui.complete_file_transfer(torrent_hash, rsync_file_name)
+                            log_transfer(torrent_hash, f"Rsync transfer completed and verified for {rsync_file_name}")
                             return
                         else:
                             logging.warning(f"Size mismatch after rsync: {size_diff} bytes difference ({size_diff_percent:.2f}%)")
