@@ -1003,10 +1003,13 @@ def transfer_content_rsync(
         rsync_options_with_checksum.append("--info=progress2")
 
     # Re-build base command with the new option
+    # We construct the command with sshpass as the *wrapper* program,
+    # which is cleaner and allows our password redaction to work.
     rsync_command_base = [
+        "sshpass", "-p", password,
         "rsync",
         *rsync_options_with_checksum,
-        "-e", f"sshpass -p {shlex.quote(password)} {_get_ssh_command(port)}"
+        "-e", _get_ssh_command(port)
     ]
 
     remote_spec = f"{username}@{host}:{remote_path}"

@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.9.0"
+__version__ = "2.9.3"
 
 # Standard Lib
 import configparser
@@ -264,8 +264,31 @@ def _post_transfer_actions(
         chown_user = config['SETTINGS'].get('chown_user', '').strip()
         chown_group = config['SETTINGS'].get('chown_group', '').strip()
         if chown_user or chown_group:
-            remote_config = config['DESTINATION_SERVER'] if transfer_mode in ['sftp_upload', 'rsync_upload'] else None
-            change_ownership(dest_content_path, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
+            remote_config = None
+            path_to_chown = dest_content_path
+
+            # New logic: If a DESTINATION_SERVER is defined, *always*
+            # attempt the chown on that server using the remote path.
+            if 'DESTINATION_SERVER' in config and config.has_section('DESTINATION_SERVER'):
+                try:
+                    remote_config = config['DESTINATION_SERVER']
+
+                    # We need the content name (e.g., "My.Movie.2023")
+                    content_name = os.path.basename(dest_content_path)
+
+                    # Get the remote *base* path from config
+                    dest_base_path = config['DESTINATION_PATHS']['destination_path']
+                    remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
+
+                    # Construct the full *remote* path for chown
+                    path_to_chown = os.path.join(remote_dest_base_path, content_name)
+                    logging.info(f"DESTINATION_SERVER defined. Will run chown on remote path: {path_to_chown}")
+                except Exception as e:
+                    logging.error(f"Error determining remote chown path, falling back to local. Error: {e}")
+                    remote_config = None
+                    path_to_chown = dest_content_path
+
+            change_ownership(path_to_chown, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
 
     if not destination_qbit:
         logging.warning("No destination client provided. Skipping post-transfer client actions.")
@@ -290,14 +313,14 @@ def _post_transfer_actions(
                     logging.error(f"Failed to export .torrent file for {name}: {e}")
                     return False, f"Failed to export .torrent file: {e}"
 
-                logging.info(f"CLIENT: Adding torrent to Destination (paused) with save path '{destination_save_path_str}': {name}")
+                logging.info(f"CLIENT: Adding torrent to Destination (AMM=True, paused) with save path '{destination_save_path_str}': {name}")
                 try:
                     destination_qbit.torrents_add(
                         torrent_files=torrent_file_content,
                         save_path=destination_save_path_str,
                         is_paused=True,
                         category=torrent.category,
-                        use_auto_torrent_management=False  # Changed to False
+                        use_auto_torrent_management=True
                     )
                     time.sleep(5) # Give client time to add it
                 except Exception as e:
@@ -337,6 +360,7 @@ def _post_transfer_actions(
         recheck_ok = wait_for_recheck_completion(
             destination_qbit,
             torrent.hash,
+            ui, # <-- ADD THIS
             allow_near_complete=allow_near_complete
         )
 
@@ -389,7 +413,7 @@ def _post_transfer_actions(
             except qbittorrentapi.exceptions.NotFound404Error:
                 return False, "Torrent disappeared during Recheck 2."
 
-            second_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, allow_near_complete=allow_near_complete)
+            second_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, ui, allow_near_complete=allow_near_complete)
 
             if second_recheck_ok:
                 logging.info(f"Recheck 2 successful for {torrent.name}.")
@@ -457,7 +481,7 @@ def _post_transfer_actions(
                 except qbittorrentapi.exceptions.NotFound404Error:
                     return False, "Torrent disappeared during Recheck 3."
 
-                third_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, allow_near_complete=allow_near_complete)
+                third_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, ui, allow_near_complete=allow_near_complete)
 
                 if not third_recheck_ok:
                     logging.error(f"Recheck 3 FAILED for {torrent.name}. Deleting content.")

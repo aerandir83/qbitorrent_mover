@@ -10,11 +10,11 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.9.0**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.9.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.9.0 (Latest)
+### Version 2.9.1 (Latest)
 * **feat(recheck):** Implemented a new 3-stage recheck and delta-transfer workflow to significantly improve the recovery rate of partially failed transfers. This new process intelligently retries transfers, deletes only the corrupted files, and performs multiple rechecks to ensure data integrity, reducing the need for manual intervention.
 
 ### Version 2.7.6

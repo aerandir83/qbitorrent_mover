@@ -463,6 +463,11 @@ class BaseUIManager(abc.ABC):
     def display_stats(self, stats: Dict[str, Any]) -> None:
         pass
 
+    @abc.abstractmethod
+    def pet_watchdog(self):
+        """Signals that a non-transfer activity has occurred."""
+        pass
+
 
 class SimpleUIManager(BaseUIManager):
     """A non-interactive UI that logs progress to the console via `logging`.
@@ -555,6 +560,10 @@ class SimpleUIManager(BaseUIManager):
         """Logs a final status message."""
         logging.info(f"Status: {message}")
 
+    def pet_watchdog(self):
+        """(Simple UI) No-op."""
+        pass
+
     def display_stats(self, stats: Dict[str, Any]) -> None:
         """Displays the final transfer statistics."""
         # This is called by UIManagerV2, but SimpleUIManager logs at the end.
@@ -616,6 +625,7 @@ class UIManagerV2(BaseUIManager):
 
         # Statistics
         self._stats = {
+            "last_activity_timestamp": time.monotonic(), # <-- ADD THIS
             "total_torrents": 0,
             "total_bytes": 0,
             "transferred_bytes": 0,
@@ -1022,6 +1032,11 @@ class UIManagerV2(BaseUIManager):
         with self._lock:
             timestamp = time.strftime("%H:%M:%S")
             self._log_buffer.append(Text.from_markup(f"[{timestamp}] {message}"))
+
+    def pet_watchdog(self):
+        """Signals that a non-transfer activity has occurred."""
+        with self._lock:
+            self._stats["last_activity_timestamp"] = time.monotonic()
 
     def display_stats(self, stats: Dict[str, Any]) -> None:
         """Prints final summary statistics to the console after the UI has shut down."""
