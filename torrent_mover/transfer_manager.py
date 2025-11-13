@@ -868,13 +868,24 @@ def _sftp_download_file_resilient(
 
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
-def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionProxy, local_path: str, remote_path: str, torrent_hash: str, ui: UIManager, rsync_options: List[str], dry_run: bool = False) -> None:
+def _transfer_content_rsync_upload_from_cache(
+    dest_config: configparser.SectionProxy,
+    local_path: str,
+    remote_path: str,
+    torrent_hash: str,
+    rsync_options: List[str],
+    total_size: int,
+    log_transfer: typing.Callable,
+    _update_transfer_progress: typing.Callable,
+    _update_transfer_speed: typing.Callable,
+    dry_run: bool = False
+) -> None:
     """
     Transfers content from a local path to a remote server using rsync.
     This is the UPLOAD part of the cache-based rsync_upload mode.
     """
     file_name = os.path.basename(local_path)
-    ui.start_file_transfer(torrent_hash, file_name, "uploading")
+    log_transfer(torrent_hash, f"Starting rsync upload from cache for '{file_name}'")
 
     host = dest_config['host']
     port = dest_config.getint('port')
@@ -902,18 +913,12 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
     safe_rsync_cmd = list(rsync_cmd)
     safe_rsync_cmd[2] = "'********'"
 
-    total_size = 0
-    with ui._lock:
-        if torrent_hash in ui._torrents:
-            # We divide by 2 because this is the second half of a 2x multiplier transfer
-            total_size = ui._torrents[torrent_hash].get("size", 0) / 2
-
     if dry_run:
         logging.info(f"[DRY RUN] Would execute rsync upload for: {file_name}")
         logging.debug(f"[DRY RUN] Command: {' '.join(safe_rsync_cmd)}")
         if total_size > 0:
-            ui.update_torrent_progress(torrent_hash, total_size, transfer_type='upload')
-        ui.complete_file_transfer(torrent_hash, file_name)
+            _update_transfer_progress(torrent_hash, 1.0, total_size, total_size)
+        log_transfer(torrent_hash, f"[DRY RUN] Completed rsync upload for {file_name}")
         return
 
     logging.info(f"Starting rsync upload from cache for '{file_name}'")
@@ -948,26 +953,26 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
                     if byte == b'\r' or byte == b'\n':
                         if line_buffer:
                             line = line_buffer.decode('utf-8', errors='replace').strip()
-                            ui.log(f"[DEBUG] Raw rsync line: {line}")
+                            log_transfer(torrent_hash, f"[DEBUG] Raw rsync line: {line}")
                             line_buffer = b"" # Reset buffer
 
                             match = progress_regex.match(line)
                             if match:
                                 human_readable_bytes_str = match.group(1)
                                 current_transferred_bytes = _parse_human_readable_bytes(human_readable_bytes_str)
-                                ui.log(f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
+                                log_transfer(torrent_hash, f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
 
                                 transferred_delta = current_transferred_bytes - last_transferred_bytes
                                 if transferred_delta > 0:
                                     elapsed_time = time.time() - last_update_time
                                     if elapsed_time > 0:
                                         speed = transferred_delta / elapsed_time
-                                        ui._update_transfer_speed(torrent_hash, 0, speed)
+                                        _update_transfer_speed(torrent_hash, 0, speed)
                                         last_update_time = time.time()
 
                                 last_transferred_bytes = current_transferred_bytes
                                 progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
-                                ui._update_transfer_progress(
+                                _update_transfer_progress(
                                     torrent_hash,
                                     progress,
                                     current_transferred_bytes,
@@ -986,11 +991,10 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
             if process.returncode == 0 or process.returncode == 24:
                 if total_size > 0 and last_transferred_bytes < total_size:
                     remaining = total_size - last_transferred_bytes
-                    ui.update_torrent_progress(torrent_hash, remaining, transfer_type='upload')
+                    _update_transfer_progress(torrent_hash, 1.0, total_size, total_size)
 
                 logging.info(f"Rsync upload from cache completed for '{file_name}'.")
-                ui.log(f"[green]Rsync upload complete: {file_name}[/green]")
-                ui.complete_file_transfer(torrent_hash, file_name)
+                log_transfer(torrent_hash, f"[green]Rsync upload complete: {file_name}[/green]")
                 return
             elif process.returncode == 30:
                 logging.warning(f"Rsync upload timed out for '{file_name}'. Retrying...")
@@ -998,8 +1002,7 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
             else:
                 logging.error(f"Rsync upload failed for '{file_name}' with non-retryable exit code {process.returncode}.\n"
                               f"Rsync stderr: {stderr_output}")
-                ui.log(f"[bold red]Rsync Upload FAILED for {file_name}[/bold red]")
-                ui.fail_file_transfer(torrent_hash, file_name)
+                log_transfer(torrent_hash, f"[bold red]Rsync Upload FAILED for {file_name}[/bold red]")
                 raise RemoteTransferError(f"Rsync upload failed (exit {process.returncode}): {stderr_output}")
 
         except Exception as e:
@@ -1249,8 +1252,11 @@ def transfer_content_rsync_upload(
     source_content_path: str,
     dest_content_path: str,
     torrent_hash: str,
-    ui: UIManager,
     file_tracker: FileTransferTracker,
+    total_size: int,
+    log_transfer: typing.Callable,
+    _update_transfer_progress: typing.Callable,
+    _update_transfer_speed: typing.Callable,
     dry_run: bool,
     is_folder: bool
 ) -> bool:
@@ -1271,31 +1277,39 @@ def transfer_content_rsync_upload(
         logging.info(f"Rsync-Upload: Downloading '{file_name}' to cache...")
         # We pass temp_dir as the local_path, so rsync downloads
         # the content *into* this directory.
+        # For rsync_upload, DL is the first half, UL is the second.
+        # So, the total_size for each part is half the total.
+        part_total_size = total_size / 2 if total_size else 0
+
         transfer_content_rsync(
-            source_config,
-            source_content_path,
-            local_cache_content_path,
-            torrent_hash,
-            ui,
-            rsync_options,
-            file_tracker,
-            dry_run
+            sftp_config=source_config,
+            remote_path=source_content_path,
+            local_path=local_cache_content_path,
+            torrent_hash=torrent_hash,
+            rsync_options=rsync_options,
+            file_tracker=file_tracker,
+            total_size=part_total_size,
+            log_transfer=log_transfer,
+            _update_transfer_progress=_update_transfer_progress,
+            _update_transfer_speed=_update_transfer_speed,
+            dry_run=dry_run
         )
         logging.info(f"Rsync-Upload: Download to cache complete for '{file_name}'.")
 
         # --- 2. Upload from Cache to Destination ---
         logging.info(f"Rsync-Upload: Uploading '{file_name}' from cache to destination...")
 
-        # We pass the path to the *content* in the cache
-        # and the *parent* directory on the destination.
         _transfer_content_rsync_upload_from_cache(
-            dest_config,
-            local_cache_content_path, # Upload the content
-            dest_content_path,
-            torrent_hash,
-            ui,
-            rsync_options,
-            dry_run
+            dest_config=dest_config,
+            local_path=local_cache_content_path,
+            remote_path=dest_content_path,
+            torrent_hash=torrent_hash,
+            rsync_options=rsync_options,
+            total_size=part_total_size,
+            log_transfer=log_transfer,
+            _update_transfer_progress=_update_transfer_progress,
+            _update_transfer_speed=_update_transfer_speed,
+            dry_run=dry_run
         )
         logging.info(f"Rsync-Upload: Upload from cache complete for '{file_name}'.")
 
