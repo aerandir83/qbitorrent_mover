@@ -906,7 +906,9 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
                 bufsize=1
             )
             last_total_transferred = 0
-            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
+            # More robust regex: matches leading digits/commas and then anything else.
+            # This avoids failing if rsync's progress2 output doesn't have trailing whitespace.
+            progress_regex = re.compile(r"^\s*([\d,]+).*$")
 
             if process.stdout:
                 for line in iter(process.stdout.readline, ''):
@@ -1042,7 +1044,9 @@ def transfer_content_rsync(
             )
 
             last_total_transferred = 0
-            progress_regex = re.compile(r"^\s*([\d,]+)\s+\d{1,3}%.*$")
+            # More robust regex: matches leading digits/commas and then anything else.
+            # This avoids failing if rsync's progress2 output doesn't have trailing whitespace.
+            progress_regex = re.compile(r"^\s*([\d,]+).*$")
 
             if process.stdout:
                 for line in iter(process.stdout.readline, ''):

@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.9.3**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.9.5**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
 
 ## Changelog
 
-### Version 2.9.1 (Latest)
+### Version 2.9.5 (Latest)
+* **fix(rsync):** Updated the `rsync` progress parsing regex to be more robust. The new regex (`^\s*([\d,]+).*$`) correctly captures the byte count even if the line from `rsync --info=progress2` does not contain trailing whitespace, resolving failures in DL speed calculation.
+
+### Version 2.9.1
 * **feat(recheck):** Implemented a new 3-stage recheck and delta-transfer workflow to significantly improve the recovery rate of partially failed transfers. This new process intelligently retries transfers, deletes only the corrupted files, and performs multiple rechecks to ensure data integrity, reducing the need for manual intervention.
 
 ### Version 2.7.6
