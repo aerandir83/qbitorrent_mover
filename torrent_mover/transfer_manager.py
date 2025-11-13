@@ -904,89 +904,48 @@ def _transfer_content_rsync_upload_from_cache(dest_config: configparser.SectionP
                 bufsize=1
             )
             # This regex is used to parse rsync's progress output
-            progress_regex = re.compile(r"^\s*([\d,]+).*$") # Robust regex to find bytes
+            progress_regex = re.compile(rb"^\s*([\d,]+).*$") # Robust regex to find bytes
             last_transferred_bytes = 0
             last_update_time = time.time()
             line_buffer = b"" # Use a byte string for the buffer
 
             if process.stdout:
-                self.log_manager.log_transfer(torrent_hash, "[DEBUG] Starting stdout byte-read loop (upload)...")
                 while True:
                     byte = process.stdout.read(1)
                     if not byte:
-                        self.log_manager.log_transfer(torrent_hash, f"[DEBUG] End of stdout stream (upload). Final buffer: {line_buffer!r}")
                         # End of stream, process any remaining buffer
                         if line_buffer:
                             try:
                                 line = line_buffer.decode('utf-8', errors='replace').strip()
-                                self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Final line decoded (upload): {line!r}")
-                                match = progress_regex.match(line)
+                                match = progress_regex.match(line_buffer)
                                 if match:
-                                    current_transferred_bytes = int(match.group(1).replace(',', ''))
+                                    current_transferred_bytes = int(match.group(1).replace(b',', b''))
+                                    advance = current_transferred_bytes - last_transferred_bytes
+                                    if advance > 0:
+                                        ui.update_torrent_progress(torrent_hash, advance, transfer_type='upload')
                                     last_transferred_bytes = current_transferred_bytes
-                                    progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
-                                    self._update_transfer_progress(
-                                        torrent_hash, progress, current_transferred_bytes, total_size
-                                    )
-                                    self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Final match (upload). Bytes: {current_transferred_bytes}")
                             except Exception as e:
-                                self.log_manager.log_transfer(torrent_hash, f"Error processing final rsync buffer (upload): {e}")
+                                logging.error(f"Error processing final rsync buffer (upload): {e}")
                         break # Exit loop
 
                     if byte == b'\r' or byte == b'\n':
                         if line_buffer:
-                            line = ""
                             try:
                                 # Decode the line, strip it, and process it
                                 line = line_buffer.decode('utf-8', errors='replace').strip()
-                                if not line:
-                                    # Don't process empty lines
-                                    line_buffer = b""
-                                    continue
-
-                                self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Raw line decoded (upload): {line!r}")
-                                match = progress_regex.match(line)
+                                match = progress_regex.match(line_buffer)
 
                                 if match:
-                                    current_transferred_bytes = int(match.group(1).replace(',', ''))
-                                    self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Matched bytes (upload): {current_transferred_bytes}")
-
-                                    # Calculate speed based on the delta
-                                    transferred_delta = current_transferred_bytes - last_transferred_bytes
-                                    self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Delta (upload): {transferred_delta}")
-
-                                    if transferred_delta > 0:
-                                        elapsed_time = time.time() - last_update_time
-                                        self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Elapsed (upload): {elapsed_time:.4f}s")
-                                        if elapsed_time > 0:
-                                            speed = transferred_delta / elapsed_time
-                                            self.log_manager.log_transfer(torrent_hash, f"[DEBUG] Speed (upload): {speed / (1024**2):.2f} MB/s")
-                                            # For rsync_upload, this is UL speed
-                                            self._update_transfer_speed(torrent_hash, 0, speed)
-                                            last_update_time = time.time()
-
+                                    current_transferred_bytes = int(match.group(1).replace(b',', b''))
+                                    advance = current_transferred_bytes - last_transferred_bytes
+                                    if advance > 0:
+                                        ui.update_torrent_progress(torrent_hash, advance, transfer_type='upload')
                                     last_transferred_bytes = current_transferred_bytes
-
-                                    progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
-                                    self._update_transfer_progress(
-                                        torrent_hash,
-                                        progress,
-                                        current_transferred_bytes,
-                                        total_size
-                                    )
-                                else:
-                                    self.log_manager.log_transfer(torrent_hash, f"[DEBUG] No match for line (upload): {line!r}")
-
-                            except ValueError:
-                                self.log_manager.log_transfer(torrent_hash, f"Could not parse bytes from line (upload): {line!r}")
                             except Exception as e:
-                                self.log_manager.log_transfer(torrent_hash, f"Error processing rsync line (upload): {e} | Line was: {line!r}")
+                                logging.error(f"Error processing rsync line (upload): {e} | Line was: {line_buffer!r}")
                         line_buffer = b"" # Reset buffer
                     else:
                         line_buffer += byte
-
-                self.log_manager.log_transfer(torrent_hash, "[DEBUG] Exited stdout loop (upload).")
-                process.stdout.close()
 
             process.wait()
             stderr_output = process.stderr.read() if process.stderr else ""
@@ -1105,88 +1064,48 @@ def transfer_content_rsync(
             )
 
             # This regex is used to parse rsync's progress output
-            progress_regex = re.compile(r"^\s*([\d,]+).*$") # Robust regex to find bytes
+            progress_regex = re.compile(rb"^\s*([\d,]+).*$") # Robust regex to find bytes
             last_transferred_bytes = 0
             last_update_time = time.time()
             line_buffer = b"" # Use a byte string for the buffer
 
             if process.stdout:
-                log_manager.log_transfer(torrent_hash, "[DEBUG] Starting stdout byte-read loop...")
                 while True:
                     byte = process.stdout.read(1)
                     if not byte:
-                        log_manager.log_transfer(torrent_hash, f"[DEBUG] End of stdout stream. Final buffer: {line_buffer!r}")
                         # End of stream, process any remaining buffer
                         if line_buffer:
                             try:
                                 line = line_buffer.decode('utf-8', errors='replace').strip()
-                                log_manager.log_transfer(torrent_hash, f"[DEBUG] Final line decoded: {line!r}")
-                                match = progress_regex.match(line)
+                                match = progress_regex.match(line_buffer)
                                 if match:
-                                    current_transferred_bytes = int(match.group(1).replace(',', ''))
+                                    current_transferred_bytes = int(match.group(1).replace(b',', b''))
+                                    advance = current_transferred_bytes - last_transferred_bytes
+                                    if advance > 0:
+                                        ui.update_torrent_progress(torrent_hash, advance, transfer_type='download')
                                     last_transferred_bytes = current_transferred_bytes
-                                    progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
-                                    _update_transfer_progress(
-                                        torrent_hash, progress, current_transferred_bytes, total_size
-                                    )
-                                    log_manager.log_transfer(torrent_hash, f"[DEBUG] Final match. Bytes: {current_transferred_bytes}")
                             except Exception as e:
-                                log_manager.log_transfer(torrent_hash, f"Error processing final rsync buffer: {e}")
+                                logging.error(f"Error processing final rsync buffer: {e}")
                         break # Exit loop
 
                     if byte == b'\r' or byte == b'\n':
                         if line_buffer:
-                            line = ""
                             try:
                                 # Decode the line, strip it, and process it
                                 line = line_buffer.decode('utf-8', errors='replace').strip()
-                                if not line:
-                                    # Don't process empty lines
-                                    line_buffer = b""
-                                    continue
-
-                                log_manager.log_transfer(torrent_hash, f"[DEBUG] Raw line decoded: {line!r}")
-                                match = progress_regex.match(line)
+                                match = progress_regex.match(line_buffer)
 
                                 if match:
-                                    current_transferred_bytes = int(match.group(1).replace(',', ''))
-                                    log_manager.log_transfer(torrent_hash, f"[DEBUG] Matched bytes: {current_transferred_bytes}")
-
-                                    # Calculate speed based on the delta
-                                    transferred_delta = current_transferred_bytes - last_transferred_bytes
-                                    log_manager.log_transfer(torrent_hash, f"[DEBUG] Delta: {transferred_delta}")
-
-                                    if transferred_delta > 0:
-                                        elapsed_time = time.time() - last_update_time
-                                        log_manager.log_transfer(torrent_hash, f"[DEBUG] Elapsed: {elapsed_time:.4f}s")
-                                        if elapsed_time > 0:
-                                            speed = transferred_delta / elapsed_time
-                                            log_manager.log_transfer(torrent_hash, f"[DEBUG] Speed: {speed / (1024**2):.2f} MB/s")
-                                            _update_transfer_speed(torrent_hash, speed, 0)  # 0 for UL speed in rsync
-                                            last_update_time = time.time()
-
+                                    current_transferred_bytes = int(match.group(1).replace(b',', b''))
+                                    advance = current_transferred_bytes - last_transferred_bytes
+                                    if advance > 0:
+                                        ui.update_torrent_progress(torrent_hash, advance, transfer_type='download')
                                     last_transferred_bytes = current_transferred_bytes
-
-                                    progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
-                                    _update_transfer_progress(
-                                        torrent_hash,
-                                        progress,
-                                        current_transferred_bytes,
-                                        total_size
-                                    )
-                                else:
-                                    log_manager.log_transfer(torrent_hash, f"[DEBUG] No match for line: {line!r}")
-
-                            except ValueError:
-                                log_manager.log_transfer(torrent_hash, f"Could not parse bytes from line: {line!r}")
                             except Exception as e:
-                                log_manager.log_transfer(torrent_hash, f"Error processing rsync line: {e} | Line was: {line!r}")
+                                logging.error(f"Error processing rsync line: {e} | Line was: {line_buffer!r}")
                         line_buffer = b"" # Reset buffer
                     else:
                         line_buffer += byte
-
-                log_manager.log_transfer(torrent_hash, "[DEBUG] Exited stdout loop.")
-                process.stdout.close()
 
             process.wait()
             stderr_output = process.stderr.read() if process.stderr else ""
