@@ -1074,7 +1074,7 @@ class TorrentMover:
                 checkpoint=self.checkpoint,
                 args=self.args,
                 # --- Pass the new callbacks from this class instance ---
-                log_transfer=self.ui.log, # Use the UI log method directly
+                log_transfer=lambda _hash, msg: self.ui.log(msg), # Wrap in lambda to match rsync's 2-arg call
                 _update_transfer_progress=self._update_transfer_progress,
                 _update_transfer_speed=self._update_transfer_speed
             )
