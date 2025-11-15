@@ -221,6 +221,8 @@ def _pre_transfer_setup(
 
     return status_code, status_message, source_content_path, dest_content_path, destination_save_path
 
+from .transfer_strategies import get_transfer_strategy, TransferFile
+
 def _post_transfer_actions(
     torrent: qbittorrentapi.TorrentDictionary,
     source_qbit: qbittorrentapi.Client,
@@ -236,7 +238,11 @@ def _post_transfer_actions(
     file_tracker: FileTransferTracker,
     transfer_mode: str,
     all_files: List[TransferFile],
-    ui: BaseUIManager
+    ui: BaseUIManager,
+    # --- Add these new arguments ---
+    log_transfer: Callable,
+    _update_transfer_progress: Callable,
+    _update_transfer_speed: Callable
 ) -> Tuple[bool, str]:
     """Manages tasks after the file transfer is complete.
 
@@ -357,180 +363,87 @@ def _post_transfer_actions(
         logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
 
     # --- 4. Wait for Recheck and Handle Failure ---
-    recheck_ok = True
+    # --- 4. Wait for Recheck and Handle Failure ---
+    recheck_status = "SUCCESS"  # Default for dry run
     if not dry_run:
         logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
-
-        recheck_no_progress_timeout = config['SETTINGS'].getint('recheck_no_progress_timeout', 300)
+        no_progress_timeout = config.getint('SETTINGS', 'recheck_no_progress_timeout', fallback=300)
         recheck_status = wait_for_recheck_completion(
-            client=destination_qbit,
-            torrent_hash=torrent.hash,
-            ui=ui,
-            no_progress_timeout=recheck_no_progress_timeout,
+            destination_qbit,
+            torrent.hash,
+            ui,
+            no_progress_timeout=no_progress_timeout,
             dry_run=dry_run
         )
-        recheck_ok = (recheck_status == "SUCCESS")
 
-        if not recheck_ok:
-            # --- STAGE 1: DELTA TRANSFER ---
-            logging.warning(f"Recheck 1 FAILED for {torrent.name}. Attempting Delta 1...")
+    # (This logic goes *after* wait_for_recheck_completion and *before* the success block)
+    if recheck_status in ("FAILED_STATE", "FAILED_TIMEOUT"):
+        logging.error(f"Recheck FAILED for {name} with status: {recheck_status}.")
+        ui.log(f"[bold red]Recheck FAILED for {name}: {recheck_status}[/bold red]")
 
-            delta_files_1: List[TransferFile] = []
-            if 'rsync' in transfer_mode:
-                logging.info("Rsync mode: Delta 1 will be a full rsync.")
-                delta_files_1 = all_files
-            else:
-                logging.info("SFTP mode: Delta 1 will be based on incomplete files.")
-                incomplete_files_1 = get_incomplete_files(destination_qbit, torrent.hash)
-                if not incomplete_files_1:
-                    logging.error("Recheck 1 failed, but no incomplete files found. Deleting content.")
-                    try:
-                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                    except Exception as e:
-                        logging.error(f"Failed to delete corrupt destination content: {e}")
-                    return False, "Recheck 1 failed, no incomplete files found."
+        # Directive 3: Automated Error Correction
+        strategy = get_transfer_strategy(transfer_mode, config, ssh_connection_pools)
 
-                norm_incomplete_1 = {p.replace('\\', '/') for p in incomplete_files_1}
-                delta_files_1 = [
-                    f for f in all_files
-                    if Path(os.path.relpath(f.dest_path, dest_content_path)).as_posix() in norm_incomplete_1
-                ]
-                if not delta_files_1:
-                    logging.error(f"Recheck 1 file list mismatch. Deleting content.")
-                    try:
-                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                    except Exception as e:
-                        logging.error(f"Failed to delete corrupt destination content: {e}")
-                    return False, "Recheck 1 failed, file list mismatch."
+        if not dry_run and strategy.supports_delta_correction():
+            logging.warning(f"Strategy '{transfer_mode}' supports delta-correction. Attempting automated repair...")
+            ui.log(f"[yellow]Attempting automated repair for {name}...[/yellow]")
 
-            logging.info(f"Starting Delta 1 for {len(delta_files_1)} item(s)...")
-            delta_size_1 = sum(f.size for f in delta_files_1)
-
-            # This is a placeholder call, it will be fixed by the refactor
-            # We need to pass the *real* callbacks here.
-            # For now, we pass `ui` which is incorrect but maintains the old (broken) structure
-            # to be fixed by the class implementation.
-            delta_1_ok = _execute_transfer_placeholder(
-                transfer_mode, delta_files_1, torrent, delta_size_1, config,
+            # Re-run the transfer to repair
+            repair_success = _execute_transfer(
+                transfer_mode, all_files, torrent, sum(f.size for f in all_files), config,
                 ui, file_tracker, ssh_connection_pools, dry_run,
-                ui.log, # Placeholder
-                ui.update_torrent_progress, # Placeholder
-                lambda hash, dl, ul: None # Placeholder
+                log_transfer, _update_transfer_progress, _update_transfer_speed
             )
 
-            if not delta_1_ok:
-                logging.error(f"Delta 1 FAILED for {torrent.name}. Leaving content for review.")
-                return False, "Delta 1 transfer failed."
-
-            # --- STAGE 2: RECHECK 2 ---
-            logging.info(f"Delta 1 complete. Triggering Recheck 2 for {torrent.name}...")
-            try:
-                destination_qbit.torrents_recheck(torrent_hashes=hash_)
-            except qbittorrentapi.exceptions.NotFound404Error:
-                return False, "Torrent disappeared during Recheck 2."
-
-            recheck_status_2 = wait_for_recheck_completion(
-                client=destination_qbit,
-                torrent_hash=torrent.hash,
-                ui=ui,
-                no_progress_timeout=recheck_no_progress_timeout,
-                dry_run=dry_run
-            )
-            second_recheck_ok = (recheck_status_2 == "SUCCESS")
-
-            if second_recheck_ok:
-                logging.info(f"Recheck 2 successful for {torrent.name}.")
-                recheck_ok = True  # Set to True to fall through to success block
-            else:
-                # --- STAGE 3: PARTIAL DELETE + DELTA 2 ---
-                logging.warning(f"Recheck 2 FAILED for {torrent.name}. Attempting Delta 2 (partial delete)...")
-                incomplete_files_2 = get_incomplete_files(destination_qbit, torrent.hash)
-                if not incomplete_files_2:
-                    logging.error("Recheck 2 failed, but no incomplete files found. Deleting all content.")
-                    try:
-                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                    except Exception as e:
-                        logging.error(f"Failed to delete corrupt destination content: {e}")
-                    return False, "Recheck 2 failed, no incomplete files."
-
-                logging.info(f"Deleting {len(incomplete_files_2)} specific failed files...")
+            if not repair_success:
+                logging.error(f"Automated repair (delta transfer) FAILED for {name}.")
+                ui.log(f"[bold red]Automated repair FAILED for {name}.[/bold red]")
+                # Pause torrent, do not delete, return failure
                 try:
-                    delete_destination_files(dest_content_path, incomplete_files_2, transfer_mode, ssh_connection_pools)
+                    destination_qbit.torrents_pause(torrent_hashes=hash_)
                 except Exception as e:
-                    logging.error(f"Failed to delete specific files: {e}. Deleting all content.")
-                    try:
-                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                    except Exception as e_del:
-                        logging.error(f"Failed to delete corrupt destination content: {e_del}")
-                    return False, f"Partial delete failed: {e}"
+                    logging.warning(f"Failed to pause torrent {name} after repair failure: {e}")
+                return False, "Automated repair transfer failed."
 
-                delta_files_2: List[TransferFile] = []
-                if 'rsync' in transfer_mode:
-                    logging.info("Rsync mode: Delta 2 will be a full rsync.")
-                    delta_files_2 = all_files
-                else:
-                    logging.info("SFTP mode: Delta 2 will be based on new incomplete file list.")
-                    norm_incomplete_2 = {p.replace('\\', '/') for p in incomplete_files_2}
-                    delta_files_2 = [
-                        f for f in all_files
-                        if Path(os.path.relpath(f.dest_path, dest_content_path)).as_posix() in norm_incomplete_2
-                    ]
-                    if not delta_files_2:
-                        logging.error("Recheck 2 file list mismatch. Deleting content.")
-                        try:
-                            delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                        except Exception as e:
-                            logging.error(f"Failed to delete corrupt destination content: {e}")
-                        return False, "Recheck 2 failed, file list mismatch."
+            # Run re-check a final time
+            logging.info(f"Automated repair complete. Triggering final re-check for {name}...")
+            ui.log(f"Repair complete. Final re-check for {name}...")
+            final_recheck_status = wait_for_recheck_completion(
+                destination_qbit, torrent.hash, ui,
+                no_progress_timeout=no_progress_timeout, dry_run=dry_run
+            )
 
-                logging.info(f"Starting Delta 2 for {len(delta_files_2)} item(s)...")
-                delta_size_2 = sum(f.size for f in delta_files_2)
-
-                delta_2_ok = _execute_transfer_placeholder(
-                    transfer_mode, delta_files_2, torrent, delta_size_2, config,
-                    ui, file_tracker, ssh_connection_pools, dry_run,
-                    ui.log, # Placeholder
-                    ui.update_torrent_progress, # Placeholder
-                    lambda hash, dl, ul: None # Placeholder
-                )
-
-                if not delta_2_ok:
-                    logging.error(f"Delta 2 FAILED for {torrent.name}. Deleting content.")
-                    try:
-                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                    except Exception as e:
-                        logging.error(f"Failed to delete corrupt destination content: {e}")
-                    return False, "Delta 2 transfer failed."
-
-                # --- STAGE 4: RECHECK 3 (FINAL) ---
-                logging.info(f"Delta 2 complete. Triggering Recheck 3 (final) for {torrent.name}...")
+            if final_recheck_status == "SUCCESS":
+                logging.info(f"Final re-check successful for {name} after repair.")
+                recheck_status = "SUCCESS" # Fall through to the success block
+            else:
+                logging.error(f"Final re-check FAILED for {name} after repair (Status: {final_recheck_status}).")
+                ui.log(f"[bold red]Final re-check FAILED for {name} after repair.[/bold red]")
+                # Pause torrent, do not delete, return failure
                 try:
-                    destination_qbit.torrents_recheck(torrent_hashes=hash_)
-                except qbittorrentapi.exceptions.NotFound404Error:
-                    return False, "Torrent disappeared during Recheck 3."
+                    destination_qbit.torrents_pause(torrent_hashes=hash_)
+                except Exception as e:
+                    logging.warning(f"Failed to pause torrent {name} after final recheck failure: {e}")
+                return False, "Automated correction failed final re-check."
 
-                recheck_status_3 = wait_for_recheck_completion(
-                    client=destination_qbit,
-                    torrent_hash=torrent.hash,
-                    ui=ui,
-                    no_progress_timeout=recheck_no_progress_timeout,
-                    dry_run=dry_run
-                )
-                third_recheck_ok = (recheck_status_3 == "SUCCESS")
+        elif not strategy.supports_delta_correction():
+            logging.warning(f"Recheck failed and strategy '{transfer_mode}' does not support delta-correction.")
+            ui.log(f"[yellow]Recheck failed for {name}. No auto-repair possible.[/yellow]")
+            # Pause torrent, do not delete, return failure
+            if not dry_run:
+                try:
+                    destination_qbit.torrents_pause(torrent_hashes=hash_)
+                except Exception as e:
+                    logging.warning(f"Failed to pause torrent {name} after recheck failure: {e}")
+            return False, "Recheck failed, strategy does not support correction."
 
-                if not third_recheck_ok:
-                    logging.error(f"Recheck 3 FAILED for {torrent.name}. Deleting content.")
-                    try:
-                        delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                    except Exception as e:
-                        logging.error(f"Failed to delete corrupt destination content after final failure: {e}")
-                    return False, "Recheck 3 (final) failed."
-                else:
-                    logging.info(f"Recheck 3 successful for {torrent.name}.")
-                    recheck_ok = True # Set to True to fall through to success block
+        else: # Is dry_run
+            logging.info(f"[DRY RUN] Would attempt repair or pause torrent {name}.")
+            # We return False here to stop the process, as recheck "failed" in dry run
+            return False, "Dry run: Recheck failed."
 
     # --- 5. Post-Recheck Actions (Start, Categorize, Delete Source) ---
-    if recheck_ok:
+    if recheck_status == "SUCCESS":
         logging.info("Destination re-check successful.")
         try:
             # 1. Apply Category FIRST (before starting)
@@ -833,7 +746,9 @@ def transfer_torrent(
             file_tracker,
             transfer_mode,
             files,
-            ui
+            ui,
+            # --- Add these new arguments ---
+            log_transfer, _update_transfer_progress, _update_transfer_speed
         )
 
         if post_transfer_success:
