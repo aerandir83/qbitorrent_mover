@@ -33,9 +33,9 @@ from .core_logic.ssh_manager import (
 from .clients.torrent_client import TorrentClientInterface
 from .clients.qbittorrent_manager import QBittorrentClient
 from .core_logic.transfer_manager import (
-    FileTransferTracker, TransferCheckpoint, Timeouts, execute_transfer
+    FileTransferTracker, TransferCheckpoint, execute_transfer
 )
-from .utils import RemoteTransferError
+from .utils import RemoteTransferError, Timeouts
 from .core_logic.system_manager import (
     LockFile, setup_logging, destination_health_check, change_ownership,
     test_path_permissions, cleanup_orphaned_cache,
