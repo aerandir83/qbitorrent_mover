@@ -1,16 +1,20 @@
 from __future__ import annotations
+
 import abc
+import configparser
 import dataclasses
 import logging
 import os
 import shlex
-
-from typing import cast, Dict, List, TYPE_CHECKING, Tuple
+import argparse
+from typing import cast, Dict, List, Optional, TYPE_CHECKING, Tuple
 
 
 if TYPE_CHECKING:
+    import qbittorrentapi
     from .ssh_manager import SSHConnectionPool
-    from .torrent_mover import Torrent
+    from .ui import BaseUIManager
+    from .transfer_manager import FileTransferTracker
 
 logger = logging.getLogger(__name__)
 
@@ -27,18 +31,63 @@ class TransferFile:
 class TransferStrategy(abc.ABC):
     """Abstract base class for different transfer strategies."""
 
-    def __init__(self, config: Dict, ssh_connection_pools: Dict[str, SSHConnectionPool]):
+    def __init__(self, config: configparser.ConfigParser, ssh_connection_pools: Dict[str, SSHConnectionPool]):
         self.config = config
         self.ssh_connection_pools = ssh_connection_pools
+        self.transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
     @abc.abstractmethod
-    def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
+    def pre_transfer_check(
+        self,
+        torrent: "qbittorrentapi.TorrentDictionary",
+        total_size: int,
+        args: argparse.Namespace,
+    ) -> Tuple[str, str, Optional[str], Optional[str], Optional[str]]:
+        """
+        Performs setup tasks before a torrent transfer begins.
+        Should return a tuple of:
+        - status_code (str)
+        - message (str)
+        - source_content_path (Optional[str])
+        - dest_content_path (Optional[str])
+        - destination_save_path (Optional[str])
+        """
+        pass
+
+    @abc.abstractmethod
+    def prepare_files(self, torrent: "qbittorrentapi.TorrentDictionary", dest_path: str) -> List[TransferFile]:
         """Prepare a list of files to be transferred for a given torrent."""
         pass
 
     @abc.abstractmethod
-    def supports_parallel(self) -> bool:
-        """Returns True if the strategy supports parallel file transfers."""
+    def execute_transfer(
+        self,
+        files: List[TransferFile],
+        torrent: "qbittorrentapi.TorrentDictionary",
+        ui: "BaseUIManager",
+        file_tracker: "FileTransferTracker",
+        dry_run: bool,
+    ) -> bool:
+        """Executes the file transfer for a given list of files."""
+        pass
+
+    @abc.abstractmethod
+    def post_transfer_actions(
+        self,
+        torrent: "qbittorrentapi.TorrentDictionary",
+        source_qbit: "qbittorrentapi.Client",
+        destination_qbit: Optional["qbittorrentapi.Client"],
+        tracker_rules: Dict[str, str],
+        dest_content_path: str,
+        destination_save_path: str,
+        transfer_executed: bool,
+        dry_run: bool,
+        test_run: bool,
+        file_tracker: "FileTransferTracker",
+        all_files: List[TransferFile],
+        ui: "BaseUIManager",
+    ) -> Tuple[bool, str]:
+        """Manages tasks after the file transfer is complete."""
         pass
 
 
