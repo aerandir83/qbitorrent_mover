@@ -132,3 +132,6 @@ sftp_chunk_size_kb = 64
 # If you see 'TimeoutError: Timeout waiting for SSH connection' in your logs
 # during large parallel transfers, increase this value.
 pool_wait_timeout = 60
+# (Optional) Time in seconds to wait for re-check progress. If no progress is seen
+# for this long, the re-check is considered failed. Default: 300 (5 minutes).
+recheck_no_progress_timeout = 300

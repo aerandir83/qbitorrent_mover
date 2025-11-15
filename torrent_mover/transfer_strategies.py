@@ -41,6 +41,11 @@ class TransferStrategy(abc.ABC):
         """Returns True if the strategy supports parallel file transfers."""
         pass
 
+    @abc.abstractmethod
+    def supports_delta_correction(self) -> bool:
+        """Returns True if the strategy supports delta-based correction (e.g., rsync)."""
+        pass
+
 
 class SFTPStrategy(TransferStrategy):
     """Strategy for handling file transfers using SFTP."""
@@ -52,6 +57,9 @@ class SFTPStrategy(TransferStrategy):
 
     def supports_parallel(self) -> bool:
         return True
+
+    def supports_delta_correction(self) -> bool:
+        return False
 
     def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
         """
@@ -99,6 +107,9 @@ class RsyncStrategy(TransferStrategy):
     def supports_parallel(self) -> bool:
         return False
 
+    def supports_delta_correction(self) -> bool:
+        return True
+
     def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
         """
         Prepares a single TransferFile representing the entire torrent for rsync.
@@ -128,6 +139,9 @@ class SFTPUploadStrategy(TransferStrategy):
 
     def supports_parallel(self) -> bool:
         return True
+
+    def supports_delta_correction(self) -> bool:
+        return False
 
     def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
         from .ssh_manager import _get_all_files_recursive
@@ -170,6 +184,9 @@ class RsyncUploadStrategy(TransferStrategy):
 
     def supports_parallel(self) -> bool:
         return False
+
+    def supports_delta_correction(self) -> bool:
+        return True
 
     def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
         from .ssh_manager import batch_get_remote_sizes
