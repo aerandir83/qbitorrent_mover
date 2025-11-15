@@ -361,17 +361,15 @@ def _post_transfer_actions(
     if not dry_run:
         logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
 
-        # For rsync mode, allow near-complete (99.9%) as success if configured
-        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-        rsync_near_complete = config.getboolean('SETTINGS', 'allow_near_complete_rsync', fallback=True)
-        allow_near_complete = ('rsync' in transfer_mode and rsync_near_complete)
-
-        recheck_ok = wait_for_recheck_completion(
-            destination_qbit,
-            torrent.hash,
-            ui, # <-- ADD THIS
-            allow_near_complete=allow_near_complete
+        recheck_no_progress_timeout = config['SETTINGS'].getint('recheck_no_progress_timeout', 300)
+        recheck_status = wait_for_recheck_completion(
+            client=destination_qbit,
+            torrent_hash=torrent.hash,
+            ui=ui,
+            no_progress_timeout=recheck_no_progress_timeout,
+            dry_run=dry_run
         )
+        recheck_ok = (recheck_status == "SUCCESS")
 
         if not recheck_ok:
             # --- STAGE 1: DELTA TRANSFER ---
@@ -431,7 +429,14 @@ def _post_transfer_actions(
             except qbittorrentapi.exceptions.NotFound404Error:
                 return False, "Torrent disappeared during Recheck 2."
 
-            second_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, ui, allow_near_complete=allow_near_complete)
+            recheck_status_2 = wait_for_recheck_completion(
+                client=destination_qbit,
+                torrent_hash=torrent.hash,
+                ui=ui,
+                no_progress_timeout=recheck_no_progress_timeout,
+                dry_run=dry_run
+            )
+            second_recheck_ok = (recheck_status_2 == "SUCCESS")
 
             if second_recheck_ok:
                 logging.info(f"Recheck 2 successful for {torrent.name}.")
@@ -504,7 +509,14 @@ def _post_transfer_actions(
                 except qbittorrentapi.exceptions.NotFound404Error:
                     return False, "Torrent disappeared during Recheck 3."
 
-                third_recheck_ok = wait_for_recheck_completion(destination_qbit, torrent.hash, ui, allow_near_complete=allow_near_complete)
+                recheck_status_3 = wait_for_recheck_completion(
+                    client=destination_qbit,
+                    torrent_hash=torrent.hash,
+                    ui=ui,
+                    no_progress_timeout=recheck_no_progress_timeout,
+                    dry_run=dry_run
+                )
+                third_recheck_ok = (recheck_status_3 == "SUCCESS")
 
                 if not third_recheck_ok:
                     logging.error(f"Recheck 3 FAILED for {torrent.name}. Deleting content.")

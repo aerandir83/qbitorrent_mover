@@ -101,9 +101,6 @@ transfer_mode = rsync
 # -c: use checksums to verify files (more reliable, slightly slower)
 # --inplace: update files in-place (faster, but risky if interrupted)
 rsync_options = -ahHSPc --partial --inplace
-# (Optional) For rsync transfers, allows a recheck to pass at 99.9%+ completion.
-# This is useful for minor metadata differences that rsync might not sync.
-allow_near_complete_rsync = False
 # For 'sftp' mode, and for 'sftp_upload' with local caching, this is the max number of concurrent downloads.
 max_concurrent_downloads = 4
 # For 'sftp_upload' mode, this is the max number of concurrent uploads.
