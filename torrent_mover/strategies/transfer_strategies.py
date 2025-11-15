@@ -9,8 +9,8 @@ from typing import cast, Dict, List, TYPE_CHECKING, Tuple
 
 
 if TYPE_CHECKING:
-    from .ssh_manager import SSHConnectionPool
-    from .torrent_mover import Torrent
+    from ..core_logic.ssh_manager import SSHConnectionPool
+    from ..torrent_mover import Torrent
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class SFTPStrategy(TransferStrategy):
         Recursively lists all files from the source SFTP server and prepares them for transfer.
         Handles both single-file and multi-file (directory) torrents.
         """
-        from .ssh_manager import _get_all_files_recursive
+        from ..core_logic.ssh_manager import _get_all_files_recursive
         source_path = torrent.content_path.rstrip('/\\')
         file_list_tuples: List[Tuple[str, str, int]] = []
 
@@ -114,7 +114,7 @@ class RsyncStrategy(TransferStrategy):
         """
         Prepares a single TransferFile representing the entire torrent for rsync.
         """
-        from .ssh_manager import batch_get_remote_sizes
+        from ..core_logic.ssh_manager import batch_get_remote_sizes
         source_path = torrent.content_path.rstrip('/\\')
         with self.pool.get_connection() as (sftp, ssh):
             # batch_get_remote_sizes returns a dict, we need the value
@@ -144,7 +144,7 @@ class SFTPUploadStrategy(TransferStrategy):
         return False
 
     def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
-        from .ssh_manager import _get_all_files_recursive
+        from ..core_logic.ssh_manager import _get_all_files_recursive
         source_path = torrent.content_path.rstrip('/\\')
         file_list_tuples: List[Tuple[str, str, int]] = []
 
@@ -189,7 +189,7 @@ class RsyncUploadStrategy(TransferStrategy):
         return True
 
     def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
-        from .ssh_manager import batch_get_remote_sizes
+        from ..core_logic.ssh_manager import batch_get_remote_sizes
         source_path = torrent.content_path.rstrip('/\\')
         with self.pool.get_connection() as (sftp, ssh):
             sizes = batch_get_remote_sizes(ssh, [source_path])

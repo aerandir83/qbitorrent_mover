@@ -6,7 +6,7 @@ from typing import List, Optional
 
 import qbittorrentapi
 
-from .utils import retry
+from ..utils import retry
 
 # --- Constants ---
 # These are moved from torrent_mover.py to support the functions in this module.
