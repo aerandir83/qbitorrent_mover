@@ -25,9 +25,8 @@ if typing.TYPE_CHECKING:
 
 # New imports moved for strategies
 from ..core_logic.resilience import ResilientTransferQueue
-from ..utils import RemoteTransferError, retry
+from ..utils import RemoteTransferError, retry, RateLimitedFile, Timeouts, _parse_human_readable_bytes, _create_safe_command_for_logging
 from ..core_logic.ssh_manager import sftp_mkdir_p, _get_ssh_command, is_remote_dir
-from ..core_logic.transfer_manager import RateLimitedFile, Timeouts, _parse_human_readable_bytes, _create_safe_command_for_logging
 
 logger = logging.getLogger(__name__)
 
