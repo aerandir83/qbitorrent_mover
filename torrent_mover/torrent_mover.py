@@ -28,12 +28,13 @@ from .config_manager import update_config, load_config, ConfigValidator
 from .core_logic.ssh_manager import (
     SSHConnectionPool, check_sshpass_installed,
     batch_get_remote_sizes,
-    is_remote_dir
+    is_remote_dir,
+    SSHConnectionPools
 )
 from .clients.torrent_client import TorrentClientInterface
 from .clients.qbittorrent_manager import QBittorrentClient
 from .core_logic.transfer_manager import (
-    FileTransferTracker, TransferCheckpoint, Timeouts
+    FileTransferTracker, TransferCheckpoint, Timeouts, execute_transfer
 )
 from .utils import RemoteTransferError
 from .core_logic.system_manager import (
@@ -44,7 +45,8 @@ from .core_logic.system_manager import (
 from .core_logic.tracker_manager import (
     categorize_torrents,
     load_tracker_rules, save_tracker_rules, set_category_based_on_tracker,
-    run_interactive_categorization, display_tracker_rules
+    run_interactive_categorization, display_tracker_rules,
+    TrackerManager
 )
 from .strategies.transfer_strategies import get_transfer_strategy, TransferFile
 from .ui import BaseUIManager, SimpleUIManager, UIManagerV2
@@ -114,193 +116,161 @@ def _pre_transfer_setup(
             return "exists_different_size", "Destination content exists but size mismatches.", source_content_path, dest_content_path, destination_save_path
     return "not_exists", "Destination path is clear.", source_content_path, dest_content_path, destination_save_path
 
-def _post_transfer_actions(
-    torrent: qbittorrentapi.TorrentDictionary,
-    source_qbit: TorrentClientInterface,
-    destination_qbit: Optional[TorrentClientInterface],
-    config: configparser.ConfigParser,
-    tracker_rules: Dict[str, str],
-    ssh_connection_pools: Dict[str, SSHConnectionPool],
-    dest_content_path: str,
-    destination_save_path: str,
-    transfer_executed: bool,
-    dry_run: bool,
-    test_run: bool,
-    file_tracker: FileTransferTracker,
-    all_files: List[TransferFile],
-    ui: BaseUIManager
-) -> Tuple[bool, str]:
-    name, hash_ = torrent.name, torrent.hash
-    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-
-    if transfer_executed and not dry_run:
-        chown_user = config['SETTINGS'].get('chown_user', '').strip()
-        chown_group = config['SETTINGS'].get('chown_group', '').strip()
-        if chown_user or chown_group:
-            remote_config = config['DESTINATION_SERVER'] if 'DESTINATION_SERVER' in config else None
-            path_to_chown = dest_content_path
-            if remote_config:
-                 content_name = os.path.basename(dest_content_path)
-                 remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or config['DESTINATION_PATHS']['destination_path']
-                 path_to_chown = os.path.join(remote_dest_base_path, content_name)
-            change_ownership(path_to_chown, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
-
-    if not destination_qbit:
-        return True, "Transfer complete, no destination client actions performed."
-
-    try:
-        if not destination_qbit.get_torrent_info(hash_):
-            if not dry_run:
-                torrent_file_content = source_qbit.export_torrent_file(hash_)
-                destination_qbit.add_torrent(
-                    torrent_file_content=torrent_file_content,
-                    save_path=str(destination_save_path).replace("\\", "/"),
-                    is_paused=True,
-                    category=torrent.category,
-                    use_auto_management=True
-                )
-                time.sleep(5)
-    except Exception as e:
-        return False, f"Failed to add torrent to destination: {e}"
-
-    if not dry_run:
-        destination_qbit.recheck_torrent(hash_)
-        no_progress_timeout = config.getint('SETTINGS', 'recheck_no_progress_timeout', fallback=300)
-        recheck_status = destination_qbit.wait_for_recheck_completion(hash_, ui, no_progress_timeout=no_progress_timeout)
-
-        if recheck_status != "SUCCESS":
-            strategy = get_transfer_strategy(transfer_mode, config, ssh_connection_pools)
-            if strategy.supports_delta_correction():
-                repair_success = _execute_transfer(transfer_mode, all_files, torrent, config, ui, file_tracker, ssh_connection_pools, dry_run)
-                if not repair_success:
-                    destination_qbit.pause_torrent(hash_)
-                    return False, "Automated repair transfer failed."
-
-                final_recheck_status = destination_qbit.wait_for_recheck_completion(hash_, ui, no_progress_timeout=no_progress_timeout)
-                if final_recheck_status != "SUCCESS":
-                    destination_qbit.pause_torrent(hash_)
-                    return False, "Automated correction failed final re-check."
-            else:
-                destination_qbit.pause_torrent(hash_)
-                return False, "Recheck failed, strategy does not support correction."
-
-    if not dry_run:
-        if torrent.category:
-            destination_qbit.torrents_set_category(torrent_hashes=hash_, category=torrent.category)
-        if tracker_rules:
-            set_category_based_on_tracker(destination_qbit, hash_, tracker_rules, dry_run)
-
-        if config.getboolean('DESTINATION_CLIENT', 'start_torrents_after_recheck', fallback=True):
-            destination_qbit.resume_torrent(hash_)
-
-        if not test_run and config.getboolean('SOURCE_CLIENT', 'delete_after_transfer', fallback=True):
-            source_qbit.delete_torrent(hash_, delete_files=True)
-
-    return True, "Post-transfer actions completed successfully."
 
 
-def _execute_transfer(
-    transfer_mode: str,
-    files: List[TransferFile],
-    torrent: "qbittorrentapi.TorrentDictionary",
-    config: configparser.ConfigParser,
-    ui: BaseUIManager,
-    file_tracker: FileTransferTracker,
-    ssh_connection_pools: Dict[str, SSHConnectionPool],
-    dry_run: bool
-) -> bool:
-    """
-    Executes the file transfer for a given list of files using the specified strategy.
-    """
-    try:
-        if 'GENERAL' not in config:
-            config.add_section('GENERAL')
-        config.set('GENERAL', 'dry_run', str(dry_run))
 
-        strategy = get_transfer_strategy(transfer_mode, config, ssh_connection_pools)
-        success = strategy.execute(files, torrent, ui, file_tracker)
-        return success
-    except (RemoteTransferError, Exception) as e:
-        logging.error(f"Transfer failed for '{torrent.name}': {e}", exc_info=True)
-        return False
-
-def transfer_torrent(
-    torrent: qbittorrentapi.TorrentDictionary,
-    total_size: int,
-    source_qbit: TorrentClientInterface,
-    destination_qbit: TorrentClientInterface,
-    config: configparser.ConfigParser,
-    tracker_rules: Dict[str, str],
-    ui: BaseUIManager,
-    file_tracker: FileTransferTracker,
-    ssh_connection_pools: Dict[str, SSHConnectionPool],
-    args: argparse.Namespace
-) -> Tuple[str, str]:
-    name, hash_ = torrent.name, torrent.hash
-    dry_run = args.dry_run
-    transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-
-    try:
-        pre_transfer_status, _, _, dest_content_path, destination_save_path = _pre_transfer_setup(torrent, total_size, config, ssh_connection_pools, args, transfer_mode)
-        if pre_transfer_status == "failed":
-            return "failed", "Pre-transfer setup failed"
-
-        strategy = get_transfer_strategy(transfer_mode, config, ssh_connection_pools)
-        if not dest_content_path:
-             return "failed", "Destination content path could not be determined."
-        files: List[TransferFile] = strategy.prepare_files(torrent, dest_content_path)
-        if not files and not dry_run:
-            return "skipped", "No files found to transfer"
-
-        total_size_calc = sum(f.size for f in files)
-        ui.start_torrent_transfer(hash_, name, total_size_calc, [f.source_path for f in files])
-
-        transfer_executed = False
-        if pre_transfer_status == "exists_same_size":
-            ui.log(f"[green]Content exists for {name}. Skipping transfer.[/green]")
-        elif pre_transfer_status == "exists_different_size" and 'rsync' not in transfer_mode:
-            delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-
-        if pre_transfer_status in ("not_exists", "exists_different_size") and not dry_run:
-            transfer_success = _execute_transfer(transfer_mode, files, torrent, config, ui, file_tracker, ssh_connection_pools, dry_run)
-            if not transfer_success:
-                return "failed", "Transfer failed during execution"
-            transfer_executed = True
-
-        post_transfer_success, post_transfer_msg = _post_transfer_actions(
-            torrent, source_qbit, destination_qbit, config, tracker_rules,
-            ssh_connection_pools, dest_content_path, destination_save_path,
-            transfer_executed, dry_run, args.test_run, file_tracker, files, ui
-        )
-
-        if post_transfer_success:
-            ui.complete_torrent_transfer(hash_, success=True)
-            return "success", post_transfer_msg
-        else:
-            ui.complete_torrent_transfer(hash_, success=False)
-            return "failed", post_transfer_msg
-    except Exception as e:
-        ui.complete_torrent_transfer(hash_, success=False)
-        return "failed", f"Unexpected error: {e}"
-
-# ... (rest of the file remains the same)
 class TorrentMover:
     def __init__(self, args: argparse.Namespace, config: configparser.ConfigParser, script_dir: Path):
         self.args = args
         self.config = config
-        # ... (rest of __init__)
+        self.script_dir = script_dir
+        self.ui: BaseUIManager = None  # type: ignore
+        self.source_qbit: Optional[TorrentClientInterface] = None
+        self.destination_qbit: Optional[TorrentClientInterface] = None
+        self.ssh_connection_pools: SSHConnectionPools = {}
+        self.file_tracker: Optional[FileTransferTracker] = None
+        self.tracker_manager: Optional[TrackerManager] = None
+        self.watchdog: Optional[StallResilienceWatchdog] = None
 
-    # ... (other methods)
+    def _initialize_ssh_pools(self):
+        """Initializes SSH connection pools based on config."""
+        self.ssh_connection_pools = SSHConnectionPools(self.config)
 
-    def _transfer_worker(self, torrent: "qbittorrentapi.TorrentDictionary", total_size: int):
-        # ...
-        status, message = transfer_torrent(
-            torrent=torrent,
-            total_size=total_size,
-            # ... (pass other dependencies)
-            args=self.args
-        )
-        # ...
+    def _connect_qbit_clients(self):
+        """Initializes and connects to qBittorrent clients."""
+        self.source_qbit = QBittorrentClient(config_section=self.config['SOURCE_CLIENT'])
+        self.source_qbit.connect()
+        if self.config.has_section('DESTINATION_CLIENT'):
+            self.destination_qbit = QBittorrentClient(config_section=self.config['DESTINATION_CLIENT'])
+            self.destination_qbit.connect()
 
-# ... (main function and entry point)
-# Note: Abridged for brevity. The full, correct file will be written.
+    def _transfer_worker(self, torrent: "qbittorrentapi.TorrentDictionary", total_size: int) -> Tuple[str, str]:
+        """Orchestrates the transfer of a single torrent."""
+        transfer_mode = self.config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+        try:
+            # A. Get the correct TransferStrategy
+            strategy = get_transfer_strategy(transfer_mode, self.config, self.ssh_connection_pools)
+
+            # B. Prepare files
+            (
+                pre_transfer_status, pre_transfer_msg,
+                source_content_path, dest_content_path,
+                destination_save_path
+            ) = _pre_transfer_setup(torrent, total_size, self.config, self.ssh_connection_pools, self.args, transfer_mode)
+
+            if pre_transfer_status == "failed":
+                return "failed", pre_transfer_msg
+
+            all_files: List[TransferFile] = strategy.prepare_files(torrent, dest_content_path)
+            if not all_files:
+                return "skipped", "No files to transfer."
+
+            # C. Instruct the Transfer Manager to execute the move
+            transfer_success = execute_transfer(
+                strategy=strategy,
+                torrent=torrent,
+                config=self.config,
+                ui=self.ui,
+                file_tracker=self.file_tracker,
+                all_files=all_files
+            )
+
+            if not transfer_success:
+                return "failed", "File transfer failed."
+
+            # Change ownership if configured
+            chown_user = self.config['SETTINGS'].get('chown_user', '').strip()
+            chown_group = self.config['SETTINGS'].get('chown_group', '').strip()
+            if (chown_user or chown_group) and not self.args.dry_run:
+                remote_config = self.config['DESTINATION_SERVER'] if 'DESTINATION_SERVER' in self.config else None
+                path_to_chown = dest_content_path
+                if remote_config:
+                    content_name = os.path.basename(dest_content_path)
+                    remote_dest_base_path = self.config['DESTINATION_PATHS'].get('remote_destination_path') or self.config['DESTINATION_PATHS']['destination_path']
+                    path_to_chown = os.path.join(remote_dest_base_path, content_name)
+                change_ownership(path_to_chown, chown_user, chown_group, remote_config, self.args.dry_run, self.ssh_connection_pools)
+
+            # D. Handle post-transfer client actions
+            if self.destination_qbit and not self.args.dry_run:
+                if not self.destination_qbit.get_torrent_info(torrent.hash):
+                    self.destination_qbit.add_torrent(
+                        torrent_file_content=self.source_qbit.export_torrent_file(torrent.hash),
+                        save_path=destination_save_path,
+                        is_paused=True,
+                        category=torrent.category,
+                        use_auto_management=True
+                    )
+                self.destination_qbit.recheck_torrent(torrent.hash)
+                recheck_status = self.destination_qbit.wait_for_recheck_completion(torrent.hash, self.ui)
+                if recheck_status == "SUCCESS":
+                    if torrent.category:
+                        self.destination_qbit.torrents_set_category(torrent_hashes=torrent.hash, category=torrent.category)
+                    if self.tracker_manager:
+                        set_category_based_on_tracker(self.destination_qbit, torrent.hash, self.tracker_manager.rules, self.args.dry_run)
+
+                    self.destination_qbit.resume_torrent(torrent.hash)
+                    if not self.args.test_run:
+                        self.source_qbit.delete_torrent(torrent.hash, delete_files=True)
+                else:
+                    if strategy.supports_delta_correction():
+                        self.ui.log(f"[yellow]Recheck failed for '{torrent.name}'. Attempting automated repair.[/yellow]")
+                        repair_success = execute_transfer(
+                            strategy=strategy,
+                            torrent=torrent,
+                            config=self.config,
+                            ui=self.ui,
+                            file_tracker=self.file_tracker,
+                            all_files=all_files
+                        )
+                        if repair_success:
+                            final_recheck_status = self.destination_qbit.wait_for_recheck_completion(torrent.hash, self.ui)
+                            if final_recheck_status == "SUCCESS":
+                                self.destination_qbit.resume_torrent(torrent.hash)
+                                if not self.args.test_run:
+                                    self.source_qbit.delete_torrent(torrent.hash, delete_files=True)
+                                return "success", "Automated repair successful."
+                        return "failed", "Automated repair failed."
+                    else:
+                        return "failed", "Recheck failed at destination and strategy does not support repair."
+            elif self.args.dry_run:
+                self.ui.log(f"[cyan]DRY RUN: Post-transfer actions for '{torrent.name}' would be executed.[/cyan]")
+
+            return "success", "Transfer and post-transfer actions completed."
+
+        except Exception as e:
+            self.ui.log(f"[bold red]An unexpected error occurred while transferring '{torrent.name}': {e}[/bold red]")
+            return "failed", f"Unexpected error: {e}"
+
+    def run(self):
+        """Main execution logic."""
+        # ... Initialization, client connections, etc. ...
+
+        # Categorize torrents
+        unmanaged_torrents = self.tracker_manager.categorize_unmanaged_torrents(self.source_qbit)
+        if self.args.interactive_categorization:
+            run_interactive_categorization(self.tracker_manager, unmanaged_torrents)
+            return  # Exit after interactive session
+
+        # Main processing loop
+        torrents_to_process = self._get_torrents_for_processing()
+        with ThreadPoolExecutor(max_workers=self.args.parallel_jobs) as executor:
+            futures = {
+                executor.submit(self._transfer_worker, torrent, torrent.total_size): torrent.name
+                for torrent in torrents_to_process
+            }
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    status, message = future.result()
+                    self.ui.log(f"Torrent '{name}' processed with status '{status}': {message}")
+                except Exception as e:
+                    self.ui.log(f"Exception processing torrent '{name}': {e}")
+        # ... Cleanup ...
+
+def main():
+    # ... (Argument parsing and setup) ...
+    mover = TorrentMover(args, config, script_dir)
+    mover.run()
+
+if __name__ == "__main__":
+    main()
