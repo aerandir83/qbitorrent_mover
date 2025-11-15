@@ -19,7 +19,7 @@ import paramiko
 
 if typing.TYPE_CHECKING:
     from ..core_logic.ssh_manager import SSHConnectionPool
-    from ..torrent_mover import Torrent
+    from ..models import Torrent
     from ..ui import BaseUIManager
     from ..core_logic.transfer_manager import FileTransferTracker
 

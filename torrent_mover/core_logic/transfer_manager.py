@@ -24,7 +24,7 @@ from ..ui import UIManagerV2 as UIManager
 from ..utils import RemoteTransferError, retry, RateLimitedFile
 from ..strategies.transfer_strategies import TransferStrategy, SFTPStrategy
 from .resilience import ResilientTransferQueue, StallResilienceWatchdog
-from ..torrent_mover import Torrent
+from ..models import Torrent
 
 if typing.TYPE_CHECKING:
     from ..ui import BaseUIManager
