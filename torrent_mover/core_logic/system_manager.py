@@ -18,7 +18,7 @@ from . import ssh_manager
 import sys
 
 from .ssh_manager import SSHConnectionPool
-from .transfer_manager import Timeouts
+from ..utils import Timeouts
 from rich.logging import RichHandler
 from rich.console import Console
 
