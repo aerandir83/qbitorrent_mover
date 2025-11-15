@@ -7,7 +7,8 @@ from urllib.parse import urlparse
 import qbittorrentapi
 from rich.console import Console
 from rich.table import Table
-from ...clients.torrent_client import TorrentClientInterface
+
+from ..clients.torrent_client import TorrentClientInterface
 
 
 def display_tracker_rules(rules: Dict[str, str]) -> None:
