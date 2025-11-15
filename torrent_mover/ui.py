@@ -131,6 +131,9 @@ from rich.layout import Layout
 import re
 import abc
 
+
+logger = logging.getLogger("torrent_mover")
+
 # --- Custom Progress Column for Speed ---
 
 class _SpeedColumn(ProgressColumn):
@@ -154,6 +157,13 @@ class _SpeedColumn(ProgressColumn):
 
         # Format the speed here, just like the Stats panel does
         speed_str = f"{speed_bytes / (1024**2):.2f} MB/s"
+
+        # Conditionally show '--' for UL speed on non-uploading modes
+        if speed_bytes == 0 and self.field_name == 'current_ul_speed':
+            mode = self.ui_manager.transfer_mode
+            if mode in ['sftp', 'rsync', 'sftp_upload']:
+                speed_str = "-- MB/s"
+
         return Text.from_markup(f"{self.label}:[{self.style}]{speed_str:>10}[/]")
 
 # --- Custom Renderable Classes ---
@@ -176,7 +186,7 @@ class _StatsPanel:
                             (len(self.ui_manager._dl_speed_history) + len(self.ui_manager._ul_speed_history)) if \
                             (self.ui_manager._dl_speed_history or self.ui_manager._ul_speed_history) else 1
 
-            stats_table = Table.grid(padding=(0, 1))
+            stats_table = Table.grid(padding=(1, 0))
             stats_table.add_column(style="bold cyan", justify="right", no_wrap=True)
             stats_table.add_column()
 
@@ -185,14 +195,20 @@ class _StatsPanel:
             remaining_gb = max(0, total_gb - transferred_gb)
 
             stats_table.add_row("📊 Progress", f"[white]{transferred_gb:.2f}/{total_gb:.2f} GB ({remaining_gb:.2f} GB rem.)[/]")
-            stats_table.add_row("⚡ Speed", f"[green]DL:{current_dl_speed / (1024**2):.1f}[/] [yellow]UL:{current_ul_speed / (1024**2):.1f}[/] MB/s")
+            dl_str = f"{current_dl_speed / (1024**2):.1f}"
+            ul_str = f"{current_ul_speed / (1024**2):.1f}"
+
+            # Conditionally show '--' for UL speed on non-uploading modes
+            if current_ul_speed == 0 and self.ui_manager.transfer_mode in ['sftp', 'rsync', 'sftp_upload']:
+                ul_str = "--"
+
+            stats_table.add_row("⚡ Speed", f"[green]DL:{dl_str}[/] [yellow]UL:{ul_str}[/] MB/s")
             stats_table.add_row("📈 Avg/Peak", f"[dim]{avg_speed_hist / (1024**2):.1f}/{stats['peak_speed'] / (1024**2):.1f} MB/s[/]")
 
-            # Compacted counts
-            active = stats['active_transfers']
-            completed = stats['completed_transfers']
-            failed = stats['failed_transfers']
-            stats_table.add_row("🔄 Counts", f"[white]A:{active}[/] [green]C:{completed}[/] [red]F:{failed}[/]")
+            # Detailed counts
+            stats_table.add_row("🔄 Active", f"[white]{stats['active_transfers']}[/]")
+            stats_table.add_row("✅ Completed", f"[green]{stats['completed_transfers']}[/]")
+            stats_table.add_row("❌ Failed", f"[red]{stats['failed_transfers']}[/]")
 
             total_files = sum(t.get('total_files', 0) for t in self.ui_manager._torrents.values())
             completed_files = sum(t.get('completed_files', 0) for t in self.ui_manager._torrents.values())
@@ -271,6 +287,10 @@ class _ActiveTorrentsPanel:
                     display_name = smart_truncate(name, config["torrent_name_width"])
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
 
+                    # --- ADD THIS LINE (Fix for 106%) ---
+                    progress = min(progress, 100.0)
+                    # --- END ADDITION ---
+
                     # Build file list
                     file_renderables: List[Text] = [] # Changed from file_lines
                     files = self.ui_manager._file_status.get(hash_, {})
@@ -319,12 +339,26 @@ class _ActiveTorrentsPanel:
                     completed_files = torrent.get('completed_files', 0)
                     total_files = torrent.get('total_files', 0)
 
+                    # --- START MODIFICATION (Fix for rsync display) ---
+                    mode = self.ui_manager.transfer_mode
+                    if 'rsync' in mode:
+                        size_gb = torrent["size"] / (1024**3)
+                        transferred_gb = torrent["transferred"] / (1024**3)
+                        # Clamp transferred_gb to not exceed size_gb in the display
+                        transferred_gb = min(transferred_gb, size_gb)
+                        files_display_str = f"({transferred_gb:.2f} / {size_gb:.2f} GB)"
+                    else:
+                        files_display_str = f"({completed_files}/{total_files} files)"
+                    # --- END MODIFICATION ---
+
                     # Main torrent entry with adaptive progress display
                     progress_display = self._render_progress_bar(progress) if config["show_progress_bars"] else f"{progress:>3.0f}%"
                     table.add_row(
                         progress_display,
                         Group(
-                            Text.from_markup(f"[bold cyan]{display_name}[/bold cyan] [dim]({completed_files}/{total_files} files)[/dim]"),
+                            # --- UPDATE THIS LINE ---
+                            Text.from_markup(f"[bold cyan]{display_name}[/bold cyan] [dim]{files_display_str}[/dim]"),
+                            # --- END UPDATE ---
                             files_panel_content
                         )
                     )
@@ -651,14 +685,14 @@ class UIManagerV2(BaseUIManager):
         self.layout = Layout()
         self.layout.split(
             Layout(name="header", size=3),
-            Layout(name="body", ratio=1),
-            Layout(name="footer", size=7)
+            Layout(name="body", ratio=65),
+            Layout(name="footer", ratio=25)
         )
 
         # Split body into two columns
         self.layout["body"].split_row(
-            Layout(name="left", ratio=3),  # Active Torrents
-            Layout(name="right", ratio=1) # Stats
+            Layout(name="left", ratio=70),  # Active Torrents
+            Layout(name="right", ratio=30) # Stats
         )
 
         # Initialize components

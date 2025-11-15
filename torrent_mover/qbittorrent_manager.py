@@ -111,123 +111,71 @@ def get_eligible_torrents(client: qbittorrentapi.Client, category: str, size_thr
 def wait_for_recheck_completion(
     client: qbittorrentapi.Client,
     torrent_hash: str,
-    ui: "BaseUIManager", # <-- ADD THIS
-    timeout_seconds: int = Timeouts.RECHECK,
-    dry_run: bool = False,
-    allow_near_complete: bool = True
-) -> bool:
-    """Monitors a torrent on the destination client until it completes rechecking.
-
-    This function polls the qBittorrent client periodically to check the status
-    of a torrent that is rechecking. It will continue until the torrent's
-    progress reaches 100% (or 99.9%+ if allow_near_complete is True),
-    it enters an error state, or the timeout is exceeded.
+    ui: "BaseUIManager",
+    no_progress_timeout: int,
+    dry_run: bool = False
+) -> str:
+    """
+    Monitors a torrent's recheck, returning a status string.
 
     Args:
         client: An authenticated qBittorrent client instance.
         torrent_hash: The hash of the torrent to monitor.
-        timeout_seconds: The maximum number of seconds to wait for the recheck.
-        dry_run: If True, the function will simulate a successful recheck
-            without actually waiting.
-        allow_near_complete: If True, accepts 99.9%+ completion as success.
-            This handles the rsync edge case where a few bytes may differ.
+        ui: The user interface manager for watchdog petting.
+        no_progress_timeout: Seconds to wait before timing out if no progress is made.
+        dry_run: If True, simulates a successful recheck.
 
     Returns:
-        True if the recheck completes successfully (progress >= 99.9% or 100%).
-        False if the recheck fails, the torrent enters an error state,
-            or the timeout is reached.
+        "SUCCESS": If the recheck completes to 100%.
+        "FAILED_STATE": If the torrent enters an error state or disappears.
+        "FAILED_TIMEOUT": If no progress is made for the timeout duration.
     """
     if dry_run:
         logging.info(f"[DRY RUN] Would wait for recheck on {torrent_hash[:10]}. Assuming success.")
-        return True
+        return "SUCCESS"
 
-    start_time = time.time()
-    last_progress = 0
-    stuck_count = 0
+    last_progress_time = time.time()
+    last_progress = -1
 
     logging.info(f"Waiting for recheck to complete for torrent {torrent_hash[:10]}...")
 
-    while time.time() - start_time < timeout_seconds:
-        ui.pet_watchdog()  # <-- PET WATCHDOG
+    while True:
+        ui.pet_watchdog()
         try:
             torrent_info = client.torrents_info(torrent_hashes=torrent_hash)
             if not torrent_info:
-                logging.warning(f"Torrent {torrent_hash[:10]} disappeared while waiting for recheck.")
-                return False
+                logging.error(f"Torrent {torrent_hash[:10]} disappeared while waiting for recheck.")
+                return "FAILED_STATE"
 
             torrent = torrent_info[0]
             state = torrent.state
             current_progress = torrent.progress
 
-            # Check for completion (100% or near-complete if allowed)
+            # Success Condition (Directive 2): Check for exactly 100%
             if current_progress >= 1.0:
                 logging.info(f"Recheck completed for torrent {torrent_hash[:10]} at 100%.")
-                return True
-            elif allow_near_complete and current_progress >= 0.999:
-                # (Same 99.9% logic as before)
-                logging.warning(f"Recheck at {current_progress*100:.2f}% for {torrent_hash[:10]}.")
-                logging.warning("This is likely due to rsync metadata differences (timestamps, permissions).")
-                logging.warning("Accepting as complete since data integrity is verified by rsync checksums.")
-                try:
-                    client.torrents_resume(torrent_hashes=torrent_hash)
-                    time.sleep(2)
-                    updated_info = client.torrents_info(torrent_hashes=torrent_hash)
-                    if updated_info and updated_info[0].state in ['uploading', 'stalledUP', 'queuedUP', 'forcedUP']:
-                        logging.info(f"Torrent {torrent_hash[:10]} successfully started despite 99.9% recheck.")
-                        return True
-                except Exception as e:
-                    logging.warning(f"Could not force-start torrent: {e}")
-                return True
+                return "SUCCESS"
 
-            # Check for error states
-            if state in ['error', 'missingFiles']:
+            # Failure Condition (Directive 1): Check for error or stopped states
+            if state in ['error', 'missingFiles', 'stopped', 'pausedUP', 'pausedDL']:
                 logging.error(f"Recheck FAILED for torrent {torrent_hash[:10]}. State is '{state}'.")
-                return False
+                return "FAILED_STATE"
 
-            # --- New Stuck Logic ---
-            if state in ['checkingUP', 'checkingDL']:
-                # It's actively checking, reset stuck count
-                stuck_count = 0
-            elif abs(current_progress - last_progress) < 0.001:
-                # It's not actively checking, and progress is stuck.
-                # Is another torrent checking?
-                try:
-                    all_torrents = client.torrents_info()
-                    if any(t.state in ['checkingUP', 'checkingDL'] for t in all_torrents):
-                        # Another torrent is checking. Reset stuck count and log.
-                        stuck_count = 0
-                        logging.debug(f"Recheck for {torrent_hash[:10]} is waiting... another torrent is being checked.")
-                    else:
-                        # Nothing else is checking. This one is truly stuck.
-                        stuck_count += 1
-                except Exception as e:
-                    # Failed to get all torrents, assume not stuck
-                    stuck_count = 0
-                    logging.warning(f"Could not check for other rechecks: {e}")
-            else:
-                # Progress was made
-                stuck_count = 0
-            # --- End New Stuck Logic ---
+            # Timeout Condition (Directive 1)
+            if current_progress > last_progress:
+                last_progress_time = time.time()
+                last_progress = current_progress
 
-            if stuck_count >= 6:  # Stuck for 60 seconds (6 * 10s checks)
-                if current_progress >= 0.999:
-                    logging.warning(f"Recheck stuck at {current_progress*100:.2f}% for 60 seconds. Accepting as complete.")
-                    return True
-                else:
-                    logging.error(f"Recheck stuck at {current_progress*100:.2f}% for 60 seconds (State: {state}).")
-                    return False
+            if time.time() - last_progress_time > no_progress_timeout:
+                logging.error(f"Recheck FAILED for {torrent_hash[:10]}: No progress for {no_progress_timeout} seconds.")
+                return "FAILED_TIMEOUT"
 
-            last_progress = current_progress
             logging.debug(f"Recheck progress: {current_progress*100:.2f}% (State: {state})")
-
             time.sleep(10)
 
         except Exception as e:
-            logging.error(f"Error while waiting for recheck on {torrent_hash[:10]}: {e}")
-            return False
-
-    logging.error(f"Timeout: Recheck did not complete for torrent {torrent_hash[:10]} in {timeout_seconds}s. Last progress: {last_progress*100:.2f}%")
-    return False
+            logging.error(f"Error while waiting for recheck on {torrent_hash[:10]}: {e}", exc_info=True)
+            return "FAILED_STATE"
 
 def get_incomplete_files(client: qbittorrentapi.Client, torrent_hash: str) -> List[str]:
     """
