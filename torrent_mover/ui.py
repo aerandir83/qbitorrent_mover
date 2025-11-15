@@ -284,6 +284,10 @@ class _ActiveTorrentsPanel:
                     display_name = smart_truncate(name, config["torrent_name_width"])
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
 
+                    # --- ADD THIS LINE (Fix for 106%) ---
+                    progress = min(progress, 100.0)
+                    # --- END ADDITION ---
+
                     # Build file list
                     file_renderables: List[Text] = [] # Changed from file_lines
                     files = self.ui_manager._file_status.get(hash_, {})
@@ -332,12 +336,26 @@ class _ActiveTorrentsPanel:
                     completed_files = torrent.get('completed_files', 0)
                     total_files = torrent.get('total_files', 0)
 
+                    # --- START MODIFICATION (Fix for rsync display) ---
+                    mode = self.ui_manager.transfer_mode
+                    if 'rsync' in mode:
+                        size_gb = torrent["size"] / (1024**3)
+                        transferred_gb = torrent["transferred"] / (1024**3)
+                        # Clamp transferred_gb to not exceed size_gb in the display
+                        transferred_gb = min(transferred_gb, size_gb)
+                        files_display_str = f"({transferred_gb:.2f} / {size_gb:.2f} GB)"
+                    else:
+                        files_display_str = f"({completed_files}/{total_files} files)"
+                    # --- END MODIFICATION ---
+
                     # Main torrent entry with adaptive progress display
                     progress_display = self._render_progress_bar(progress) if config["show_progress_bars"] else f"{progress:>3.0f}%"
                     table.add_row(
                         progress_display,
                         Group(
-                            Text.from_markup(f"[bold cyan]{display_name}[/bold cyan] [dim]({completed_files}/{total_files} files)[/dim]"),
+                            # --- UPDATE THIS LINE ---
+                            Text.from_markup(f"[bold cyan]{display_name}[/bold cyan] [dim]{files_display_str}[/dim]"),
+                            # --- END UPDATE ---
                             files_panel_content
                         )
                     )
