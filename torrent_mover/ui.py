@@ -183,7 +183,7 @@ class _StatsPanel:
                             (len(self.ui_manager._dl_speed_history) + len(self.ui_manager._ul_speed_history)) if \
                             (self.ui_manager._dl_speed_history or self.ui_manager._ul_speed_history) else 1
 
-            stats_table = Table.grid(padding=(0, 1))
+            stats_table = Table.grid(padding=(1, 0))
             stats_table.add_column(style="bold cyan", justify="right", no_wrap=True)
             stats_table.add_column()
 
@@ -682,14 +682,14 @@ class UIManagerV2(BaseUIManager):
         self.layout = Layout()
         self.layout.split(
             Layout(name="header", size=3),
-            Layout(name="body", ratio=1),
-            Layout(name="footer", size=12)
+            Layout(name="body", ratio=65),
+            Layout(name="footer", ratio=25)
         )
 
         # Split body into two columns
         self.layout["body"].split_row(
-            Layout(name="left", ratio=3),  # Active Torrents
-            Layout(name="right", ratio=1) # Stats
+            Layout(name="left", ratio=70),  # Active Torrents
+            Layout(name="right", ratio=30) # Stats
         )
 
         # Initialize components
