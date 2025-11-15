@@ -84,100 +84,13 @@ class SFTPStrategy(TransferStrategy):
         return False
 
     def execute(self, files: List[TransferFile], torrent_info: "Torrent", ui: "BaseUIManager", file_tracker: "FileTransferTracker") -> bool:
+        raise NotImplementedError("SFTPStrategy is not meant to be called directly for parallel execution.")
+
+    def _transfer_file(self, file: TransferFile, ui: "BaseUIManager", file_tracker: "FileTransferTracker") -> None:
         sftp_chunk_size = self.config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
-        download_limit_bytes = int(self.config['SETTINGS'].getfloat('sftp_download_limit_mbps', 0) * 1024 * 1024 / 8)
-        max_concurrent_downloads = self.config['SETTINGS'].getint('max_concurrent_downloads', 4)
+        download_limit_bytes_per_sec = int(self.config['SETTINGS'].getfloat('sftp_download_limit_mbps', 0) * 1024 * 1024 / 8)
         dry_run = self.config.getboolean('GENERAL', 'dry_run', fallback=False)
-        try:
-            self._transfer_content_with_queue(
-                files, torrent_info.hash, ui, file_tracker,
-                max_concurrent_downloads, dry_run,
-                download_limit_bytes, sftp_chunk_size
-            )
-            return True
-        except (RemoteTransferError, Exception) as e:
-            logger.error(f"SFTP transfer failed for '{torrent_info.name}': {e}", exc_info=True)
-            return False
 
-    def _transfer_content_with_queue(
-        self,
-        all_files: List[TransferFile],
-        torrent_hash: str,
-        ui: "BaseUIManager",
-        file_tracker: "FileTransferTracker",
-        max_concurrent_downloads: int,
-        dry_run: bool = False,
-        download_limit_bytes_per_sec: int = 0,
-        sftp_chunk_size: int = 65536
-    ) -> None:
-        """Transfers torrent content using a resilient queue."""
-        queue = ResilientTransferQueue(max_retries=5)
-        for file in all_files:
-            queue.add(file)
-
-        server_key = f"{self.pool.host}:{self.pool.port}"
-
-        def worker():
-            while True:
-                result = queue.get_next(server_key)
-                if not result:
-                    stats = queue.get_stats()
-                    if stats["pending"] > 0:
-                        time.sleep(1)
-                        continue
-                    break
-
-                file, attempt_count = result
-                try:
-                    self._sftp_download_file_resilient(
-                        file, queue, ui, file_tracker, attempt_count,
-                        server_key, dry_run, download_limit_bytes_per_sec, sftp_chunk_size
-                    )
-                except Exception:
-                    pass
-
-        with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as executor:
-            futures = [executor.submit(worker) for _ in range(max_concurrent_downloads)]
-            for future in as_completed(futures):
-                future.result()
-
-        final_stats = queue.get_stats()
-        if final_stats["failed"] > 0:
-            raise RemoteTransferError(f"{final_stats['failed']} files failed for torrent {torrent_hash}")
-
-    def _sftp_download_file_resilient(
-        self,
-        file: TransferFile,
-        queue: ResilientTransferQueue,
-        ui: "BaseUIManager",
-        file_tracker: "FileTransferTracker",
-        attempt_count: int,
-        server_key: str,
-        dry_run: bool = False,
-        download_limit_bytes_per_sec: int = 0,
-        sftp_chunk_size: int = 65536
-    ) -> None:
-        """Wrapper for _sftp_download_file_core that integrates with ResilientTransferQueue."""
-        try:
-            self._sftp_download_file_core(
-                file, ui, file_tracker, dry_run,
-                download_limit_bytes_per_sec, sftp_chunk_size
-            )
-            queue.record_success(file, server_key)
-        except (socket.timeout, TimeoutError, paramiko.SSHException) as e:
-            if not queue.record_failure(file, server_key, e, attempt_count):
-                logger.error(f"SFTP download failed permanently for {file.source_path} due to network error: {e}", exc_info=True)
-                raise
-        except (PermissionError, FileNotFoundError) as e:
-            queue.record_failure(file, server_key, e, 999)
-            logger.error(f"SFTP download failed permanently for {file.source_path} due to file/permission error: {e}", exc_info=True)
-            raise
-        except Exception as e:
-            if not queue.record_failure(file, server_key, e, attempt_count):
-                logger.error(f"SFTP download failed permanently for {file.source_path} due to unexpected error: {e}", exc_info=True)
-                raise
-
-    def _sftp_download_file_core(self, file: TransferFile, ui: "BaseUIManager", file_tracker: "FileTransferTracker", dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
         remote_file = file.source_path
         local_file = file.dest_path
         torrent_hash = file.torrent_hash
