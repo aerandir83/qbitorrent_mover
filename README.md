@@ -318,7 +318,6 @@ Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your
     *   `max_concurrent_file_transfers`: Number of files to transfer in parallel (e.g., `5`).
     *   `category_to_move`: The category in your source client that triggers a move.
     *   `pool_wait_timeout`: (Optional) Time in seconds to wait for a connection from the SSH pool if it's full. Defaults to `300`. Increase this if you get `TimeoutError` logs.
-    *   `allow_near_complete_rsync`: (Optional) For rsync transfers, allows a recheck to pass at 99.9%+ completion. This is useful for minor metadata differences that rsync might not sync.
 
 ## Basic Usage
 
