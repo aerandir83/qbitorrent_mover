@@ -20,8 +20,8 @@ def test_basic_reuse():
     pool = SSHConnectionPool(
         host='localhost',
         port=22,
-        username='testuser',
-        password='testpass',
+        username='jules',
+        password='',
         max_size=3
     )
 
