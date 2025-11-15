@@ -28,8 +28,7 @@ from .config_manager import update_config, load_config, ConfigValidator
 from .core_logic.ssh_manager import (
     SSHConnectionPool, check_sshpass_installed,
     batch_get_remote_sizes,
-    is_remote_dir,
-    SSHConnectionPools
+    is_remote_dir
 )
 from .clients.torrent_client import TorrentClientInterface
 from .clients.qbittorrent_manager import QBittorrentClient
@@ -127,14 +126,16 @@ class TorrentMover:
         self.ui: BaseUIManager = None  # type: ignore
         self.source_qbit: Optional[TorrentClientInterface] = None
         self.destination_qbit: Optional[TorrentClientInterface] = None
-        self.ssh_connection_pools: SSHConnectionPools = {}
+        self.ssh_connection_pools: Dict[str, SSHConnectionPool] = {}
         self.file_tracker: Optional[FileTransferTracker] = None
         self.tracker_manager: Optional[TrackerManager] = None
         self.watchdog: Optional[StallResilienceWatchdog] = None
 
     def _initialize_ssh_pools(self):
         """Initializes SSH connection pools based on config."""
-        self.ssh_connection_pools = SSHConnectionPools(self.config)
+        for section_name in self.config.sections():
+            if section_name.endswith("_SERVER"):
+                self.ssh_connection_pools[section_name] = SSHConnectionPool(self.config[section_name])
 
     def _connect_qbit_clients(self):
         """Initializes and connects to qBittorrent clients."""
