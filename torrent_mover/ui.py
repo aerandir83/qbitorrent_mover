@@ -1066,7 +1066,6 @@ class UIManagerV2(BaseUIManager):
         with self._lock:
             timestamp = time.strftime("%H:%M:%S")
             self._log_buffer.append(Text.from_markup(f"[{timestamp}] {message}"))
-        logger.info(message.strip())
 
     def pet_watchdog(self):
         """Signals that a non-transfer activity has occurred."""
