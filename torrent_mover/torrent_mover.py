@@ -87,96 +87,6 @@ def _normalize_path(path: str) -> str:
     return path.strip('\'"')
 
 
-def _pre_transfer_setup(
-    torrent: qbittorrentapi.TorrentDictionary,
-    total_size: int, # Pass in the pre-calculated total_size
-    config: configparser.ConfigParser,
-    ssh_connection_pools: Dict[str, SSHConnectionPool],
-    args: argparse.Namespace,
-    transfer_mode: str
-) -> Tuple[str, str, Optional[str], Optional[str], Optional[str]]:
-    """Performs setup tasks before a torrent transfer begins."""
-    raise NotImplementedError("This function is deprecated and should not be called.")
-
-def _post_transfer_actions(
-    torrent: qbittorrentapi.TorrentDictionary,
-    source_qbit: qbittorrentapi.Client,
-    destination_qbit: Optional[qbittorrentapi.Client],
-    config: configparser.ConfigParser,
-    tracker_rules: Dict[str, str],
-    ssh_connection_pools: Dict[str, SSHConnectionPool],
-    dest_content_path: str,
-    destination_save_path: str,
-    transfer_executed: bool,
-    dry_run: bool,
-    test_run: bool,
-    file_tracker: FileTransferTracker,
-    transfer_mode: str,
-    all_files: List[TransferFile],
-    ui: BaseUIManager
-) -> Tuple[bool, str]:
-    """Manages tasks after the file transfer is complete."""
-    raise NotImplementedError("This function is deprecated and should not be called.")
-
-
-def _execute_transfer(
-    transfer_mode: str,
-    files: List[TransferFile],
-    torrent: "qbittorrentapi.TorrentDictionary",
-    total_size_calc: int,
-    config: configparser.ConfigParser,
-    ui: BaseUIManager,
-    file_tracker: FileTransferTracker,
-    ssh_connection_pools: Dict[str, SSHConnectionPool],
-    dry_run: bool,
-    # --- New Callbacks ---
-    log_transfer: Callable,
-    _update_transfer_progress: Callable,
-    _update_transfer_speed: Callable
-) -> bool:
-    """
-    Executes the file transfer for a given list of files using the specified strategy.
-    This function is now a pass-through that provides the correct callbacks.
-    """
-    strategy = get_transfer_strategy(transfer_mode, config, ssh_connection_pools)
-    try:
-        return strategy.execute_transfer(
-            files=files,
-            torrent=torrent,
-            ui=ui,
-            file_tracker=file_tracker,
-            dry_run=dry_run,
-        )
-    except (RemoteTransferError, Exception) as e:
-        logging.error(f"Transfer failed for '{torrent.name}': {e}", exc_info=True)
-        return False
-
-def _execute_transfer_placeholder(
-    transfer_mode: str,
-    files: List[TransferFile],
-    torrent: "qbittorrentapi.TorrentDictionary",
-    total_size_calc: int,
-    config: configparser.ConfigParser,
-    ui: BaseUIManager,
-    file_tracker: FileTransferTracker,
-    ssh_connection_pools: Dict[str, SSHConnectionPool],
-    dry_run: bool,
-    # --- Callbacks ---
-    log_transfer: Callable,
-    _update_transfer_progress: Callable,
-    _update_transfer_speed: Callable
-) -> bool:
-    """
-    This is a temporary placeholder for the recheck logic until the main
-    refactor is complete. It mirrors _execute_transfer.
-    """
-    return _execute_transfer(
-        transfer_mode, files, torrent, total_size_calc, config, ui,
-        file_tracker, ssh_connection_pools, dry_run,
-        log_transfer, _update_transfer_progress, _update_transfer_speed
-    )
-
-
 def transfer_torrent(
     torrent: qbittorrentapi.TorrentDictionary,
     total_size: int,
@@ -187,12 +97,8 @@ def transfer_torrent(
     ui: BaseUIManager,
     file_tracker: FileTransferTracker,
     ssh_connection_pools: Dict[str, SSHConnectionPool],
-    checkpoint: TransferCheckpoint, # Added checkpoint
-    args: argparse.Namespace, # Added args
-    # --- New Callbacks ---
-    log_transfer: Callable,
-    _update_transfer_progress: Callable,
-    _update_transfer_speed: Callable
+    checkpoint: TransferCheckpoint,
+    args: argparse.Namespace
 ) -> Tuple[str, str]:
     """Orchestrates the entire transfer process for a single torrent."""
     name, hash_ = torrent.name, torrent.hash
@@ -202,61 +108,60 @@ def transfer_torrent(
     strategy = get_transfer_strategy(transfer_mode, config, ssh_connection_pools)
 
     try:
+        # 1. Pre-transfer check
         (
             pre_transfer_status, pre_transfer_msg,
             source_content_path, dest_content_path,
             destination_save_path
         ) = strategy.pre_transfer_check(torrent, total_size, args)
 
-        if pre_transfer_status == "failed":
-            return "failed", pre_transfer_msg
-
+        if pre_transfer_status in ("failed", "skipped"):
+            return pre_transfer_status, pre_transfer_msg
         if not dest_content_path:
              return "failed", "Destination content path could not be determined."
 
+        # 2. Prepare files for transfer
         files: List[TransferFile] = strategy.prepare_files(torrent, dest_content_path)
         if not files and not dry_run:
-            return "skipped", "No files found to transfer"
+            return "skipped", "No files to transfer."
 
+        # 3. Initialize UI for this torrent
         total_size_calc = sum(f.size for f in files)
         file_names_for_ui = [f.source_path for f in files]
         local_cache_sftp_upload = config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
         transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
 
-        ui.start_torrent_transfer(
-            hash_, name, total_size_calc,
-            file_names_for_ui,
-            transfer_multiplier
-        )
+        ui.start_torrent_transfer(hash_, name, total_size_calc, file_names_for_ui, transfer_multiplier)
 
+        # 4. Execute transfer if required
         transfer_executed = False
         if dry_run:
             ui.update_torrent_progress(hash_, total_size_calc * transfer_multiplier, transfer_type='download')
+            ui.log(f"[cyan]Dry Run: '{name}' processing complete.[/cyan]")
+
         elif pre_transfer_status == "exists_same_size":
             ui.update_torrent_progress(hash_, total_size_calc * transfer_multiplier, transfer_type='download')
-            transfer_executed = False
-        elif pre_transfer_status == "exists_different_size":
-            if 'rsync' not in transfer_mode:
+            ui.log(f"Skipping transfer for '{name}', content exists and is the same size.")
+            transfer_executed = False # Content already exists
+
+        elif pre_transfer_status in ("not_exists", "exists_different_size"):
+            # Delete mismatched content if it exists and we're not using rsync
+            if pre_transfer_status == "exists_different_size" and 'rsync' not in transfer_mode:
                 try:
                     delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
                 except Exception as e:
                     return "failed", f"Failed to delete mismatched content: {e}"
 
-        if pre_transfer_status in ("not_exists", "exists_different_size") and not dry_run:
-            transfer_success = strategy.execute_transfer(
-                files, torrent, ui, file_tracker, dry_run
-            )
+            transfer_success = strategy.execute_transfer(files, torrent, ui, file_tracker, dry_run)
             if not transfer_success:
-                return "failed", "Transfer failed during execution"
+                return "failed", f"File transfer failed for '{name}'."
             transfer_executed = True
 
+        # 5. Perform post-transfer actions (add to client, set category, etc.)
         post_transfer_success, post_transfer_msg = strategy.post_transfer_actions(
             torrent, source_qbit, destination_qbit, config, tracker_rules,
             dest_content_path, destination_save_path,
-            transfer_executed, dry_run, test_run,
-            file_tracker,
-            files,
-            ui
+            transfer_executed, dry_run, test_run, file_tracker, files, ui
         )
 
         if post_transfer_success:
@@ -267,8 +172,9 @@ def transfer_torrent(
             return "failed", post_transfer_msg
 
     except Exception as e:
+        logging.error(f"An unexpected error occurred during transfer_torrent for '{name}': {e}", exc_info=True)
         ui.complete_torrent_transfer(hash_, success=False)
-        return "failed", f"Unexpected error: {e}"
+        return "failed", f"Unexpected error in '{name}': {e}"
 
 def _handle_utility_commands(args: argparse.Namespace, config: configparser.ConfigParser, tracker_rules: Dict[str, str], script_dir: Path, ssh_connection_pools: Dict[str, SSHConnectionPool], checkpoint: TransferCheckpoint, file_tracker: FileTransferTracker) -> bool:
     """Handles command-line arguments that perform a specific action and exit.
@@ -441,44 +347,6 @@ class TorrentMover:
         except Exception as e:
             raise RuntimeError(f"Failed to connect to qBittorrent client after multiple retries: {e}") from e
 
-    def _update_transfer_progress(self, torrent_hash: str, progress: float, transferred_bytes: int, total_size: int):
-        """Callback to update torrent progress in the UI."""
-        if isinstance(self.ui, UIManagerV2):
-            # This is a more direct update for rsync
-            with self.ui._lock:
-                if torrent_hash in self.ui._torrents:
-                    # Calculate delta for overall progress
-                    current_transferred = self.ui._torrents[torrent_hash].get("transferred_dl", 0) # Use a specific key
-                    delta = transferred_bytes - current_transferred
-
-                    if delta > 0:
-                        self.ui._torrents[torrent_hash]["transferred_dl"] = transferred_bytes
-                        # Update the main transferred field for the torrent's individual bar
-                        self.ui._torrents[torrent_hash]["transferred"] = transferred_bytes
-
-                        # Update overall stats
-                        self.ui._stats["transferred_dl_bytes"] += delta
-                        self.ui._stats["transferred_bytes"] = self.ui._stats.get("transferred_dl_bytes", 0) + self.ui._stats.get("transferred_ul_bytes", 0)
-
-                        # Update progress bars
-                        self.ui.main_progress.update(self.ui.overall_task, advance=delta)
-
-    def _update_transfer_speed(self, torrent_hash: str, dl_speed: float, ul_speed: float):
-        """Callback to update transfer speed in the UI."""
-        if isinstance(self.ui, UIManagerV2):
-            with self.ui._lock:
-                # This function is now just for rsync (DL only)
-                if dl_speed > 0:
-                    self.ui._stats["current_dl_speed"] = dl_speed
-                    self.ui._dl_speed_history.append(dl_speed)
-                    if dl_speed > self.ui._stats["peak_speed"]:
-                         self.ui._stats["peak_speed"] = dl_speed
-                    self.ui._stats["last_dl_speed_check"] = time.time() # Keep it fresh
-
-                # rsync has no UL speed
-                self.ui._stats["current_ul_speed"] = 0.0
-
-
     def _transfer_worker(self, torrent: "qbittorrentapi.TorrentDictionary", total_size: int, is_auto_move: bool = False):
         """
         Worker function to be run in the thread pool for a single torrent.
@@ -502,11 +370,7 @@ class TorrentMover:
                 file_tracker=self.file_tracker,
                 ssh_connection_pools=self.ssh_connection_pools,
                 checkpoint=self.checkpoint,
-                args=self.args,
-                # --- Pass the new callbacks from this class instance ---
-                log_transfer=lambda _hash, msg: self.ui.log(msg), # Wrap in lambda to match rsync's 2-arg call
-                _update_transfer_progress=self._update_transfer_progress,
-                _update_transfer_speed=self._update_transfer_speed
+                args=self.args
             )
 
             log_name = torrent.name[:50] + "..." if len(torrent.name) > 53 else torrent.name
