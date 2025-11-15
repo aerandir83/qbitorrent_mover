@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import qbittorrentapi
 from rich.console import Console
 from rich.table import Table
+from ...clients.torrent_client import TorrentClientInterface
 
 
 def display_tracker_rules(rules: Dict[str, str]) -> None:
@@ -99,7 +100,7 @@ def get_tracker_domain(tracker_url: str) -> Optional[str]:
     except Exception:
         return None
 
-def get_category_from_rules(torrent: qbittorrentapi.TorrentDictionary, rules: Dict[str, str], client: qbittorrentapi.Client) -> Optional[str]:
+def get_category_from_rules(torrent: qbittorrentapi.TorrentDictionary, rules: Dict[str, str], client: TorrentClientInterface) -> Optional[str]:
     """Finds a matching category for a torrent based on its trackers.
 
     This function iterates through a torrent's trackers, extracts the domain
@@ -115,7 +116,7 @@ def get_category_from_rules(torrent: qbittorrentapi.TorrentDictionary, rules: Di
         The matched category as a string, or None if no rule matches.
     """
     try:
-        trackers = client.torrents_trackers(torrent_hash=torrent.hash)
+        trackers = client.get_torrent_trackers(torrent.hash)
         for tracker in trackers:
             domain = get_tracker_domain(tracker.get('url'))
             if domain and domain in rules:
@@ -124,7 +125,7 @@ def get_category_from_rules(torrent: qbittorrentapi.TorrentDictionary, rules: Di
         logging.warning(f"Could not check trackers for torrent '{torrent.name}': {e}")
     return None
 
-def categorize_torrents(client: qbittorrentapi.Client, torrents: "qbittorrentapi.TorrentList", tracker_rules: Dict[str, str]) -> None:
+def categorize_torrents(client: TorrentClientInterface, torrents: "qbittorrentapi.TorrentList", tracker_rules: Dict[str, str]) -> None:
     """
     Categorizes a list of torrents based on tracker rules.
 
@@ -139,7 +140,7 @@ def categorize_torrents(client: qbittorrentapi.Client, torrents: "qbittorrentapi
     logging.info("Categorization finished.")
 
 
-def set_category_based_on_tracker(client: qbittorrentapi.Client, torrent_hash: str, tracker_rules: Dict[str, str], dry_run: bool = False) -> None:
+def set_category_based_on_tracker(client: TorrentClientInterface, torrent_hash: str, tracker_rules: Dict[str, str], dry_run: bool = False) -> None:
     """Sets a torrent's category based on matching tracker rules.
 
     This function fetches a torrent's information, finds a matching category
@@ -154,11 +155,10 @@ def set_category_based_on_tracker(client: qbittorrentapi.Client, torrent_hash: s
         dry_run: If True, logs the action without actually changing the category.
     """
     try:
-        torrent_info = client.torrents_info(torrent_hashes=torrent_hash)
-        if not torrent_info:
+        torrent = client.get_torrent_info(torrent_hash)
+        if not torrent:
             logging.warning(f"Could not find torrent {torrent_hash[:10]} on destination to categorize.")
             return
-        torrent = torrent_info[0]
         category = get_category_from_rules(torrent, tracker_rules, client)
         if category:
             if category == "ignore":
@@ -169,7 +169,7 @@ def set_category_based_on_tracker(client: qbittorrentapi.Client, torrent_hash: s
                 return
             logging.info(f"Rule found. Setting category to '{category}' for '{torrent.name}'.")
             if not dry_run:
-                client.torrents_set_category(torrent_hashes=torrent.hash, category=category)
+                client.set_torrent_category(torrent.hash, category)
             else:
                 logging.info(f"[DRY RUN] Would set category of '{torrent.name}' to '{category}'.")
         else:
@@ -179,7 +179,7 @@ def set_category_based_on_tracker(client: qbittorrentapi.Client, torrent_hash: s
     except Exception as e:
         logging.error(f"An error occurred during categorization for torrent {torrent_hash[:10]}: {e}", exc_info=True)
 
-def run_interactive_categorization(client: qbittorrentapi.Client, rules: Dict[str, str], script_dir: Path, category_to_scan: str, no_rules: bool = False) -> None:
+def run_interactive_categorization(client: TorrentClientInterface, rules: Dict[str, str], script_dir: Path, category_to_scan: str, no_rules: bool = False) -> None:
     """Starts a user-interactive session to categorize torrents.
 
     This function scans a specified category (or uncategorized torrents) for
@@ -202,10 +202,10 @@ def run_interactive_categorization(client: qbittorrentapi.Client, rules: Dict[st
     try:
         if not category_to_scan:
             logging.info("No category specified. Scanning for 'uncategorized' torrents.")
-            all_torrents_in_category = client.torrents_info(filter='uncategorized', sort='name')
+            all_torrents_in_category = client.get_all_torrents(filter='uncategorized', sort='name')
         else:
             logging.info(f"Scanning for torrents in category: '{category_to_scan}'")
-            all_torrents_in_category = client.torrents_info(category=category_to_scan, sort='name')
+            all_torrents_in_category = client.get_all_torrents(category=category_to_scan, sort='name')
 
         # Filter for completed torrents only before proceeding
         torrents_to_check = [t for t in all_torrents_in_category if t.progress == 1]
@@ -216,7 +216,7 @@ def run_interactive_categorization(client: qbittorrentapi.Client, rules: Dict[st
         if not torrents_to_check:
             logging.info(f"No torrents found in '{category_to_scan or 'uncategorized'}' that need categorization.")
             return
-        available_categories = sorted(list(client.torrent_categories.categories.keys()))
+        available_categories = sorted(list(client.get_torrent_categories().keys()))
         if not available_categories:
             logging.error("No categories found on the destination client. Cannot perform categorization.")
             return
@@ -234,7 +234,7 @@ def run_interactive_categorization(client: qbittorrentapi.Client, rules: Dict[st
                 elif torrent.category != auto_category:
                     logging.info(f"Rule found for '{torrent.name}'. Setting category to '{auto_category}'.")
                     try:
-                        client.torrents_set_category(torrent_hashes=torrent.hash, category=auto_category)
+                        client.set_torrent_category(torrent.hash, auto_category)
                     except Exception as e:
                         logging.error(f"Failed to set category for '{torrent.name}': {e}", exc_info=True)
                 continue
@@ -244,7 +244,7 @@ def run_interactive_categorization(client: qbittorrentapi.Client, rules: Dict[st
             console.print("-" * 60)
             console.print(f"Torrent needs categorization: [bold]{torrent.name}[/bold]")
             console.print(f"   Current Category: {torrent.category or 'None'}")
-            trackers = client.torrents_trackers(torrent_hash=torrent.hash)
+            trackers = client.get_torrent_trackers(torrent.hash)
             torrent_domains = sorted(list(set(d for d in [get_tracker_domain(t.get('url')) for t in trackers] if d)))
             console.print(f"   Tracker Domains: {', '.join(torrent_domains) if torrent_domains else 'None found'}")
             console.print("\nPlease choose an action:")
@@ -276,7 +276,7 @@ def run_interactive_categorization(client: qbittorrentapi.Client, rules: Dict[st
                     if 0 <= choice_idx < len(available_categories):
                         chosen_category = available_categories[choice_idx]
                         console.print(f"Setting category to '{chosen_category}'.")
-                        client.torrents_set_category(torrent_hashes=torrent.hash, category=chosen_category)
+                        client.set_torrent_category(torrent.hash, chosen_category)
                         if torrent_domains:
                             while True:
                                 learn = console.input("Create a rule for this choice? (y/n): ").lower()

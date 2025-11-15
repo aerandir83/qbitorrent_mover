@@ -32,10 +32,8 @@ from .core_logic.ssh_manager import (
     _get_all_files_recursive, batch_get_remote_sizes,
     is_remote_dir
 )
-from .clients.qbittorrent_manager import (
-    connect_qbit, get_eligible_torrents, wait_for_recheck_completion,
-    get_incomplete_files
-)
+from .clients.torrent_client import TorrentClientInterface
+from .clients.qbittorrent_manager import QBittorrentClient
 from .core_logic.transfer_manager import (
     FileTransferTracker, TransferCheckpoint, transfer_content_rsync,
     transfer_content_with_queue, transfer_content_sftp_upload, Timeouts,
@@ -225,8 +223,8 @@ from .strategies.transfer_strategies import get_transfer_strategy, TransferFile
 
 def _post_transfer_actions(
     torrent: qbittorrentapi.TorrentDictionary,
-    source_qbit: qbittorrentapi.Client,
-    destination_qbit: Optional[qbittorrentapi.Client],
+    source_qbit: TorrentClientInterface,
+    destination_qbit: Optional[TorrentClientInterface],
     config: configparser.ConfigParser,
     tracker_rules: Dict[str, str],
     ssh_connection_pools: Dict[str, SSHConnectionPool],
@@ -314,13 +312,13 @@ def _post_transfer_actions(
 
     # --- 2. Add Torrent to Destination (if not already there) ---
     try:
-        dest_torrent = destination_qbit.torrents_info(torrent_hashes=hash_)
+        dest_torrent = destination_qbit.get_torrent_info(hash_)
         if not dest_torrent:
             logging.info(f"Torrent {name} not found on destination. Adding it.")
             if not dry_run:
                 logging.debug(f"Exporting .torrent file for {name}")
                 try:
-                    torrent_file_content = source_qbit.torrents_export(torrent_hash=hash_)
+                    torrent_file_content = source_qbit.export_torrent_file(hash_)
                 except qbittorrentapi.exceptions.NotFound404Error:
                     logging.error(f"Cannot export .torrent file for {name}: torrent not found on source.")
                     return False, "Source torrent not found for export"
@@ -330,12 +328,12 @@ def _post_transfer_actions(
 
                 logging.info(f"CLIENT: Adding torrent to Destination (AMM=True, paused) with save path '{destination_save_path_str}': {name}")
                 try:
-                    destination_qbit.torrents_add(
-                        torrent_files=torrent_file_content,
+                    destination_qbit.add_torrent(
+                        torrent_file_content=torrent_file_content,
                         save_path=destination_save_path_str,
                         is_paused=True,
                         category=torrent.category,
-                        use_auto_torrent_management=True
+                        use_auto_management=True
                     )
                     time.sleep(5) # Give client time to add it
                 except Exception as e:
@@ -353,9 +351,7 @@ def _post_transfer_actions(
     # --- 3. Force Recheck ---
     if not dry_run:
         logging.info(f"CLIENT: Triggering force recheck on Destination for: {name}")
-        try:
-            destination_qbit.torrents_recheck(torrent_hashes=hash_)
-        except qbittorrentapi.exceptions.NotFound404Error:
+        if not destination_qbit.recheck_torrent(hash_):
             msg = f"Failed to start recheck: Torrent {name} disappeared from destination client."
             logging.error(msg)
             return False, msg
@@ -363,13 +359,11 @@ def _post_transfer_actions(
         logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
 
     # --- 4. Wait for Recheck and Handle Failure ---
-    # --- 4. Wait for Recheck and Handle Failure ---
     recheck_status = "SUCCESS"  # Default for dry run
     if not dry_run:
         logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
         no_progress_timeout = config.getint('SETTINGS', 'recheck_no_progress_timeout', fallback=300)
-        recheck_status = wait_for_recheck_completion(
-            destination_qbit,
+        recheck_status = destination_qbit.wait_for_recheck_completion(
             torrent.hash,
             ui,
             no_progress_timeout=no_progress_timeout,
@@ -399,17 +393,15 @@ def _post_transfer_actions(
                 logging.error(f"Automated repair (delta transfer) FAILED for {name}.")
                 ui.log(f"[bold red]Automated repair FAILED for {name}.[/bold red]")
                 # Pause torrent, do not delete, return failure
-                try:
-                    destination_qbit.torrents_pause(torrent_hashes=hash_)
-                except Exception as e:
-                    logging.warning(f"Failed to pause torrent {name} after repair failure: {e}")
+                if not destination_qbit.pause_torrent(hash_):
+                    logging.warning(f"Failed to pause torrent {name} after repair failure.")
                 return False, "Automated repair transfer failed."
 
             # Run re-check a final time
             logging.info(f"Automated repair complete. Triggering final re-check for {name}...")
             ui.log(f"Repair complete. Final re-check for {name}...")
-            final_recheck_status = wait_for_recheck_completion(
-                destination_qbit, torrent.hash, ui,
+            final_recheck_status = destination_qbit.wait_for_recheck_completion(
+                torrent.hash, ui,
                 no_progress_timeout=no_progress_timeout, dry_run=dry_run
             )
 
@@ -420,10 +412,8 @@ def _post_transfer_actions(
                 logging.error(f"Final re-check FAILED for {name} after repair (Status: {final_recheck_status}).")
                 ui.log(f"[bold red]Final re-check FAILED for {name} after repair.[/bold red]")
                 # Pause torrent, do not delete, return failure
-                try:
-                    destination_qbit.torrents_pause(torrent_hashes=hash_)
-                except Exception as e:
-                    logging.warning(f"Failed to pause torrent {name} after final recheck failure: {e}")
+                if not destination_qbit.pause_torrent(hash_):
+                    logging.warning(f"Failed to pause torrent {name} after final recheck failure.")
                 return False, "Automated correction failed final re-check."
 
         elif not strategy.supports_delta_correction():
@@ -431,10 +421,8 @@ def _post_transfer_actions(
             ui.log(f"[yellow]Recheck failed for {name}. No auto-repair possible.[/yellow]")
             # Pause torrent, do not delete, return failure
             if not dry_run:
-                try:
-                    destination_qbit.torrents_pause(torrent_hashes=hash_)
-                except Exception as e:
-                    logging.warning(f"Failed to pause torrent {name} after recheck failure: {e}")
+                if not destination_qbit.pause_torrent(hash_):
+                    logging.warning(f"Failed to pause torrent {name} after recheck failure.")
             return False, "Recheck failed, strategy does not support correction."
 
         else: # Is dry_run
@@ -459,7 +447,7 @@ def _post_transfer_actions(
             # 2. Apply tracker-based category if available
             if tracker_rules and not dry_run:
                 try:
-                    from .tracker_manager import set_category_based_on_tracker
+                    from .core_logic.tracker_manager import set_category_based_on_tracker
                     set_category_based_on_tracker(destination_qbit, torrent.hash, tracker_rules, dry_run)
                     time.sleep(1)
                 except Exception as e:
@@ -473,28 +461,23 @@ def _post_transfer_actions(
                 try:
                     logging.info("Resuming destination torrent.")
                     if not dry_run:
-                        destination_qbit.torrents_resume(torrent_hashes=torrent.hash)
+                        destination_qbit.resume_torrent(torrent.hash)
                         time.sleep(2)  # Verify it started
                         # Check status
-                        check_torrent = destination_qbit.torrents_info(torrent_hashes=torrent.hash)
-                        if check_torrent and check_torrent[0].state in ['uploading', 'stalledUP', 'queuedUP', 'forcedUP']:
+                        check_torrent = destination_qbit.get_torrent_info(torrent.hash)
+                        if check_torrent and check_torrent.state in ['uploading', 'stalledUP', 'queuedUP', 'forcedUP']:
                             logging.info(f"Torrent successfully started: {torrent.name}")
                         else:
-                            logging.warning(f"Torrent may not have started correctly. State: {check_torrent[0].state if check_torrent else 'unknown'}")
+                            logging.warning(f"Torrent may not have started correctly. State: {check_torrent.state if check_torrent else 'unknown'}")
                 except Exception as e:
                     logging.warning(f"Failed to resume torrent: {e}")
 
             # 4. Delete Source (AFTER everything else is confirmed)
             if not dry_run and not test_run:
                 if config.getboolean('SOURCE_CLIENT', 'delete_after_transfer', fallback=True):
-                    try:
-                        logging.info(f"Deleting torrent and data from source: {torrent.name}")
-                        source_qbit.torrents_delete(torrent_hashes=torrent.hash, delete_files=True)
-                        time.sleep(1)  # Give it time to process
-                    except qbittorrentapi.exceptions.NotFound404Error:
-                        logging.warning("Source torrent already deleted or not found.")
-                    except Exception as e:
-                        logging.warning(f"Failed to delete source torrent: {e}")
+                    logging.info(f"Deleting torrent and data from source: {torrent.name}")
+                    source_qbit.delete_torrent(torrent.hash, delete_files=True)
+                    time.sleep(1)  # Give it time to process
                 else:
                     logging.info("Skipping source torrent deletion as per 'delete_after_transfer' config.")
 
@@ -644,8 +627,8 @@ def _execute_transfer_placeholder(
 def transfer_torrent(
     torrent: qbittorrentapi.TorrentDictionary,
     total_size: int,
-    source_qbit: qbittorrentapi.Client,
-    destination_qbit: qbittorrentapi.Client,
+    source_qbit: TorrentClientInterface,
+    destination_qbit: TorrentClientInterface,
     config: configparser.ConfigParser,
     tracker_rules: Dict[str, str],
     ui: BaseUIManager,
@@ -795,9 +778,10 @@ def _handle_utility_commands(args: argparse.Namespace, config: configparser.Conf
     if args.categorize:
         try:
             dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
-            destination_qbit = connect_qbit(config[dest_client_section], "Destination")
+            destination_qbit: TorrentClientInterface = QBittorrentClient(config[dest_client_section], "Destination")
+            destination_qbit.connect()
             logging.info("Fetching all completed torrents from destination for categorization...")
-            completed_torrents = [t for t in destination_qbit.torrents_info() if t.progress == 1]
+            completed_torrents = [t for t in destination_qbit.get_all_torrents() if t.progress == 1]
             if completed_torrents:
                 categorize_torrents(destination_qbit, completed_torrents, tracker_rules)
             else:
@@ -843,7 +827,8 @@ def _handle_utility_commands(args: argparse.Namespace, config: configparser.Conf
     if args.interactive_categorize:
         try:
             dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
-            destination_qbit = connect_qbit(config[dest_client_section], "Destination")
+            destination_qbit: TorrentClientInterface = QBittorrentClient(config[dest_client_section], "Destination")
+            destination_qbit.connect()
             cat_to_scan = args.category or config['SETTINGS'].get('category_to_move') or ''
             run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
         except Exception as e:
@@ -904,8 +889,8 @@ class TorrentMover:
         self.ssh_connection_pools: Dict[str, SSHConnectionPool] = {}
         self.checkpoint: Optional[TransferCheckpoint] = None
         self.file_tracker: Optional[FileTransferTracker] = None
-        self.source_qbit: Optional["qbittorrentapi.Client"] = None
-        self.destination_qbit: Optional["qbittorrentapi.Client"] = None
+        self.source_qbit: Optional[TorrentClientInterface] = None
+        self.destination_qbit: Optional[TorrentClientInterface] = None
         self.ui: BaseUIManager = SimpleUIManager() # Default, will be replaced
         self.watchdog: Optional[TransferWatchdog] = None
 
@@ -931,8 +916,12 @@ class TorrentMover:
         try:
             source_section_name = self.config['SETTINGS']['source_client_section']
             dest_section_name = self.config['SETTINGS']['destination_client_section']
-            self.source_qbit = connect_qbit(self.config[source_section_name], "Source")
-            self.destination_qbit = connect_qbit(self.config[dest_section_name], "Destination")
+
+            self.source_qbit = QBittorrentClient(self.config[source_section_name], "Source")
+            self.source_qbit.connect()
+
+            self.destination_qbit = QBittorrentClient(self.config[dest_section_name], "Destination")
+            self.destination_qbit.connect()
         except KeyError as e:
             raise KeyError(f"Configuration Error: The client section '{e}' is defined in your [SETTINGS] but not found in the config file.") from e
         except Exception as e:
@@ -1043,7 +1032,7 @@ class TorrentMover:
             except ValueError:
                 logging.error(f"Invalid value for 'size_threshold_gb': '{size_threshold_gb_str}'. It must be a number. Disabling threshold.")
 
-        eligible_torrents = get_eligible_torrents(self.source_qbit, category_to_move, size_threshold_gb)
+        eligible_torrents = self.source_qbit.get_eligible_torrents(category_to_move, size_threshold_gb)
         if recovered_torrents:
             eligible_hashes = {t.hash for t in eligible_torrents}
             for torrent in recovered_torrents:
