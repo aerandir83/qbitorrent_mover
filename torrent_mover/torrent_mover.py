@@ -48,7 +48,7 @@ from .core_logic.tracker_manager import (
 )
 from .strategies.transfer_strategies import get_transfer_strategy, TransferFile
 from .ui import BaseUIManager, SimpleUIManager, UIManagerV2
-from .core_logic.watchdog import TransferWatchdog
+from .core_logic.resilience import StallResilienceWatchdog
 from rich.console import Console
 
 if TYPE_CHECKING:
