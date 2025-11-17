@@ -194,7 +194,7 @@ class _StatsPanel:
             total_gb = stats['total_bytes'] / (1024**3)
             remaining_gb = max(0, total_gb - transferred_gb)
 
-            stats_table.add_row("📊 Progress", f"[white]{transferred_gb:.2f}/{total_gb:.2f} GB ({remaining_gb:.2f} GB rem.)[/]")
+            stats_table.add_row("📊 Progress: ", f"[white]{transferred_gb:.2f}/{total_gb:.2f} GB ({remaining_gb:.2f} GB rem.)[/]")
             dl_str = f"{current_dl_speed / (1024**2):.1f}"
             ul_str = f"{current_ul_speed / (1024**2):.1f}"
 
@@ -202,17 +202,17 @@ class _StatsPanel:
             if current_ul_speed == 0 and self.ui_manager.transfer_mode in ['sftp', 'rsync', 'sftp_upload']:
                 ul_str = "--"
 
-            stats_table.add_row("⚡ Speed", f"[green]DL:{dl_str}[/] [yellow]UL:{ul_str}[/] MB/s")
-            stats_table.add_row("📈 Avg/Peak", f"[dim]{avg_speed_hist / (1024**2):.1f}/{stats['peak_speed'] / (1024**2):.1f} MB/s[/]")
+            stats_table.add_row("⚡ Speed: ", f"[green]DL:{dl_str}[/] [yellow]UL:{ul_str}[/] MB/s")
+            stats_table.add_row("📈 Avg/Peak: ", f"[dim]{avg_speed_hist / (1024**2):.1f}/{stats['peak_speed'] / (1024**2):.1f} MB/s[/]")
 
             # Detailed counts
-            stats_table.add_row("🔄 Active", f"[white]{stats['active_transfers']}[/]")
-            stats_table.add_row("✅ Completed", f"[green]{stats['completed_transfers']}[/]")
-            stats_table.add_row("❌ Failed", f"[red]{stats['failed_transfers']}[/]")
+            stats_table.add_row("🔄 Active: ", f"[white]{stats['active_transfers']}[/]")
+            stats_table.add_row("✅ Completed: ", f"[green]{stats['completed_transfers']}[/]")
+            stats_table.add_row("❌ Failed: ", f"[red]{stats['failed_transfers']}[/]")
 
             total_files = sum(t.get('total_files', 0) for t in self.ui_manager._torrents.values())
             completed_files = sum(t.get('completed_files', 0) for t in self.ui_manager._torrents.values())
-            stats_table.add_row("📂 Files", f"[white]{completed_files}/{total_files}[/]")
+            stats_table.add_row("📂 Files: ", f"[white]{completed_files}/{total_files}[/]")
 
             # Compacted Time
             h, rem = divmod(elapsed, 3600); m, s = divmod(rem, 60)
@@ -222,7 +222,7 @@ class _StatsPanel:
                 eta_s = (remaining_gb * 1024**3) / avg_speed_hist
                 eta_h, eta_rem = divmod(eta_s, 3600); eta_m, _ = divmod(eta_rem, 60)
                 eta_str = f"{int(eta_h):02d}:{int(eta_m):02d}"
-            stats_table.add_row("⏱️ Time", f"[dim]E:{time_str}[/] [cyan]ETA:{eta_str}[/]")
+            stats_table.add_row("⏱️ Time: ", f"[dim]E:{time_str}[/] [cyan]ETA:{eta_str}[/]")
 
             # Create recent completions table (if space allows)
             max_recent = config.get("recent_completions", 0)
