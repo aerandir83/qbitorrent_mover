@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.9.5" # Note: Version updated in user's file, retaining it.
+__version__ = "2.9.6"
 
 # Standard Lib
 import configparser
@@ -362,12 +362,11 @@ def _post_transfer_actions(
         logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
 
     # --- 4. Wait for Recheck and Handle Failure ---
-    # --- 4. Wait for Recheck and Handle Failure ---
     recheck_status = "SUCCESS"  # Default for dry run
     if not dry_run:
         logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
         recheck_stuck_timeout = config.getint('SETTINGS', 'recheck_stuck_timeout', fallback=60)
-        recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=5)
+        recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=15)
         recheck_status = wait_for_recheck_completion(
             destination_qbit,
             torrent.hash,
@@ -428,7 +427,7 @@ def _post_transfer_actions(
 
             # Read new config values for the *second* recheck
             recheck_stuck_timeout = config.getint('SETTINGS', 'recheck_stuck_timeout', fallback=60)
-            recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=5)
+            recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=15)
 
             final_recheck_status = wait_for_recheck_completion(
                 destination_qbit, torrent.hash, ui,
@@ -973,7 +972,38 @@ class TorrentMover:
 
                     # 3. Update the UI's global stats with the delta
                     if delta > 0:
-                        self.ui._stats["transferred_dl_bytes"] += delta
+                        # FIX #1: Determine transfer type based on transfer mode
+                        transfer_mode = self.config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+                        
+                        if transfer_mode in ['rsync', 'rsync_upload']:
+                            # For rsync modes, we need to determine if this is DL or UL phase
+                            # rsync_upload has both phases, rsync only has DL
+                            if transfer_mode == 'rsync_upload':
+                                # Check if we're in download or upload phase based on progress
+                                # First half is download, second half is upload
+                                if transferred_bytes <= (total_size / 2):
+                                    self.ui._stats["transferred_dl_bytes"] += delta
+                                else:
+                                    self.ui._stats["transferred_ul_bytes"] += delta
+                            else:
+                                # Pure rsync mode is download only
+                                self.ui._stats["transferred_dl_bytes"] += delta
+                        elif transfer_mode == 'sftp_upload':
+                            # SFTP upload mode - both phases happen
+                            local_cache = self.config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
+                            if local_cache:
+                                # With cache: first half is DL, second half is UL
+                                if transferred_bytes <= (total_size / 2):
+                                    self.ui._stats["transferred_dl_bytes"] += delta
+                                else:
+                                    self.ui._stats["transferred_ul_bytes"] += delta
+                            else:
+                                # Direct stream: count as upload only
+                                self.ui._stats["transferred_ul_bytes"] += delta
+                        else:
+                            # SFTP mode is download only
+                            self.ui._stats["transferred_dl_bytes"] += delta
+                        
                         self.ui._stats["transferred_bytes"] = self.ui._stats.get("transferred_dl_bytes", 0) + self.ui._stats.get("transferred_ul_bytes", 0)
                         # Update the overall progress bar
                         self.ui.main_progress.update(self.ui.overall_task, advance=delta)
