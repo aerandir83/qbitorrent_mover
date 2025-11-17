@@ -48,7 +48,7 @@ def update_config(config_path: str, template_path: str) -> None:
 
         # Explicitly remove the old, deprecated option
         if updater.has_section('SETTINGS') and updater['SETTINGS'].has_option('recheck_no_progress_timeout'):
-            updater['SETTINGS'].remove_option('recheck_no_progress_timeout')
+            del updater['SETTINGS']['recheck_no_progress_timeout']
             changes_made = True
             logging.info("CONFIG: Removed deprecated option 'recheck_no_progress_timeout' from [SETTINGS]")
 
