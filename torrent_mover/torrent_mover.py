@@ -241,8 +241,7 @@ def _post_transfer_actions(
     ui: BaseUIManager,
     # --- Add these new arguments ---
     log_transfer: Callable,
-    _update_transfer_progress: Callable,
-    _update_transfer_speed: Callable
+    _update_transfer_progress: Callable
 ) -> Tuple[bool, str]:
     """Manages tasks after the file transfer is complete.
 
@@ -410,7 +409,7 @@ def _post_transfer_actions(
             repair_success = _execute_transfer(
                 transfer_mode, all_files, torrent, sum(f.size for f in all_files), config,
                 ui, file_tracker, ssh_connection_pools, dry_run,
-                log_transfer, _update_transfer_progress, _update_transfer_speed
+                log_transfer, _update_transfer_progress
             )
 
             if not repair_success:
@@ -548,8 +547,7 @@ def _execute_transfer(
     dry_run: bool,
     # --- New Callbacks ---
     log_transfer: Callable,
-    _update_transfer_progress: Callable,
-    _update_transfer_speed: Callable
+    _update_transfer_progress: Callable
 ) -> bool:
     """
     Executes the file transfer for a given list of files using the specified strategy.
@@ -600,7 +598,6 @@ def _execute_transfer(
                 torrent_hash=hash_,
                 log_transfer=log_transfer,
                 _update_transfer_progress=_update_transfer_progress,
-                _update_transfer_speed=_update_transfer_speed,
                 rsync_options=rsync_options,
                 file_tracker=file_tracker,
                 total_size=total_size_calc,
@@ -632,7 +629,6 @@ def _execute_transfer(
                 total_size=total_size_calc,
                 log_transfer=log_transfer,
                 _update_transfer_progress=_update_transfer_progress,
-                _update_transfer_speed=_update_transfer_speed,
                 dry_run=dry_run,
                 is_folder=is_folder
             )
@@ -654,8 +650,7 @@ def _execute_transfer_placeholder(
     dry_run: bool,
     # --- Callbacks ---
     log_transfer: Callable,
-    _update_transfer_progress: Callable,
-    _update_transfer_speed: Callable
+    _update_transfer_progress: Callable
 ) -> bool:
     """
     This is a temporary placeholder for the recheck logic until the main
@@ -664,7 +659,7 @@ def _execute_transfer_placeholder(
     return _execute_transfer(
         transfer_mode, files, torrent, total_size_calc, config, ui,
         file_tracker, ssh_connection_pools, dry_run,
-        log_transfer, _update_transfer_progress, _update_transfer_speed
+        log_transfer, _update_transfer_progress
     )
 
 
@@ -682,8 +677,7 @@ def transfer_torrent(
     args: argparse.Namespace, # Added args
     # --- New Callbacks ---
     log_transfer: Callable,
-    _update_transfer_progress: Callable,
-    _update_transfer_speed: Callable
+    _update_transfer_progress: Callable
 ) -> Tuple[str, str]:
     """Orchestrates the entire transfer process for a single torrent."""
     name, hash_ = torrent.name, torrent.hash
@@ -757,7 +751,7 @@ def transfer_torrent(
             transfer_success = _execute_transfer(
                 transfer_mode, files, torrent, total_size_calc, config,
                 ui, file_tracker, ssh_connection_pools, dry_run,
-                log_transfer, _update_transfer_progress, _update_transfer_speed
+                log_transfer, _update_transfer_progress
             )
 
             if not transfer_success:
@@ -775,7 +769,7 @@ def transfer_torrent(
             files,
             ui,
             # --- Add these new arguments ---
-            log_transfer, _update_transfer_progress, _update_transfer_speed
+            log_transfer, _update_transfer_progress
         )
 
         if post_transfer_success:
@@ -968,39 +962,28 @@ class TorrentMover:
     def _update_transfer_progress(self, torrent_hash: str, progress: float, transferred_bytes: int, total_size: int):
         """Callback to update torrent progress in the UI."""
         if isinstance(self.ui, UIManagerV2):
-            # This is a more direct update for rsync
             with self.ui._lock:
                 if torrent_hash in self.ui._torrents:
-                    # Calculate delta for overall progress
-                    current_transferred = self.ui._torrents[torrent_hash].get("transferred_dl", 0) # Use a specific key
-                    delta = transferred_bytes - current_transferred
+                    # --- NEW DELTA LOGIC ---
+                    # 1. Get the last known bytes from the torrent's state
+                    last_known_bytes = self.ui._torrents[torrent_hash].get("bytes_for_delta_calc", 0)
 
+                    # 2. Calculate the delta
+                    delta = transferred_bytes - last_known_bytes
+
+                    # 3. Update the UI's global stats with the delta
                     if delta > 0:
-                        self.ui._torrents[torrent_hash]["transferred_dl"] = transferred_bytes
-                        # Update the main transferred field for the torrent's individual bar
-                        self.ui._torrents[torrent_hash]["transferred"] = transferred_bytes
-
-                        # Update overall stats
                         self.ui._stats["transferred_dl_bytes"] += delta
                         self.ui._stats["transferred_bytes"] = self.ui._stats.get("transferred_dl_bytes", 0) + self.ui._stats.get("transferred_ul_bytes", 0)
-
-                        # Update progress bars
+                        # Update the overall progress bar
                         self.ui.main_progress.update(self.ui.overall_task, advance=delta)
 
-    def _update_transfer_speed(self, torrent_hash: str, dl_speed: float, ul_speed: float):
-        """Callback to update transfer speed in the UI."""
-        if isinstance(self.ui, UIManagerV2):
-            with self.ui._lock:
-                # This function is now just for rsync (DL only)
-                if dl_speed > 0:
-                    self.ui._stats["current_dl_speed"] = dl_speed
-                    self.ui._dl_speed_history.append(dl_speed)
-                    if dl_speed > self.ui._stats["peak_speed"]:
-                         self.ui._stats["peak_speed"] = dl_speed
-                    self.ui._stats["last_dl_speed_check"] = time.time() # Keep it fresh
+                    # 4. Update the individual torrent's progress bar with the new TOTAL
+                    self.ui._torrents[torrent_hash]["transferred"] = transferred_bytes
 
-                # rsync has no UL speed
-                self.ui._stats["current_ul_speed"] = 0.0
+                    # 5. Store the new "last known bytes" value back in the state
+                    self.ui._torrents[torrent_hash]["bytes_for_delta_calc"] = transferred_bytes
+                    # --- END NEW DELTA LOGIC ---
 
     def _handle_transfer_log(self, torrent_hash: str, message: str):
         """
@@ -1043,8 +1026,7 @@ class TorrentMover:
                 args=self.args,
                 # --- Pass the new callbacks from this class instance ---
                 log_transfer=self._handle_transfer_log,
-                _update_transfer_progress=self._update_transfer_progress,
-                _update_transfer_speed=self._update_transfer_speed
+                _update_transfer_progress=self._update_transfer_progress
             )
 
             log_name = torrent.name[:50] + "..." if len(torrent.name) > 53 else torrent.name
