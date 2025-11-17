@@ -129,6 +129,14 @@ sftp_chunk_size_kb = 64
 # If you see 'TimeoutError: Timeout waiting for SSH connection' in your logs
 # during large parallel transfers, increase this value.
 pool_wait_timeout = 60
-# (Optional) Time in seconds to wait for re-check progress. If no progress is seen
-# for this long, the re-check is considered failed. Default: 300 (5 minutes).
-recheck_no_progress_timeout = 300
+# (Optional) Time in seconds to wait for a "stuck" re-check.
+# If a torrent stays in "checking" state and its progress percentage
+# does not increase for this long, it will be considered a "stuck"
+# failure, and the script will move on without attempting a delta-sync.
+recheck_stuck_timeout = 60
+# (Optional) Time in seconds to confirm a "stopped" re-check.
+# If a torrent's status becomes "Stopped" or "Error" during a re-check,
+# the script will wait this long to confirm the state. If progress remains
+# at 0% (or unchanged) for this period, it will trigger a "failed"
+# re-check (and subsequent delta-sync).
+recheck_stopped_timeout = 5

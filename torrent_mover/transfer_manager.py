@@ -953,7 +953,7 @@ def _transfer_content_rsync_upload_from_cache(
                     if byte == b'\r' or byte == b'\n':
                         if line_buffer:
                             line = line_buffer.decode('utf-8', errors='replace').strip()
-                            log_transfer(torrent_hash, f"[DEBUG] Raw rsync line: {line}")
+                            logging.debug(f"({torrent_hash[:10]}) [RSYNC_PROGRESS] {line}")
                             line_buffer = b"" # Reset buffer
 
                             match = progress_regex.match(line)
@@ -1116,7 +1116,7 @@ def transfer_content_rsync(
                     if byte == b'\r' or byte == b'\n':
                         if line_buffer:
                             line = line_buffer.decode('utf-8', errors='replace').strip()
-                            log_transfer(torrent_hash, f"[DEBUG] Raw rsync line: {line}")
+                            logging.debug(f"({torrent_hash[:10]}) [RSYNC_PROGRESS] {line}")
                             line_buffer = b"" # Reset buffer
 
                             match = progress_regex.match(line)

@@ -367,18 +367,36 @@ def _post_transfer_actions(
     recheck_status = "SUCCESS"  # Default for dry run
     if not dry_run:
         logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
-        no_progress_timeout = config.getint('SETTINGS', 'recheck_no_progress_timeout', fallback=300)
+        recheck_stuck_timeout = config.getint('SETTINGS', 'recheck_stuck_timeout', fallback=60)
+        recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=5)
         recheck_status = wait_for_recheck_completion(
             destination_qbit,
             torrent.hash,
             ui,
-            no_progress_timeout=no_progress_timeout,
+            recheck_stuck_timeout=recheck_stuck_timeout,
+            recheck_stopped_timeout=recheck_stopped_timeout,
             dry_run=dry_run
         )
 
     # (This logic goes *after* wait_for_recheck_completion and *before* the success block)
-    if recheck_status in ("FAILED_STATE", "FAILED_TIMEOUT"):
-        logging.error(f"Recheck FAILED for {name} with status: {recheck_status}.")
+    # --- START MODIFICATION ---
+
+    if recheck_status == "FAILED_STUCK":
+        # This is the new "Stuck" failure from Directive 2, Scenario B
+        # We do NOT trigger a delta-sync. Log, pause, and return failure.
+        logging.error(f"Recheck FAILED for {name} with status: {recheck_status} (Stuck).")
+        ui.log(f"[bold red]Recheck FAILED for {name}: {recheck_status}[/bold red]")
+        if not dry_run:
+            try:
+                destination_qbit.torrents_pause(torrent_hashes=hash_)
+            except Exception as e:
+                logging.warning(f"Failed to pause torrent {name} after stuck recheck failure: {e}")
+        return False, "Recheck failed (stuck), no delta-sync attempted."
+
+    elif recheck_status == "FAILED_STATE":
+        # This is the "Explicit Failure" from Directive 2, Scenario A
+        # This is the *only* case that triggers the delta-sync repair.
+        logging.error(f"Recheck FAILED for {name} with status: {recheck_status} (Stopped/Error).")
         ui.log(f"[bold red]Recheck FAILED for {name}: {recheck_status}[/bold red]")
 
         # Directive 3: Automated Error Correction
@@ -408,9 +426,16 @@ def _post_transfer_actions(
             # Run re-check a final time
             logging.info(f"Automated repair complete. Triggering final re-check for {name}...")
             ui.log(f"Repair complete. Final re-check for {name}...")
+
+            # Read new config values for the *second* recheck
+            recheck_stuck_timeout = config.getint('SETTINGS', 'recheck_stuck_timeout', fallback=60)
+            recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=5)
+
             final_recheck_status = wait_for_recheck_completion(
                 destination_qbit, torrent.hash, ui,
-                no_progress_timeout=no_progress_timeout, dry_run=dry_run
+                recheck_stuck_timeout=recheck_stuck_timeout,
+                recheck_stopped_timeout=recheck_stopped_timeout,
+                dry_run=dry_run
             )
 
             if final_recheck_status == "SUCCESS":
@@ -441,6 +466,8 @@ def _post_transfer_actions(
             logging.info(f"[DRY RUN] Would attempt repair or pause torrent {name}.")
             # We return False here to stop the process, as recheck "failed" in dry run
             return False, "Dry run: Recheck failed."
+
+    # --- END MODIFICATION ---
 
     # --- 5. Post-Recheck Actions (Start, Categorize, Delete Source) ---
     if recheck_status == "SUCCESS":
@@ -975,6 +1002,20 @@ class TorrentMover:
                 # rsync has no UL speed
                 self.ui._stats["current_ul_speed"] = 0.0
 
+    def _handle_transfer_log(self, torrent_hash: str, message: str):
+        """
+        Routes log messages from transfer processes to the logging system.
+        This ensures that [DEBUG] messages are filtered by the root logger's level.
+        """
+        if message.startswith("[DEBUG]"):
+            # Log the message content *without* the [DEBUG] prefix at DEBUG level
+            log_content = message[7:].strip()
+            # We use the torrent hash for context
+            logging.debug(f"({torrent_hash[:10]}...) {log_content}")
+        else:
+            # Log other messages (like "Starting transfer...") as INFO
+            logging.info(f"({torrent_hash[:10]}...) {message}")
+
 
     def _transfer_worker(self, torrent: "qbittorrentapi.TorrentDictionary", total_size: int, is_auto_move: bool = False):
         """
@@ -1001,7 +1042,7 @@ class TorrentMover:
                 checkpoint=self.checkpoint,
                 args=self.args,
                 # --- Pass the new callbacks from this class instance ---
-                log_transfer=lambda _hash, msg: self.ui.log(msg), # Wrap in lambda to match rsync's 2-arg call
+                log_transfer=self._handle_transfer_log,
                 _update_transfer_progress=self._update_transfer_progress,
                 _update_transfer_speed=self._update_transfer_speed
             )
