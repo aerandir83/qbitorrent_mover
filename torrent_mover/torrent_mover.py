@@ -367,12 +367,14 @@ def _post_transfer_actions(
     recheck_status = "SUCCESS"  # Default for dry run
     if not dry_run:
         logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
-        no_progress_timeout = config.getint('SETTINGS', 'recheck_no_progress_timeout', fallback=300)
+        recheck_stuck_timeout = config.getint('SETTINGS', 'recheck_stuck_timeout', fallback=60)
+        recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=5)
         recheck_status = wait_for_recheck_completion(
             destination_qbit,
             torrent.hash,
             ui,
-            no_progress_timeout=no_progress_timeout,
+            recheck_stuck_timeout=recheck_stuck_timeout,
+            recheck_stopped_timeout=recheck_stopped_timeout,
             dry_run=dry_run
         )
 
@@ -410,7 +412,9 @@ def _post_transfer_actions(
             ui.log(f"Repair complete. Final re-check for {name}...")
             final_recheck_status = wait_for_recheck_completion(
                 destination_qbit, torrent.hash, ui,
-                no_progress_timeout=no_progress_timeout, dry_run=dry_run
+                recheck_stuck_timeout=recheck_stuck_timeout,
+                recheck_stopped_timeout=recheck_stopped_timeout,
+                dry_run=dry_run
             )
 
             if final_recheck_status == "SUCCESS":
