@@ -776,8 +776,6 @@ class UIManagerV2(BaseUIManager):
 
     def __enter__(self):
         root_logger = logging.getLogger()
-        if self._rich_handler_ref:
-            root_logger.removeHandler(self._rich_handler_ref)
         root_logger.addHandler(self._um_log_handler)
         self._live = Live(
             self.layout,
@@ -985,7 +983,8 @@ class UIManagerV2(BaseUIManager):
                 "completed_files": 0,
                 "transferred": 0,
                 "status": "transferring",
-                "start_time": time.time()
+                "start_time": time.time(),
+                "bytes_for_delta_calc": 0, # <-- ADD THIS LINE
             }
             self._file_lists[torrent_hash] = all_files
             self._file_status[torrent_hash] = {file_name: "queued" for file_name in all_files}

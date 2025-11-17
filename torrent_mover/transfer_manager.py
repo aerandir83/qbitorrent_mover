@@ -877,7 +877,6 @@ def _transfer_content_rsync_upload_from_cache(
     total_size: int,
     log_transfer: typing.Callable,
     _update_transfer_progress: typing.Callable,
-    _update_transfer_speed: typing.Callable,
     dry_run: bool = False
 ) -> None:
     """
@@ -967,7 +966,6 @@ def _transfer_content_rsync_upload_from_cache(
                                     elapsed_time = time.time() - last_update_time
                                     if elapsed_time > 0:
                                         speed = transferred_delta / elapsed_time
-                                        _update_transfer_speed(torrent_hash, 0, speed)
                                         last_update_time = time.time()
 
                                 last_transferred_bytes = current_transferred_bytes
@@ -1031,7 +1029,6 @@ def transfer_content_rsync(
     total_size: int,
     log_transfer: typing.Callable,
     _update_transfer_progress: typing.Callable,
-    _update_transfer_speed: typing.Callable,
     dry_run: bool = False
 ) -> None:
     """Transfers content from a remote server to a local path using rsync.
@@ -1130,7 +1127,6 @@ def transfer_content_rsync(
                                     elapsed_time = time.time() - last_update_time
                                     if elapsed_time > 0:
                                         speed = transferred_delta / elapsed_time
-                                        _update_transfer_speed(torrent_hash, speed, 0)
                                         last_update_time = time.time()
 
                                 last_transferred_bytes = current_transferred_bytes
@@ -1257,7 +1253,6 @@ def transfer_content_rsync_upload(
     total_size: int,
     log_transfer: typing.Callable,
     _update_transfer_progress: typing.Callable,
-    _update_transfer_speed: typing.Callable,
     dry_run: bool,
     is_folder: bool
 ) -> bool:
@@ -1292,7 +1287,6 @@ def transfer_content_rsync_upload(
             total_size=part_total_size,
             log_transfer=log_transfer,
             _update_transfer_progress=_update_transfer_progress,
-            _update_transfer_speed=_update_transfer_speed,
             dry_run=dry_run
         )
         logging.info(f"Rsync-Upload: Download to cache complete for '{file_name}'.")
@@ -1309,7 +1303,6 @@ def transfer_content_rsync_upload(
             total_size=part_total_size,
             log_transfer=log_transfer,
             _update_transfer_progress=_update_transfer_progress,
-            _update_transfer_speed=_update_transfer_speed,
             dry_run=dry_run
         )
         logging.info(f"Rsync-Upload: Upload from cache complete for '{file_name}'.")
