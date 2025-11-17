@@ -112,32 +112,22 @@ def wait_for_recheck_completion(
     client: qbittorrentapi.Client,
     torrent_hash: str,
     ui: "BaseUIManager",
-    no_progress_timeout: int,
+    recheck_stuck_timeout: int,
+    recheck_stopped_timeout: int,
     dry_run: bool = False
 ) -> str:
-    """
-    Monitors a torrent's recheck, returning a status string.
-
-    Args:
-        client: An authenticated qBittorrent client instance.
-        torrent_hash: The hash of the torrent to monitor.
-        ui: The user interface manager for watchdog petting.
-        no_progress_timeout: Seconds to wait before timing out if no progress is made.
-        dry_run: If True, simulates a successful recheck.
-
-    Returns:
-        "SUCCESS": If the recheck completes to 100%.
-        "FAILED_STATE": If the torrent enters an error state or disappears.
-        "FAILED_TIMEOUT": If no progress is made for the timeout duration.
-    """
     if dry_run:
         logging.info(f"[DRY RUN] Would wait for recheck on {torrent_hash[:10]}. Assuming success.")
         return "SUCCESS"
 
-    last_progress_time = time.time()
-    last_progress = -1
-
     logging.info(f"Waiting for recheck to complete for torrent {torrent_hash[:10]}...")
+
+    # We need to track two separate timeouts
+    last_progress_increase_time = time.time()
+    last_known_progress = -1.0
+
+    stopped_state_detected_time = None
+    last_stopped_progress = -1.0
 
     while True:
         ui.pet_watchdog()
@@ -145,37 +135,69 @@ def wait_for_recheck_completion(
             torrent_info = client.torrents_info(torrent_hashes=torrent_hash)
             if not torrent_info:
                 logging.error(f"Torrent {torrent_hash[:10]} disappeared while waiting for recheck.")
-                return "FAILED_STATE"
+                return "FAILED_STATE" # Triggers delta-sync
 
             torrent = torrent_info[0]
             state = torrent.state
             current_progress = torrent.progress
 
-            # Success Condition (Directive 2): Check for exactly 100%
+            # --- Success Condition ---
             if current_progress >= 1.0:
                 logging.info(f"Recheck completed for torrent {torrent_hash[:10]} at 100%.")
                 return "SUCCESS"
 
-            # Failure Condition (Directive 1): Check for error or stopped states
-            if state in ['error', 'missingFiles', 'stopped', 'pausedUP', 'pausedDL']:
-                logging.error(f"Recheck FAILED for torrent {torrent_hash[:10]}. State is '{state}'.")
-                return "FAILED_STATE"
+            # --- State Handling ---
+            if state in ['checkingUP', 'checkingDL']:
+                # This is the "Checking" state
+                stopped_state_detected_time = None # Reset stopped timer
 
-            # Timeout Condition (Directive 1)
-            if current_progress > last_progress:
-                last_progress_time = time.time()
-                last_progress = current_progress
+                if current_progress > last_known_progress:
+                    # Progress is being made, reset the "stuck" timer
+                    last_progress_increase_time = time.time()
+                    last_known_progress = current_progress
+                    logging.debug(f"Recheck progress: {current_progress*100:.2f}% (State: {state})")
+                else:
+                    # No progress. Check if we are "stuck".
+                    elapsed_stuck_time = time.time() - last_progress_increase_time
+                    if elapsed_stuck_time > recheck_stuck_timeout:
+                        logging.error(f"Recheck FAILED for {torrent_hash[:10]}: No progress for {recheck_stuck_timeout} seconds (State: {state}).")
+                        return "FAILED_STUCK" # New "Stuck" failure state
 
-            if time.time() - last_progress_time > no_progress_timeout:
-                logging.error(f"Recheck FAILED for {torrent_hash[:10]}: No progress for {no_progress_timeout} seconds.")
-                return "FAILED_TIMEOUT"
+            elif state in ['error', 'missingFiles', 'stopped', 'pausedUP', 'pausedDL']:
+                # This is the "Stopped" or "Explicit Failure" state
+                if stopped_state_detected_time is None:
+                    # First time seeing this state, start the timer
+                    logging.warning(f"Recheck for {torrent_hash[:10]} entered a stopped state: '{state}'. Waiting {recheck_stopped_timeout}s to confirm.")
+                    stopped_state_detected_time = time.time()
+                    last_stopped_progress = current_progress
 
-            logging.debug(f"Recheck progress: {current_progress*100:.2f}% (State: {state})")
-            time.sleep(10)
+                # Check if progress has changed (e.g., user fixed it)
+                if current_progress > last_stopped_progress:
+                     logging.info(f"Progress detected on stopped torrent {torrent_hash[:10]}. Resetting timers.")
+                     stopped_state_detected_time = None # Reset
+                     last_progress_increase_time = time.time() # Reset stuck timer too
+                     last_known_progress = current_progress
+                else:
+                    # No progress. Check if the "stopped" timeout has elapsed.
+                    elapsed_stopped_time = time.time() - stopped_state_detected_time
+                    if elapsed_stopped_time > recheck_stopped_timeout:
+                        logging.error(f"Recheck FAILED for torrent {torrent_hash[:10]}. State confirmed as '{state}' for {recheck_stopped_timeout}s.")
+                        return "FAILED_STATE" # Triggers delta-sync
+
+            else:
+                # Any other state (e.g., 'uploading', 'stalledUP') means recheck is done
+                # but it didn't hit 100%. This is a failure.
+                logging.warning(f"Recheck for {torrent_hash[:10]} ended prematurely in state '{state}' at {current_progress*100:.2f}%.")
+                if current_progress >= 1.0:
+                    return "SUCCESS" # It might be 100% and just changed state
+                else:
+                    return "FAILED_STATE" # Triggers delta-sync
+
+            time.sleep(2) # Poll every 2 seconds
 
         except Exception as e:
             logging.error(f"Error while waiting for recheck on {torrent_hash[:10]}: {e}", exc_info=True)
-            return "FAILED_STATE"
+            return "FAILED_STATE" # Triggers delta-sync
 
 def get_incomplete_files(client: qbittorrentapi.Client, torrent_hash: str) -> List[str]:
     """
