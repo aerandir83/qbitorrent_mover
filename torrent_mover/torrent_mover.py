@@ -1318,7 +1318,6 @@ def main() -> int:
         rich_handler = RichHandler(level=log_level, show_path=False, rich_tracebacks=True, markup=True, console=Console(stderr=True))
         rich_formatter = logging.Formatter('%(message)s')
         rich_handler.setFormatter(rich_formatter)
-        logger.addHandler(rich_handler)
         logging.info("--- Torrent Mover script started (Rich UI) ---")
 
     logging.info(f"Using configuration file: {args.config}")

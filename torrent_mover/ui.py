@@ -776,8 +776,6 @@ class UIManagerV2(BaseUIManager):
 
     def __enter__(self):
         root_logger = logging.getLogger()
-        if self._rich_handler_ref:
-            root_logger.removeHandler(self._rich_handler_ref)
         root_logger.addHandler(self._um_log_handler)
         self._live = Live(
             self.layout,
