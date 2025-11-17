@@ -975,6 +975,20 @@ class TorrentMover:
                 # rsync has no UL speed
                 self.ui._stats["current_ul_speed"] = 0.0
 
+    def _handle_transfer_log(self, torrent_hash: str, message: str):
+        """
+        Routes log messages from transfer processes to the logging system.
+        This ensures that [DEBUG] messages are filtered by the root logger's level.
+        """
+        if message.startswith("[DEBUG]"):
+            # Log the message content *without* the [DEBUG] prefix at DEBUG level
+            log_content = message[7:].strip()
+            # We use the torrent hash for context
+            logging.debug(f"({torrent_hash[:10]}...) {log_content}")
+        else:
+            # Log other messages (like "Starting transfer...") as INFO
+            logging.info(f"({torrent_hash[:10]}...) {message}")
+
 
     def _transfer_worker(self, torrent: "qbittorrentapi.TorrentDictionary", total_size: int, is_auto_move: bool = False):
         """
@@ -1001,7 +1015,7 @@ class TorrentMover:
                 checkpoint=self.checkpoint,
                 args=self.args,
                 # --- Pass the new callbacks from this class instance ---
-                log_transfer=lambda _hash, msg: self.ui.log(msg), # Wrap in lambda to match rsync's 2-arg call
+                log_transfer=self._handle_transfer_log,
                 _update_transfer_progress=self._update_transfer_progress,
                 _update_transfer_speed=self._update_transfer_speed
             )
