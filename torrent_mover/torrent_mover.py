@@ -379,8 +379,24 @@ def _post_transfer_actions(
         )
 
     # (This logic goes *after* wait_for_recheck_completion and *before* the success block)
-    if recheck_status in ("FAILED_STATE", "FAILED_TIMEOUT"):
-        logging.error(f"Recheck FAILED for {name} with status: {recheck_status}.")
+    # --- START MODIFICATION ---
+
+    if recheck_status == "FAILED_STUCK":
+        # This is the new "Stuck" failure from Directive 2, Scenario B
+        # We do NOT trigger a delta-sync. Log, pause, and return failure.
+        logging.error(f"Recheck FAILED for {name} with status: {recheck_status} (Stuck).")
+        ui.log(f"[bold red]Recheck FAILED for {name}: {recheck_status}[/bold red]")
+        if not dry_run:
+            try:
+                destination_qbit.torrents_pause(torrent_hashes=hash_)
+            except Exception as e:
+                logging.warning(f"Failed to pause torrent {name} after stuck recheck failure: {e}")
+        return False, "Recheck failed (stuck), no delta-sync attempted."
+
+    elif recheck_status == "FAILED_STATE":
+        # This is the "Explicit Failure" from Directive 2, Scenario A
+        # This is the *only* case that triggers the delta-sync repair.
+        logging.error(f"Recheck FAILED for {name} with status: {recheck_status} (Stopped/Error).")
         ui.log(f"[bold red]Recheck FAILED for {name}: {recheck_status}[/bold red]")
 
         # Directive 3: Automated Error Correction
@@ -410,6 +426,11 @@ def _post_transfer_actions(
             # Run re-check a final time
             logging.info(f"Automated repair complete. Triggering final re-check for {name}...")
             ui.log(f"Repair complete. Final re-check for {name}...")
+
+            # Read new config values for the *second* recheck
+            recheck_stuck_timeout = config.getint('SETTINGS', 'recheck_stuck_timeout', fallback=60)
+            recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=5)
+
             final_recheck_status = wait_for_recheck_completion(
                 destination_qbit, torrent.hash, ui,
                 recheck_stuck_timeout=recheck_stuck_timeout,
@@ -445,6 +466,8 @@ def _post_transfer_actions(
             logging.info(f"[DRY RUN] Would attempt repair or pause torrent {name}.")
             # We return False here to stop the process, as recheck "failed" in dry run
             return False, "Dry run: Recheck failed."
+
+    # --- END MODIFICATION ---
 
     # --- 5. Post-Recheck Actions (Start, Categorize, Delete Source) ---
     if recheck_status == "SUCCESS":
