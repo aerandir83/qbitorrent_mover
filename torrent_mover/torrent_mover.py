@@ -26,35 +26,35 @@ import qbittorrentapi
 from rich.logging import RichHandler
 
 # Project Modules
-from .config_manager import update_config, load_config, ConfigValidator
-from .ssh_manager import (
+from config_manager import update_config, load_config, ConfigValidator
+from ssh_manager import (
     SSHConnectionPool, check_sshpass_installed,
     _get_all_files_recursive, batch_get_remote_sizes,
     is_remote_dir
 )
-from .qbittorrent_manager import (
+from qbittorrent_manager import (
     connect_qbit, get_eligible_torrents, wait_for_recheck_completion,
     get_incomplete_files
 )
-from .transfer_manager import (
+from transfer_manager import (
     FileTransferTracker, TransferCheckpoint, transfer_content_rsync,
     transfer_content_with_queue, transfer_content_sftp_upload, Timeouts,
     transfer_content_rsync_upload, RemoteTransferError
 )
-from .system_manager import (
+from system_manager import (
     LockFile, setup_logging, destination_health_check, change_ownership,
     test_path_permissions, cleanup_orphaned_cache,
     recover_cached_torrents, delete_destination_content,
     delete_destination_files
 )
-from .tracker_manager import (
+from tracker_manager import (
     categorize_torrents,
     load_tracker_rules, save_tracker_rules, set_category_based_on_tracker,
     run_interactive_categorization, display_tracker_rules
 )
-from .transfer_strategies import get_transfer_strategy, TransferFile
-from .ui import BaseUIManager, SimpleUIManager, UIManagerV2
-from .watchdog import TransferWatchdog
+from transfer_strategies import get_transfer_strategy, TransferFile
+from ui import BaseUIManager, SimpleUIManager, UIManagerV2
+from watchdog import TransferWatchdog
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -221,7 +221,7 @@ def _pre_transfer_setup(
 
     return status_code, status_message, source_content_path, dest_content_path, destination_save_path
 
-from .transfer_strategies import get_transfer_strategy, TransferFile
+from transfer_strategies import get_transfer_strategy, TransferFile
 
 def _post_transfer_actions(
     torrent: qbittorrentapi.TorrentDictionary,
@@ -484,7 +484,7 @@ def _post_transfer_actions(
             # 2. Apply tracker-based category if available
             if tracker_rules and not dry_run:
                 try:
-                    from .tracker_manager import set_category_based_on_tracker
+                    from tracker_manager import set_category_based_on_tracker
                     set_category_based_on_tracker(destination_qbit, torrent.hash, tracker_rules, dry_run)
                     time.sleep(1)
                 except Exception as e:
