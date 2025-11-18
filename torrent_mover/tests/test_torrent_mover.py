@@ -11,7 +11,7 @@ from .mocks.mock_ssh import MockSSHConnectionPool
 
 # --- Classes and Functions to Test ---
 # We are testing the standalone functions from torrent_mover.py
-from torrent_mover.torrent_mover import (
+from ..torrent_mover import (
     TorrentMover,
     _post_transfer_actions,
     _pre_transfer_setup

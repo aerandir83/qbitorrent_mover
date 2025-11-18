@@ -4,7 +4,7 @@ import configparser
 from pathlib import Path
 
 # Function to test
-from torrent_mover.transfer_manager import transfer_content_rsync
+from ..transfer_manager import transfer_content_rsync
 
 # Mocks
 from .mocks.mock_ssh import MockSSHConnectionPool
