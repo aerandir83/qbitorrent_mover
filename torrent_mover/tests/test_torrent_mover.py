@@ -6,12 +6,12 @@ from pathlib import Path
 
 # --- Mocks ---
 # Import our mock classes from the harness
-from .mocks.mock_qbittorrent import MockQBittorrentClient, MockTorrent
-from .mocks.mock_ssh import MockSSHConnectionPool
+from torrent_mover.tests.mocks.mock_qbittorrent import MockQBittorrentClient, MockTorrent
+from torrent_mover.tests.mocks.mock_ssh import MockSSHConnectionPool
 
 # --- Classes and Functions to Test ---
 # We are testing the standalone functions from torrent_mover.py
-from ..torrent_mover import (
+from torrent_mover.torrent_mover import (
     TorrentMover,
     _post_transfer_actions,
     _pre_transfer_setup

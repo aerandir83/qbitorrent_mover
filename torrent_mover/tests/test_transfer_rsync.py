@@ -4,10 +4,10 @@ import configparser
 from pathlib import Path
 
 # Function to test
-from ..transfer_manager import transfer_content_rsync
+from torrent_mover.transfer_manager import transfer_content_rsync
 
 # Mocks
-from .mocks.mock_ssh import MockSSHConnectionPool
+from torrent_mover.tests.mocks.mock_ssh import MockSSHConnectionPool
 
 @pytest.fixture
 def rsync_config():
