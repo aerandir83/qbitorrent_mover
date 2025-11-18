@@ -3,7 +3,7 @@ import logging
 import re
 import time
 from typing import List, Callable, Any
-from .utils import RemoteTransferError
+from utils import RemoteTransferError
 
 logger = logging.getLogger(__name__)
 
