@@ -10,7 +10,7 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.9.5**. To check your version, run: `python3 torrent_mover.py --version`.
+The current version is **2.9.6**. To check your version, run: `python3 torrent_mover.py --version`.
 
 ## Changelog
 
@@ -313,6 +313,20 @@ Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your
     *   `max_concurrent_file_transfers`: Number of files to transfer in parallel (e.g., `5`).
     *   `category_to_move`: The category in your source client that triggers a move.
     *   `pool_wait_timeout`: (Optional) Time in seconds to wait for a connection from the SSH pool if it's full. Defaults to `300`. Increase this if you get `TimeoutError` logs.
+
+## Testing
+
+To run the full test suite, execute the following command:
+
+```bash
+python3 -m unittest discover tests
+```
+
+As `pytest` is included in `requirements-dev.txt`, you can also use it as an alternative test runner:
+
+```bash
+pytest
+```
 
 ## Basic Usage
 
