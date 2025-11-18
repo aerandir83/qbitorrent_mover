@@ -10,7 +10,7 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.9.5**. To check your version, run: `python3 -m torrent_mover.torrent_mover --version`.
+The current version is **2.9.5**. To check your version, run: `python3 torrent_mover.py --version`.
 
 ## Changelog
 
@@ -256,7 +256,7 @@ It's highly recommended to run this script in a Python virtual environment.
 
 ### 1. Get the Code and Prepare the Environment
 
-First, clone the repository. The script is designed to be run as a package, so you should be in the parent directory of the `torrent_mover` folder when running commands.
+First, clone the repository.
 
 ```bash
 # Example: Clone into the /opt directory
@@ -282,7 +282,7 @@ source .venv/bin/activate
 With your virtual environment active, install the required Python libraries from `requirements.txt`.
 
 ```bash
-pip install -r torrent_mover/requirements.txt
+pip install -r requirements.txt
 ```
 
 ### 3. Install `sshpass` (Required for Rsync)
@@ -297,12 +297,7 @@ If you plan to use the `rsync` transfer mode, you must install `sshpass`.
 
 ### 4. Create and Edit Your Configuration
 
-The configuration files are located inside the `torrent_mover` directory.
-
 ```bash
-# Navigate into the script's package directory
-cd torrent_mover
-
 # Copy the template to create your own config file
 cp config.ini.template config.ini
 ```
@@ -321,24 +316,21 @@ Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your
 
 ## Basic Usage
 
-**Important:** Because the script is now a package, it must be run with the `-m` flag from the **root directory of the repository** (the one containing the `.venv` and `torrent_mover` folders).
-
 ### Testing Your Setup (Recommended)
 
 *   **Test Permissions**: Before the first run, verify that the script has the correct write permissions on the destination. It intelligently checks the local or remote path based on your `transfer_mode`.
     ```bash
-    # From the repository root directory
-    python3 -m torrent_mover.torrent_mover --test-permissions
+    python3 torrent_mover.py --test-permissions
     ```
 
 *   **Dry Run (Simulation)**: This is the safest mode. It prints all the actions it *would* take without transferring files or changing any torrents.
     ```bash
-    python3 -m torrent_mover.torrent_mover --dry-run
+    python3 torrent_mover.py --dry-run
     ```
 
 *   **Test Run (No Deletion)**: This performs a full run—transferring files and adding them to the destination—but **skips the final step of deleting the torrent from the source**.
     ```bash
-    python3 -m torrent_mover.torrent_mover --test-run
+    python3 torrent_mover.py --test-run
     ```
 
 ### Normal Run
@@ -346,8 +338,7 @@ Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your
 Once you've confirmed everything works, run the script normally:
 
 ```bash
-# From the repository root directory
-python3 -m torrent_mover.torrent_mover
+python3 torrent_mover.py
 ```
 
 ## Scheduling with Cron
@@ -359,14 +350,13 @@ To run the script automatically, set up a cron job. **You must use absolute path
 
 ```crontab
 # Run the torrent mover every 30 minutes
-# Note: The command must be run from the repository's root directory.
-*/30 * * * * cd /opt/torrent-mover && .venv/bin/python3 -m torrent_mover.torrent_mover >> /opt/torrent-mover/cron.log 2>&1
+*/30 * * * * cd /opt/torrent-mover && .venv/bin/python3 torrent_mover.py >> /opt/torrent-mover/cron.log 2>&1
 ```
 
 **Breakdown of the command:**
 *   `cd /opt/torrent-mover`: **Crucially**, first change to the repository's root directory.
 *   `.venv/bin/python3`: Path to the Python executable in your virtual environment.
-*   `-m torrent_mover.torrent_mover`: Runs the script as a module.
+*   `torrent_mover.py`: Runs the script.
 *   `>> .../cron.log 2>&1`: Appends all output to a log file for debugging.
 
 ## Command-Line Arguments
@@ -397,9 +387,9 @@ This script can automatically assign a category to torrents on your destination 
 *   **Interactive Learning**: The easiest way to create rules is with the interactive mode.
     ```bash
     # Start interactive mode
-    python3 -m torrent_mover.torrent_mover -c
+    python3 torrent_mover.py -c
     ```
 *   **Manual Rule Management**:
-    *   **List**: `python3 -m torrent_mover.torrent_mover -l`
-    *   **Add/Update**: `python3 -m torrent_mover.torrent_mover -a "some-tracker.org" "My-TV-Shows"`
-    *   **Delete**: `python3 -m torrent_mover.torrent_mover -d "some-tracker.org"`
+    *   **List**: `python3 torrent_mover.py -l`
+    *   **Add/Update**: `python3 torrent_mover.py -a "some-tracker.org" "My-TV-Shows"`
+    *   **Delete**: `python3 torrent_mover.py -d "some-tracker.org"`

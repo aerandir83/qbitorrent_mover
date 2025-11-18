@@ -4,10 +4,10 @@ import configparser
 from pathlib import Path
 
 # Function to test
-from torrent_mover.transfer_manager import transfer_content_rsync
+from transfer_manager import transfer_content_rsync
 
 # Mocks
-from torrent_mover.tests.mocks.mock_ssh import MockSSHConnectionPool
+from tests.mocks.mock_ssh import MockSSHConnectionPool
 
 @pytest.fixture
 def rsync_config():
@@ -28,9 +28,9 @@ def mock_file_tracker():
     tracker.is_corrupted.return_value = False
     return tracker
 
-@patch('torrent_mover.process_runner.execute_streaming_command')
-@patch('torrent_mover.ssh_manager.SSHConnectionPool')
-@patch('torrent_mover.ssh_manager.batch_get_remote_sizes')
+@patch('process_runner.execute_streaming_command')
+@patch('ssh_manager.SSHConnectionPool')
+@patch('ssh_manager.batch_get_remote_sizes')
 def test_rsync_delta_transfer_logic(
     mock_batch_get_sizes,
     MockSshPool, # Note: Patched class

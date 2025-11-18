@@ -9,7 +9,7 @@ Test script for SSHConnectionPool to verify:
 
 import time
 import threading
-from torrent_mover.ssh_manager import SSHConnectionPool
+from ssh_manager import SSHConnectionPool
 import logging
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(threadName)s - %(message)s')
