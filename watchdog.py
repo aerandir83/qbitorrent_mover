@@ -6,7 +6,7 @@ import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from torrent_mover.ui import BaseUIManager
+    from ui import BaseUIManager
 
 
 class TransferWatchdog:

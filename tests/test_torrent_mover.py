@@ -6,12 +6,12 @@ from pathlib import Path
 
 # --- Mocks ---
 # Import our mock classes from the harness
-from .mocks.mock_qbittorrent import MockQBittorrentClient, MockTorrent
-from .mocks.mock_ssh import MockSSHConnectionPool
+from tests.mocks.mock_qbittorrent import MockQBittorrentClient, MockTorrent
+from tests.mocks.mock_ssh import MockSSHConnectionPool
 
 # --- Classes and Functions to Test ---
 # We are testing the standalone functions from torrent_mover.py
-from torrent_mover.torrent_mover import (
+from torrent_mover import (
     TorrentMover,
     _post_transfer_actions,
     _pre_transfer_setup
@@ -86,8 +86,8 @@ def mock_dependencies(mock_config, mock_args, mock_ui):
 
 # --- Tests ---
 
-@patch('torrent_mover.torrent_mover.transfer_torrent')
-@patch('torrent_mover.torrent_mover.logging')
+@patch('torrent_mover.transfer_torrent')
+@patch('torrent_mover.logging')
 def test_transfer_worker_skips_failed_torrent(mock_logging, mock_transfer_torrent, mock_dependencies, mock_ui):
     """
     Tests the "log and skip" logic from Directive #3.
@@ -145,7 +145,7 @@ def test_transfer_worker_skips_failed_torrent(mock_logging, mock_transfer_torren
     assert mock_logging.error.call_count == 1
     # (Assert: The script does not crash) - This is proven by execution reaching this line
 
-@patch('torrent_mover.torrent_mover.wait_for_recheck_completion', return_value="SUCCESS")
+@patch('torrent_mover.wait_for_recheck_completion', return_value="SUCCESS")
 def test_post_transfer_calls_recheck(mock_wait_recheck, mock_dependencies):
     """
     Tests the "Re-check Logic" from Directive #4.
@@ -195,7 +195,7 @@ def test_post_transfer_calls_recheck(mock_wait_recheck, mock_dependencies):
     # 3. Assert Delete was called on SOURCE
     mock_src_qbit.torrents_delete.assert_called_once_with(torrent_hashes="hash123", delete_files=True)
 
-@patch('torrent_mover.torrent_mover.batch_get_remote_sizes', return_value={})
+@patch('torrent_mover.batch_get_remote_sizes', return_value={})
 def test_pre_transfer_path_mapping(mock_batch_get_sizes, mock_config, mock_args, mock_ssh):
     """
     Tests the "File Path Mapping" logic from Directive #4.

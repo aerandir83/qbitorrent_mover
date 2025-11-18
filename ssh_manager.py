@@ -13,7 +13,7 @@ import tempfile
 import getpass
 import time
 
-from .utils import retry
+from utils import retry
 
 # Constants
 DEFAULT_KEEPALIVE_INTERVAL = 30

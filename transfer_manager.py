@@ -18,12 +18,12 @@ from typing import Any, Dict, List, Optional
 
 import paramiko
 
-from . import process_runner
-from .resilient_queue import ResilientTransferQueue
-from .ssh_manager import SSHConnectionPool, sftp_mkdir_p, _get_ssh_command
-from .transfer_strategies import TransferFile
-from .ui import UIManagerV2 as UIManager
-from .utils import RemoteTransferError, retry
+import process_runner
+from resilient_queue import ResilientTransferQueue
+from ssh_manager import SSHConnectionPool, sftp_mkdir_p, _get_ssh_command
+from transfer_strategies import TransferFile
+from ui import UIManagerV2 as UIManager
+from utils import RemoteTransferError, retry
 
 
 if typing.TYPE_CHECKING:
@@ -988,7 +988,7 @@ def transfer_content_rsync(
                                  sum(f.stat().st_size for f in Path(local_path).rglob('*') if f.is_file())
 
                     try:
-                        from .ssh_manager import SSHConnectionPool, batch_get_remote_sizes
+                        from ssh_manager import SSHConnectionPool, batch_get_remote_sizes
                         temp_pool = SSHConnectionPool(
                             host=host, port=port, username=username,
                             password=password, max_size=1
