@@ -4,7 +4,7 @@
 # A script to automatically move completed torrents from a source qBittorrent client
 # to a destination client and transfer the files via SFTP.
 
-__version__ = "2.9.5" # Note: Version updated in user's file, retaining it.
+__version__ = "2.10.0"
 
 # Standard Lib
 import configparser
@@ -26,35 +26,35 @@ import qbittorrentapi
 from rich.logging import RichHandler
 
 # Project Modules
-from .config_manager import update_config, load_config, ConfigValidator
-from .ssh_manager import (
+from config_manager import update_config, load_config, ConfigValidator
+from ssh_manager import (
     SSHConnectionPool, check_sshpass_installed,
     _get_all_files_recursive, batch_get_remote_sizes,
     is_remote_dir
 )
-from .qbittorrent_manager import (
+from qbittorrent_manager import (
     connect_qbit, get_eligible_torrents, wait_for_recheck_completion,
     get_incomplete_files
 )
-from .transfer_manager import (
+from transfer_manager import (
     FileTransferTracker, TransferCheckpoint, transfer_content_rsync,
     transfer_content_with_queue, transfer_content_sftp_upload, Timeouts,
     transfer_content_rsync_upload, RemoteTransferError
 )
-from .system_manager import (
+from system_manager import (
     LockFile, setup_logging, destination_health_check, change_ownership,
     test_path_permissions, cleanup_orphaned_cache,
     recover_cached_torrents, delete_destination_content,
     delete_destination_files
 )
-from .tracker_manager import (
+from tracker_manager import (
     categorize_torrents,
     load_tracker_rules, save_tracker_rules, set_category_based_on_tracker,
     run_interactive_categorization, display_tracker_rules
 )
-from .transfer_strategies import get_transfer_strategy, TransferFile
-from .ui import BaseUIManager, SimpleUIManager, UIManagerV2
-from .watchdog import TransferWatchdog
+from transfer_strategies import get_transfer_strategy, TransferFile
+from ui import BaseUIManager, SimpleUIManager, UIManagerV2
+from watchdog import TransferWatchdog
 from rich.logging import RichHandler
 from rich.console import Console
 
@@ -221,7 +221,7 @@ def _pre_transfer_setup(
 
     return status_code, status_message, source_content_path, dest_content_path, destination_save_path
 
-from .transfer_strategies import get_transfer_strategy, TransferFile
+from transfer_strategies import get_transfer_strategy, TransferFile
 
 def _post_transfer_actions(
     torrent: qbittorrentapi.TorrentDictionary,
@@ -362,12 +362,11 @@ def _post_transfer_actions(
         logging.info(f"[DRY RUN] Would trigger force recheck on Destination for: {name}")
 
     # --- 4. Wait for Recheck and Handle Failure ---
-    # --- 4. Wait for Recheck and Handle Failure ---
     recheck_status = "SUCCESS"  # Default for dry run
     if not dry_run:
         logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
         recheck_stuck_timeout = config.getint('SETTINGS', 'recheck_stuck_timeout', fallback=60)
-        recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=5)
+        recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=15)
         recheck_status = wait_for_recheck_completion(
             destination_qbit,
             torrent.hash,
@@ -428,7 +427,7 @@ def _post_transfer_actions(
 
             # Read new config values for the *second* recheck
             recheck_stuck_timeout = config.getint('SETTINGS', 'recheck_stuck_timeout', fallback=60)
-            recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=5)
+            recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=15)
 
             final_recheck_status = wait_for_recheck_completion(
                 destination_qbit, torrent.hash, ui,
@@ -485,7 +484,7 @@ def _post_transfer_actions(
             # 2. Apply tracker-based category if available
             if tracker_rules and not dry_run:
                 try:
-                    from .tracker_manager import set_category_based_on_tracker
+                    from tracker_manager import set_category_based_on_tracker
                     set_category_based_on_tracker(destination_qbit, torrent.hash, tracker_rules, dry_run)
                     time.sleep(1)
                 except Exception as e:
@@ -973,7 +972,38 @@ class TorrentMover:
 
                     # 3. Update the UI's global stats with the delta
                     if delta > 0:
-                        self.ui._stats["transferred_dl_bytes"] += delta
+                        # FIX #1: Determine transfer type based on transfer mode
+                        transfer_mode = self.config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+                        
+                        if transfer_mode in ['rsync', 'rsync_upload']:
+                            # For rsync modes, we need to determine if this is DL or UL phase
+                            # rsync_upload has both phases, rsync only has DL
+                            if transfer_mode == 'rsync_upload':
+                                # Check if we're in download or upload phase based on progress
+                                # First half is download, second half is upload
+                                if transferred_bytes <= (total_size / 2):
+                                    self.ui._stats["transferred_dl_bytes"] += delta
+                                else:
+                                    self.ui._stats["transferred_ul_bytes"] += delta
+                            else:
+                                # Pure rsync mode is download only
+                                self.ui._stats["transferred_dl_bytes"] += delta
+                        elif transfer_mode == 'sftp_upload':
+                            # SFTP upload mode - both phases happen
+                            local_cache = self.config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
+                            if local_cache:
+                                # With cache: first half is DL, second half is UL
+                                if transferred_bytes <= (total_size / 2):
+                                    self.ui._stats["transferred_dl_bytes"] += delta
+                                else:
+                                    self.ui._stats["transferred_ul_bytes"] += delta
+                            else:
+                                # Direct stream: count as upload only
+                                self.ui._stats["transferred_ul_bytes"] += delta
+                        else:
+                            # SFTP mode is download only
+                            self.ui._stats["transferred_dl_bytes"] += delta
+                        
                         self.ui._stats["transferred_bytes"] = self.ui._stats.get("transferred_dl_bytes", 0) + self.ui._stats.get("transferred_ul_bytes", 0)
                         # Update the overall progress bar
                         self.ui.main_progress.update(self.ui.overall_task, advance=delta)
@@ -1004,7 +1034,7 @@ class TorrentMover:
         """
         Worker function to be run in the thread pool for a single torrent.
         """
-        if not (self.source_qbit and self.destination_qbit and self.config and self.tracker_rules and self.ui and self.file_tracker and self.checkpoint and self.args):
+        if not (self.source_qbit and self.destination_qbit and self.config and self.tracker_rules is not None and self.ui and self.file_tracker and self.checkpoint and self.args):
              logging.error("TorrentMover class not fully initialized. Skipping worker.")
              return
 

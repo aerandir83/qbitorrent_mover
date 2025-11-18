@@ -14,11 +14,11 @@ import typing
 from typing import Optional, Dict, List, Tuple, Any, Set, TYPE_CHECKING
 import configparser
 import paramiko
-from . import ssh_manager
+import ssh_manager
 import sys
 
-from .ssh_manager import SSHConnectionPool
-from .transfer_manager import Timeouts
+from ssh_manager import SSHConnectionPool
+from transfer_manager import Timeouts
 from rich.logging import RichHandler
 from rich.console import Console
 
