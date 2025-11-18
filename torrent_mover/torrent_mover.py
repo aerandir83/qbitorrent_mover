@@ -1034,7 +1034,7 @@ class TorrentMover:
         """
         Worker function to be run in the thread pool for a single torrent.
         """
-        if not (self.source_qbit and self.destination_qbit and self.config and self.tracker_rules and self.ui and self.file_tracker and self.checkpoint and self.args):
+        if not (self.source_qbit and self.destination_qbit and self.config and self.tracker_rules is not None and self.ui and self.file_tracker and self.checkpoint and self.args):
              logging.error("TorrentMover class not fully initialized. Skipping worker.")
              return
 
