@@ -329,23 +329,26 @@ def change_ownership(path_to_change: str, user: str, group: str, remote_config: 
         return
     if remote_config and ssh_connection_pools:
         logging.info(f"Attempting to change remote ownership of '{path_to_change}' to '{owner_spec}'...")
+        # Explicitly use the DESTINATION_SERVER pool, as this is the only remote chown context
         pool = ssh_connection_pools.get('DESTINATION_SERVER')
         if not pool:
-            logging.error("Could not find SSH pool for DESTINATION_SERVER.")
+            logging.error("Could not find SSH pool for DESTINATION_SERVER for chown operation.")
             return
+
         try:
             with pool.get_connection() as (sftp, ssh):
+                # Using shlex.quote to prevent command injection vulnerabilities
                 remote_command = f"chown -R -- {shlex.quote(owner_spec)} {shlex.quote(path_to_change)}"
                 logging.debug(f"Executing remote command: {remote_command}")
                 stdin, stdout, stderr = ssh.exec_command(remote_command, timeout=Timeouts.SSH_EXEC)
                 exit_status = stdout.channel.recv_exit_status()
                 if exit_status == 0:
-                    logging.info("Remote ownership changed successfully.")
+                    logging.info(f"Remote ownership changed successfully for '{path_to_change}'.")
                 else:
                     stderr_output = stderr.read().decode('utf-8').strip()
                     logging.error(f"Failed to change remote ownership for '{path_to_change}'. Exit code: {exit_status}, Stderr: {stderr_output}")
         except Exception as e:
-            logging.error(f"An exception occurred during remote chown: {e}", exc_info=True)
+            logging.error(f"An exception occurred during remote chown for '{path_to_change}': {e}", exc_info=True)
     else:
         logging.info(f"Attempting to change local ownership of '{path_to_change}' to '{owner_spec}'...")
         try:

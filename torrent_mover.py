@@ -286,13 +286,11 @@ def _post_transfer_actions(
             if 'DESTINATION_SERVER' in config and config.has_section('DESTINATION_SERVER'):
                 try:
                     remote_config = config['DESTINATION_SERVER']
-
-                    # We need the content name (e.g., "My.Movie.2023")
                     content_name = os.path.basename(dest_content_path)
+                    remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path')
 
-                    # Get the remote *base* path from config
-                    dest_base_path = config['DESTINATION_PATHS']['destination_path']
-                    remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
+                    if not remote_dest_base_path:
+                        raise ValueError("`remote_destination_path` is not defined in config under [DESTINATION_PATHS]")
 
                     # Construct the full *remote* path for chown
                     path_to_chown = os.path.join(remote_dest_base_path, content_name)
