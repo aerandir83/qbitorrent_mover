@@ -380,6 +380,25 @@ def _post_transfer_actions(
     # (This logic goes *after* wait_for_recheck_completion and *before* the success block)
     # --- START MODIFICATION ---
 
+    if recheck_status == "FAILED_FINAL_REVIEW":
+        manual_review_category = config['SETTINGS'].get('manual_review_category')
+        logging.error("Torrent failed final verification. Preserving source and categorizing for review.")
+        ui.log(f"[bold red]Verification Failed: {name}. Flagging for review.[/bold red]")
+
+        if manual_review_category and not dry_run:
+            try:
+                destination_qbit.torrents_set_category(torrent_hashes=hash_, category=manual_review_category)
+            except Exception as e:
+                logging.warning(f"Failed to set manual review category: {e}")
+
+        if not dry_run:
+            try:
+                destination_qbit.torrents_pause(torrent_hashes=hash_)
+            except Exception as e:
+                logging.warning(f"Failed to pause torrent {name}: {e}")
+
+        return False, "Verification failed. Source preserved for manual review."
+
     if recheck_status == "FAILED_STUCK":
         # This is the new "Stuck" failure from Directive 2, Scenario B
         # We do NOT trigger a delta-sync. Log, pause, and return failure.
