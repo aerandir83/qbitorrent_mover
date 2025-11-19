@@ -2,10 +2,28 @@ import subprocess
 import logging
 import re
 import time
-from typing import List, Callable, Any, Optional
+from typing import List, Callable, Any, Optional, Generator, IO
 from utils import RemoteTransferError
 
 logger = logging.getLogger(__name__)
+
+def _read_until_delimiter(stream: IO[bytes]) -> Generator[bytes, None, None]:
+    """
+    Generator that reads a stream byte-by-byte and yields a buffer
+    whenever a delimiter (b'\\r' or b'\\n') is encountered.
+    """
+    buffer = bytearray()
+    while True:
+        char = stream.read(1)
+        if not char:
+            if buffer:
+                yield buffer
+            break
+
+        buffer.extend(char)
+        if char in (b'\r', b'\n'):
+            yield buffer
+            buffer = bytearray()
 
 def _parse_human_readable_bytes(s: str) -> int:
     """
@@ -60,48 +78,39 @@ def execute_streaming_command(
         progress_regex = re.compile(r"^\s*([\d,.]+[kMGT]?).*?$") # Regex to find human-readable bytes
         last_transferred_bytes = 0
         last_update_time = time.time()
-        line_buffer = b""
 
         if process.stdout:
-            while True:
-                byte = process.stdout.read(1)
-                if not byte:
-                    # End of stream
-                    break
+            for line_buffer in _read_until_delimiter(process.stdout):
+                if heartbeat_callback:
+                    heartbeat_callback()
 
-                if byte == b'\r' or byte == b'\n':
-                    if heartbeat_callback:
-                        heartbeat_callback()
-                    if line_buffer:
-                        line = line_buffer.decode('utf-8', errors='replace').strip()
-                        logger.debug(f"({torrent_hash[:10]}) [RSYNC_PROGRESS] {line}")
-                        line_buffer = b"" # Reset buffer
+                line = line_buffer.decode('utf-8', errors='replace').strip()
+                if not line:
+                    continue
 
-                        match = progress_regex.match(line)
-                        if match:
-                            human_readable_bytes_str = match.group(1)
-                            current_transferred_bytes = _parse_human_readable_bytes(human_readable_bytes_str)
-                            log_transfer(torrent_hash, f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
+                logger.debug(f"({torrent_hash[:10]}) [RSYNC_PROGRESS] {line}")
 
-                            transferred_delta = current_transferred_bytes - last_transferred_bytes
-                            if transferred_delta > 0:
-                                elapsed_time = time.time() - last_update_time
-                                if elapsed_time > 0:
-                                    speed = transferred_delta / elapsed_time
-                                    last_update_time = time.time()
+                match = progress_regex.match(line)
+                if match:
+                    human_readable_bytes_str = match.group(1)
+                    current_transferred_bytes = _parse_human_readable_bytes(human_readable_bytes_str)
+                    log_transfer(torrent_hash, f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
 
-                            last_transferred_bytes = current_transferred_bytes
-                            progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
-                            _update_transfer_progress(
-                                torrent_hash,
-                                progress,
-                                current_transferred_bytes,
-                                total_size
-                            )
-                    else:
-                        pass # Handles empty lines
-                else:
-                    line_buffer += byte
+                    transferred_delta = current_transferred_bytes - last_transferred_bytes
+                    if transferred_delta > 0:
+                        elapsed_time = time.time() - last_update_time
+                        if elapsed_time > 0:
+                            speed = transferred_delta / elapsed_time
+                            last_update_time = time.time()
+
+                    last_transferred_bytes = current_transferred_bytes
+                    progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
+                    _update_transfer_progress(
+                        torrent_hash,
+                        progress,
+                        current_transferred_bytes,
+                        total_size
+                    )
 
         process.wait()
         stderr_output_bytes = process.stderr.read() if process.stderr else b""
