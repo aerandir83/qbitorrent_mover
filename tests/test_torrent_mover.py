@@ -110,7 +110,10 @@ def test_transfer_worker_skips_failed_torrent(mock_logging, mock_transfer_torren
     ]
 
     # Create a TorrentMover instance (needed for the worker method)
-    mover = TorrentMover(args=mock_dependencies["args"], config=mock_dependencies["config"], script_dir=Path("."))
+    # Replicate the ConfigManager structure for the test
+    mock_config_manager = MagicMock()
+    mock_config_manager.config = mock_dependencies["config"]
+    mover = TorrentMover(args=mock_dependencies["args"], config_manager=mock_config_manager, script_dir=Path("."))
 
     # Manually set the dependencies on the mover instance, as 'run' would normally do
     mover.source_qbit = mock_dependencies["source_qbit"]

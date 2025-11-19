@@ -55,7 +55,8 @@ def update_config(config_path: str, template_path: str) -> None:
         for section_name in template_updater.sections():
             template_section = template_updater[section_name]
             if not updater.has_section(section_name):
-                user_section = updater.add_section(section_name)
+                updater.add_section(section_name)
+                user_section = updater[section_name]
                 for key, opt in template_section.items():
                     user_opt = user_section.set(key, opt.value)
                     if hasattr(opt, 'comments') and opt.comments.above:
@@ -92,27 +93,35 @@ def update_config(config_path: str, template_path: str) -> None:
         logging.error(f"FATAL: An error occurred during config update: {e}", exc_info=True)
         sys.exit(1)
 
-def load_config(config_path: str = "config.ini") -> configparser.ConfigParser:
-    """Loads the configuration from the specified .ini file.
+class ConfigManager:
+    def __init__(self, config_path: str = "config.ini"):
+        self.config_path = config_path
+        self.config = self._load_config()
+        self._validate_config()
 
-    Args:
-        config_path: The path to the configuration file.
+    def _load_config(self) -> configparser.ConfigParser:
+        """Loads the configuration from the specified .ini file."""
+        config_file = Path(self.config_path)
+        if not config_file.is_file():
+            logging.error(f"FATAL: Configuration file not found at '{self.config_path}'.")
+            logging.error("Please copy 'config.ini.template' to 'config.ini' and fill in your details.")
+            sys.exit(1)
+        config = configparser.ConfigParser()
+        config.read(config_file)
+        return config
 
-    Returns:
-        A ConfigParser object loaded with the configuration.
+    def _validate_config(self) -> None:
+        """Validates the loaded configuration."""
+        validator = ConfigValidator(self.config)
+        if not validator.validate():
+            sys.exit(1)
 
-    Raises:
-        SystemExit: If the configuration file is not found.
-    """
-    config_file = Path(config_path)
-    if not config_file.is_file():
-        logging.error(f"FATAL: Configuration file not found at '{config_path}'.")
-        logging.error("Please copy 'config.ini.template' to 'config.ini' and fill in your details.")
-        sys.exit(1)
-    config = configparser.ConfigParser()
-    config.read(config_file)
-    return config
-
+    def get_watchdog_timeout(self) -> int:
+        """Reads watchdog_timeout from the config, defaulting to 1500."""
+        try:
+            return self.config.getint('General', 'watchdog_timeout', fallback=1500)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            return 1500
 
 class ConfigValidator:
     """Validates the structure and values of the configuration file.

@@ -61,6 +61,18 @@ class TransferWatchdog:
                         # Use os._exit(1) for an immediate, hard exit in a daemon thread
                         os._exit(1)
 
+    def kick(self):
+        """
+        Resets the watchdog's last activity time. Call this to signal that
+        the application is still alive, even if no bytes have been transferred.
+        """
+        # This is designed to be called from other threads
+        self._ui_manager._stats["last_activity_timestamp"] = time.monotonic()
+
+    def pet(self):
+        """Alias for kick() for backward compatibility."""
+        self.kick()
+
     def stop(self):
         self._stop_event.set()
         if self._watchdog_thread and self._watchdog_thread.is_alive():

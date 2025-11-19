@@ -14,7 +14,7 @@ import typing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import paramiko
 
@@ -848,7 +848,8 @@ def _transfer_content_rsync_upload_from_cache(
     total_size: int,
     log_transfer: typing.Callable,
     _update_transfer_progress: typing.Callable,
-    dry_run: bool = False
+    dry_run: bool = False,
+    heartbeat_callback: Optional[Callable[[], None]] = None
 ) -> None:
     """
     Transfers content from a local path to a remote server using rsync.
@@ -866,13 +867,14 @@ def _transfer_content_rsync_upload_from_cache(
     cleaned_remote_parent_dir = remote_parent_dir.strip('\'"')
     remote_spec = f"{username}@{host}:{cleaned_remote_parent_dir}"
 
+    ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
     rsync_cmd = [
         "stdbuf", "-o0", "sshpass", "-p", password,
         "rsync",
         *rsync_options,
         "--info=progress2",
-        f"--timeout={Timeouts.SSH_EXEC}",
-        "-e", _get_ssh_command(port),
+        "--timeout=60",
+        "-e", ssh_opts,
         local_path, # Source is local
         remote_spec # Destination is remote
     ]
@@ -897,7 +899,8 @@ def _transfer_content_rsync_upload_from_cache(
             torrent_hash,
             total_size,
             log_transfer,
-            _update_transfer_progress
+            _update_transfer_progress,
+            heartbeat_callback=heartbeat_callback
         )
 
         if success:
@@ -923,7 +926,8 @@ def transfer_content_rsync(
     total_size: int,
     log_transfer: typing.Callable,
     _update_transfer_progress: typing.Callable,
-    dry_run: bool = False
+    dry_run: bool = False,
+    heartbeat_callback: Optional[Callable[[], None]] = None
 ) -> None:
     """Transfers content from a remote server to a local path using rsync."""
 
@@ -948,11 +952,13 @@ def transfer_content_rsync(
     if "--info=progress2" not in rsync_options_with_checksum:
         rsync_options_with_checksum.append("--info=progress2")
 
+    ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
     rsync_command_base = [
         "stdbuf", "-o0", "sshpass", "-p", password,
         "rsync",
         *rsync_options_with_checksum,
-        "-e", _get_ssh_command(port)
+        "--timeout=60",
+        "-e", ssh_opts
     ]
 
     remote_spec = f"{username}@{host}:{remote_path}"
@@ -978,7 +984,8 @@ def transfer_content_rsync(
                 torrent_hash,
                 total_size,
                 log_transfer,
-                _update_transfer_progress
+                _update_transfer_progress,
+                heartbeat_callback=heartbeat_callback
             )
 
             if success:
@@ -1070,7 +1077,8 @@ def transfer_content_rsync_upload(
     log_transfer: typing.Callable,
     _update_transfer_progress: typing.Callable,
     dry_run: bool,
-    is_folder: bool
+    is_folder: bool,
+    heartbeat_callback: Optional[Callable[[], None]] = None
 ) -> bool:
     """
     Transfers content from a remote source to a remote destination
@@ -1103,7 +1111,8 @@ def transfer_content_rsync_upload(
             total_size=part_total_size,
             log_transfer=log_transfer,
             _update_transfer_progress=_update_transfer_progress,
-            dry_run=dry_run
+            dry_run=dry_run,
+            heartbeat_callback=heartbeat_callback
         )
         logging.info(f"Rsync-Upload: Download to cache complete for '{file_name}'.")
 
@@ -1119,7 +1128,8 @@ def transfer_content_rsync_upload(
             total_size=part_total_size,
             log_transfer=log_transfer,
             _update_transfer_progress=_update_transfer_progress,
-            dry_run=dry_run
+            dry_run=dry_run,
+            heartbeat_callback=heartbeat_callback
         )
         logging.info(f"Rsync-Upload: Upload from cache complete for '{file_name}'.")
 

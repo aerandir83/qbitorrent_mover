@@ -4,6 +4,7 @@ from rich.console import Console, Group, RenderResult
 from rich.live import Live
 from rich.panel import Panel
 from typing import Dict, Any
+from watchdog import TransferWatchdog
 
 
 class ResponsiveLayout:
@@ -433,12 +434,17 @@ class BaseUIManager(abc.ABC):
     methods for the main application logic to call. This allows the UI to be
     swapped without changing the core transfer logic.
     """
+    def __init__(self, watchdog_timeout: int = 1500):
+        self.watchdog = TransferWatchdog(timeout_seconds=watchdog_timeout)
+
     def __enter__(self):
         """Enters the context manager, preparing the UI for display."""
+        self.watchdog.start(self)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exits the context manager, cleaning up UI resources."""
+        self.watchdog.stop()
         pass
 
     @abc.abstractmethod
@@ -500,6 +506,7 @@ class BaseUIManager(abc.ABC):
     @abc.abstractmethod
     def pet_watchdog(self):
         """Signals that a non-transfer activity has occurred."""
+        self.watchdog.pet()
         pass
 
 
@@ -511,8 +518,9 @@ class SimpleUIManager(BaseUIManager):
     SSH sessions. It implements the `BaseUIManager` interface by writing
     status updates to the standard Python `logging` module.
     """
-    def __init__(self):
+    def __init__(self, watchdog_timeout: int = 1500):
         """Initializes the SimpleUIManager."""
+        super().__init__(watchdog_timeout)
         self._stats = {
             "total_torrents": 0,
             "total_bytes": 0,
@@ -523,11 +531,9 @@ class SimpleUIManager(BaseUIManager):
         }
         logging.info("Using simple UI (standard logging).")
 
-    def __enter__(self):
-        return self
-
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Logs a final message upon exiting."""
+        super().__exit__(exc_type, exc_val, exc_tb)
         if exc_type:
             logging.error(f"An error occurred: {exc_val}")
         logging.info("--- Torrent Mover script finished ---")
@@ -596,6 +602,7 @@ class SimpleUIManager(BaseUIManager):
 
     def pet_watchdog(self):
         """(Simple UI) No-op."""
+        super().pet_watchdog()
         pass
 
     def display_stats(self, stats: Dict[str, Any]) -> None:
@@ -622,7 +629,7 @@ class UIManagerV2(BaseUIManager):
     custom `rich` renderable classes to display the data in a structured layout.
     """
 
-    def __init__(self, version: str = "", rich_handler: Optional[logging.Handler] = None):
+    def __init__(self, version: str = "", rich_handler: Optional[logging.Handler] = None, watchdog_timeout: int = 1500):
         """Initializes the UIManagerV2.
 
         Args:
@@ -630,6 +637,7 @@ class UIManagerV2(BaseUIManager):
             rich_handler: A reference to the RichHandler, which is temporarily
                 removed and replaced by the UI's internal handler during display.
         """
+        super().__init__(watchdog_timeout)
         self.console = Console()
         self._lock = threading.RLock()
         self._live: Optional[Live] = None
@@ -775,6 +783,7 @@ class UIManagerV2(BaseUIManager):
         self.layout["footer"].update(_LogPanel(self))
 
     def __enter__(self):
+        super().__enter__()
         root_logger = logging.getLogger()
         root_logger.addHandler(self._um_log_handler)
         self._live = Live(
@@ -793,6 +802,7 @@ class UIManagerV2(BaseUIManager):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        super().__exit__(exc_type, exc_val, exc_tb)
         if self._live:
             self._stats_thread_stop.set()
             # Join the thread with a timeout
@@ -1068,6 +1078,7 @@ class UIManagerV2(BaseUIManager):
 
     def pet_watchdog(self):
         """Signals that a non-transfer activity has occurred."""
+        super().pet_watchdog()
         with self._lock:
             self._stats["last_activity_timestamp"] = time.monotonic()
 

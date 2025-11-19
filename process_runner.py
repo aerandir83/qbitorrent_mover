@@ -2,10 +2,28 @@ import subprocess
 import logging
 import re
 import time
-from typing import List, Callable, Any
+from typing import List, Callable, Any, Optional, Generator, IO
 from utils import RemoteTransferError
 
 logger = logging.getLogger(__name__)
+
+def _read_until_delimiter(stream: IO[bytes]) -> Generator[bytes, None, None]:
+    """
+    Generator that reads a stream byte-by-byte and yields a buffer
+    whenever a delimiter (b'\\r' or b'\\n') is encountered.
+    """
+    buffer = bytearray()
+    while True:
+        chunk = stream.read(1)
+        if not chunk:
+            if buffer:
+                yield buffer
+            break
+
+        buffer.extend(chunk)
+        if chunk in (b'\r', b'\n') or len(buffer) >= 64:  # Yield on delimiter OR every 64 bytes
+            yield buffer
+            buffer = bytearray()
 
 def _parse_human_readable_bytes(s: str) -> int:
     """
@@ -41,8 +59,10 @@ def execute_streaming_command(
     torrent_hash: str,
     total_size: int,
     log_transfer: Callable[..., Any],
-    _update_transfer_progress: Callable[..., Any]
+    _update_transfer_progress: Callable[..., Any],
+    heartbeat_callback: Optional[Callable[[], None]] = None
 ) -> bool:
+    logging.info(f"DEBUG: execute_streaming_command called. Heartbeat Callback is: {'PRESENT' if heartbeat_callback else 'MISSING'}")
     """
     Executes a command (like rsync) and streams its stdout to parse progress.
     """
@@ -52,53 +72,55 @@ def execute_streaming_command(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=1
+            bufsize=0
         )
 
         # This regex is used to parse rsync's progress output
         progress_regex = re.compile(r"^\s*([\d,.]+[kMGT]?).*?$") # Regex to find human-readable bytes
         last_transferred_bytes = 0
         last_update_time = time.time()
-        line_buffer = b""
 
-        if process.stdout:
-            while True:
-                byte = process.stdout.read(1)
-                if not byte:
-                    # End of stream
-                    break
+        try:
+            if process.stdout:
+                for line_buffer in _read_until_delimiter(process.stdout):
+                    if heartbeat_callback:
+                        heartbeat_callback()
 
-                if byte == b'\r' or byte == b'\n':
-                    if line_buffer:
-                        line = line_buffer.decode('utf-8', errors='replace').strip()
-                        logger.debug(f"({torrent_hash[:10]}) [RSYNC_PROGRESS] {line}")
-                        line_buffer = b"" # Reset buffer
+                    line = line_buffer.decode('utf-8', errors='replace').strip()
+                    if not line:
+                        continue
 
-                        match = progress_regex.match(line)
-                        if match:
-                            human_readable_bytes_str = match.group(1)
-                            current_transferred_bytes = _parse_human_readable_bytes(human_readable_bytes_str)
-                            log_transfer(torrent_hash, f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
+                    logger.debug(f"({torrent_hash[:10]}) [RSYNC_PROGRESS] {line}")
 
-                            transferred_delta = current_transferred_bytes - last_transferred_bytes
-                            if transferred_delta > 0:
-                                elapsed_time = time.time() - last_update_time
-                                if elapsed_time > 0:
-                                    speed = transferred_delta / elapsed_time
-                                    last_update_time = time.time()
+                    match = progress_regex.match(line)
+                    if match:
+                        human_readable_bytes_str = match.group(1)
+                        current_transferred_bytes = _parse_human_readable_bytes(human_readable_bytes_str)
+                        log_transfer(torrent_hash, f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
 
-                            last_transferred_bytes = current_transferred_bytes
-                            progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
-                            _update_transfer_progress(
-                                torrent_hash,
-                                progress,
-                                current_transferred_bytes,
-                                total_size
-                            )
-                    else:
-                        pass # Handles empty lines
-                else:
-                    line_buffer += byte
+                        transferred_delta = current_transferred_bytes - last_transferred_bytes
+                        if transferred_delta > 0:
+                            elapsed_time = time.time() - last_update_time
+                            if elapsed_time > 0:
+                                speed = transferred_delta / elapsed_time
+                                last_update_time = time.time()
+
+                        last_transferred_bytes = current_transferred_bytes
+                        progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
+                        _update_transfer_progress(
+                            torrent_hash,
+                            progress,
+                            current_transferred_bytes,
+                            total_size
+                        )
+        finally:
+            if process.poll() is None:
+                logging.warning("Cleaning up orphaned rsync process...")
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
 
         process.wait()
         stderr_output_bytes = process.stderr.read() if process.stderr else b""

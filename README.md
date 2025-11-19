@@ -10,11 +10,18 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.10.0**. To check your version, run: `python3 torrent_mover.py --version`.
+The current version is **2.11.0**. To check your version, run: `python3 torrent_mover.py --version`.
 
 ## Changelog
 
-### Version 2.10.0 (Latest)
+### Version 2.11.0 (Latest)
+* **feat(resilience):** Added Smart Heartbeat monitoring, a configurable watchdog_timeout, and SSH KeepAlive to dramatically improve resilience against network stalls and long checksum operations.
+* **docs**: Updated README and config template with information about the new features.
+
+### Version 2.10.1
+* **fix(subprocess):** Changed subprocess buffering from line-buffered (`bufsize=1`) to unbuffered (`bufsize=0`) in binary mode to prevent `RuntimeWarning` and ensure immediate byte-by-byte processing of `rsync` output, improving the responsiveness of the Heartbeat logic.
+
+### Version 2.10.0
 * **feat**: Expanded Unit Test Coverage: Added strict command verification and resilience mocking for rsync transfer mode.
 * **docs**: Documentation Overhaul: Restructured README to focus on Workflows and Resilience narratives.
 * **chore**: Housekeeping: Consolidated historical changelogs.
@@ -59,7 +66,8 @@ Torrent Mover is designed to handle failures gracefully and ensure data integrit
     1.  **Delta-Sync**: It first attempts an `rsync` delta-transfer to fix any corrupted or missing pieces and rechecks again.
     2.  **Targeted Deletion**: If that fails, it queries the qBittorrent client for the list of bad files, deletes *only* those specific files, and re-downloads them.
     3.  **Final Recheck**: A final recheck is performed to ensure the torrent is 100% complete.
-*   **Watchdog**: A built-in watchdog monitors for hung transfers. If a file transfer shows no progress for an extended period, the watchdog will terminate the stalled operation and requeue it, preventing the entire process from freezing.
+*   **Watchdog & Smart Heartbeat**: A built-in watchdog monitors for hung transfers. It now uses "Smart Heartbeat" monitoring, which intelligently detects signs of life from `rsync` even during long checksum phases. If a transfer is truly stalled for an extended period (configurable via `watchdog_timeout`), it is terminated and requeued.
+*   **SSH KeepAlive**: The script now configures SSH connections with `ServerAliveInterval` to prevent intermediate firewalls or routers from silently dropping connections during long, quiet transfers.
 *   **Circuit Breaker**: For torrents that repeatedly fail to transfer, a circuit breaker pattern is employed. After a configurable number of failed attempts, the torrent is temporarily skipped, preventing it from blocking the queue of other, healthy torrents. The script will retry the failed torrent after a cool-down period.
 
 ## Requirements
@@ -130,6 +138,7 @@ Now, open `config.ini` with a text editor (like `nano` or `vi`) and fill in your
     *   `transfer_mode`: `sftp`, `sftp_upload`, or `rsync`.
     *   `max_concurrent_file_transfers`: Number of files to transfer in parallel (e.g., `5`).
     *   `category_to_move`: The category in your source client that triggers a move.
+    *   `watchdog_timeout`: (Optional) Time in seconds to wait for any sign of life from a transfer before killing it. Defaults to `1500` (25 minutes). Increase this if you transfer very large files (e.g., 4K Remuxes) that may take a long time to checksum.
     *   `pool_wait_timeout`: (Optional) Time in seconds to wait for a connection from the SSH pool if it's full. Defaults to `300`. Increase this if you get `TimeoutError` logs.
 
 ## Testing
