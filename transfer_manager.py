@@ -931,9 +931,6 @@ def transfer_content_rsync(
 ) -> None:
     """Transfers content from a remote server to a local path using rsync."""
 
-    if file_tracker.is_corrupted(torrent_hash, remote_path):
-        raise Exception(f"Transfer for {os.path.basename(remote_path)} is marked as corrupted, skipping.")
-
     remote_path = remote_path.strip('\'"')
     rsync_file_name = os.path.basename(remote_path)
     log_transfer(torrent_hash, f"Starting rsync transfer for '{rsync_file_name}'")
@@ -966,6 +963,24 @@ def transfer_content_rsync(
     MAX_RETRY_ATTEMPTS = 3
     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
         try:
+            # Atomic Fallback: Check for corruption or stalled partial file
+            is_corrupted = file_tracker.is_corrupted(torrent_hash, remote_path)
+            is_stalled = False
+            if os.path.exists(local_path) and attempt > 1:
+                try:
+                    if os.path.getsize(local_path) < 1024:
+                        is_stalled = True
+                except OSError:
+                    pass # File might have vanished
+
+            if is_corrupted or is_stalled:
+                reason = "marked corrupted" if is_corrupted else "stalled partial file"
+                logging.warning(f"Atomic Fallback: Removing {reason} before retry: {local_path}")
+                try:
+                    os.remove(local_path)
+                except OSError as e:
+                    logging.warning(f"Failed to remove corrupted/stalled file {local_path}: {e}")
+
             rsync_command = [*rsync_command_base, remote_spec, local_parent_dir]
 
             if dry_run:
