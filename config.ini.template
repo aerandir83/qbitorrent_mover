@@ -120,6 +120,7 @@ chown_group =
 
 [General]
 # Time in seconds to wait for activity before killing the process (Default: 1500 = 25 min)
+# Increase this if you transfer very large files (e.g., 50GB+) that take a long time to checksum.
 watchdog_timeout = 1500
 # (Optional) Bandwidth limits for SFTP transfers in megabits per second (Mbps).
 # Set to 0 for unlimited speed.
