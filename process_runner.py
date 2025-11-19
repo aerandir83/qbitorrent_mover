@@ -14,14 +14,14 @@ def _read_until_delimiter(stream: IO[bytes]) -> Generator[bytes, None, None]:
     """
     buffer = bytearray()
     while True:
-        char = stream.read(1)
-        if not char:
+        chunk = stream.read(1)
+        if not chunk:
             if buffer:
                 yield buffer
             break
 
-        buffer.extend(char)
-        if char in (b'\r', b'\n'):
+        buffer.extend(chunk)
+        if chunk in (b'\r', b'\n') or len(buffer) >= 64:  # Yield on delimiter OR every 64 bytes
             yield buffer
             buffer = bytearray()
 
@@ -62,6 +62,7 @@ def execute_streaming_command(
     _update_transfer_progress: Callable[..., Any],
     heartbeat_callback: Optional[Callable[[], None]] = None
 ) -> bool:
+    logging.info(f"DEBUG: execute_streaming_command called. Heartbeat Callback is: {'PRESENT' if heartbeat_callback else 'MISSING'}")
     """
     Executes a command (like rsync) and streams its stdout to parse progress.
     """
