@@ -10,7 +10,7 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.11.0**. To check your version, run: `python3 torrent_mover.py --version`.
+The current version is **2.11.1**. To check your version, run: `python3 torrent_mover.py --version`.
 
 ## Changelog
 
@@ -79,6 +79,10 @@ Torrent Mover is designed to handle failures gracefully and ensure data integrit
 ## Installation & Setup
 
 It's highly recommended to run this script in a Python virtual environment.
+
+## Contributing
+
+Please read [ARCHITECTURE.md](ARCHITECTURE.md) for an overview of the system architecture and guidelines for making changes.
 
 ### 1. Get the Code and Prepare the Environment
 
