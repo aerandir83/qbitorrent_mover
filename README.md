@@ -10,11 +10,14 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.10.0**. To check your version, run: `python3 torrent_mover.py --version`.
+The current version is **2.10.1**. To check your version, run: `python3 torrent_mover.py --version`.
 
 ## Changelog
 
-### Version 2.10.0 (Latest)
+### Version 2.10.1 (Latest)
+* **fix(subprocess):** Changed subprocess buffering from line-buffered (`bufsize=1`) to unbuffered (`bufsize=0`) in binary mode to prevent `RuntimeWarning` and ensure immediate byte-by-byte processing of `rsync` output, improving the responsiveness of the Heartbeat logic.
+
+### Version 2.10.0
 * **feat**: Expanded Unit Test Coverage: Added strict command verification and resilience mocking for rsync transfer mode.
 * **docs**: Documentation Overhaul: Restructured README to focus on Workflows and Resilience narratives.
 * **chore**: Housekeeping: Consolidated historical changelogs.

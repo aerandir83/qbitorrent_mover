@@ -53,7 +53,7 @@ def execute_streaming_command(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=1
+            bufsize=0
         )
 
         # This regex is used to parse rsync's progress output
