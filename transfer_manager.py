@@ -867,13 +867,14 @@ def _transfer_content_rsync_upload_from_cache(
     cleaned_remote_parent_dir = remote_parent_dir.strip('\'"')
     remote_spec = f"{username}@{host}:{cleaned_remote_parent_dir}"
 
+    ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
     rsync_cmd = [
         "stdbuf", "-o0", "sshpass", "-p", password,
         "rsync",
         *rsync_options,
         "--info=progress2",
-        f"--timeout={Timeouts.SSH_EXEC}",
-        "-e", _get_ssh_command(port),
+        "--timeout=60",
+        "-e", ssh_opts,
         local_path, # Source is local
         remote_spec # Destination is remote
     ]
@@ -951,11 +952,13 @@ def transfer_content_rsync(
     if "--info=progress2" not in rsync_options_with_checksum:
         rsync_options_with_checksum.append("--info=progress2")
 
+    ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
     rsync_command_base = [
         "stdbuf", "-o0", "sshpass", "-p", password,
         "rsync",
         *rsync_options_with_checksum,
-        "-e", _get_ssh_command(port)
+        "--timeout=60",
+        "-e", ssh_opts
     ]
 
     remote_spec = f"{username}@{host}:{remote_path}"
