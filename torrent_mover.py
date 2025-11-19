@@ -590,6 +590,7 @@ def _execute_transfer(
             if not files: raise ValueError("No files provided for rsync transfer.")
             source_content_path = files[0].source_path
             dest_content_path = files[0].dest_path
+            heartbeat_callback = ui.pet_watchdog
             transfer_content_rsync(
                 sftp_config=sftp_config,
                 remote_path=source_content_path,
@@ -600,9 +601,11 @@ def _execute_transfer(
                 rsync_options=rsync_options,
                 file_tracker=file_tracker,
                 total_size=total_size_calc,
-                dry_run=dry_run
+                dry_run=dry_run,
+                heartbeat_callback=heartbeat_callback
             )
         elif transfer_mode == 'rsync_upload':
+            heartbeat_callback = ui.pet_watchdog
             source_server_section = config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
             source_config = config[source_server_section]
             dest_server_section = 'DESTINATION_SERVER'
@@ -629,7 +632,8 @@ def _execute_transfer(
                 log_transfer=log_transfer,
                 _update_transfer_progress=_update_transfer_progress,
                 dry_run=dry_run,
-                is_folder=is_folder
+                is_folder=is_folder,
+                heartbeat_callback=heartbeat_callback
             )
 
         return True # Transfer success
