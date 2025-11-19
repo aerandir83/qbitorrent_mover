@@ -1,0 +1,9 @@
+PRE-COMMIT INSTRUCTIONS (MANDATORY)
+
+VERIFY ARCHITECTURE: If you moved logic, check ARCHITECTURE.md. Did you violate a boundary?
+RUN TESTS: Execute python3 -m unittest discover tests.
+If tests failed BEFORE you started, report this.
+If tests fail AFTER your changes, you MUST fix them.
+CHECK CONFIG: If you added a config option, is it in config.ini.template?
+CHECK VERSION: Did you update version in torrent_mover/torrent_mover.py AND README.md?
+DRY RUN: Run python3 -m torrent_mover.torrent_mover --dry-run to ensure no syntax errors or immediate crashes.
