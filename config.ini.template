@@ -117,6 +117,10 @@ local_cache_sftp_upload = False
 # NOTE: The user running the script needs the appropriate permissions to perform 'chown'.
 chown_user =
 chown_group =
+
+[General]
+# Time in seconds to wait for activity before killing the process (Default: 1500 = 25 min)
+watchdog_timeout = 1500
 # (Optional) Bandwidth limits for SFTP transfers in megabits per second (Mbps).
 # Set to 0 for unlimited speed.
 sftp_download_limit_mbps = 0

@@ -26,7 +26,7 @@ import qbittorrentapi
 from rich.logging import RichHandler
 
 # Project Modules
-from config_manager import update_config, load_config, ConfigValidator
+from config_manager import update_config, ConfigManager
 from ssh_manager import (
     SSHConnectionPool, check_sshpass_installed,
     _get_all_files_recursive, batch_get_remote_sizes,
@@ -920,9 +920,10 @@ class TorrentMover:
     This class encapsulates the state and dependencies required for the
     application to run, such as config, clients, and managers.
     """
-    def __init__(self, args: argparse.Namespace, config: configparser.ConfigParser, script_dir: Path):
+    def __init__(self, args: argparse.Namespace, config_manager: ConfigManager, script_dir: Path):
         self.args = args
-        self.config = config
+        self.config_manager = config_manager
+        self.config = config_manager.config
         self.script_dir = script_dir
         self.tracker_rules: Dict[str, str] = {}
         self.ssh_connection_pools: Dict[str, SSHConnectionPool] = {}
@@ -931,7 +932,6 @@ class TorrentMover:
         self.source_qbit: Optional["qbittorrentapi.Client"] = None
         self.destination_qbit: Optional["qbittorrentapi.Client"] = None
         self.ui: BaseUIManager = SimpleUIManager() # Default, will be replaced
-        self.watchdog: Optional[TransferWatchdog] = None
 
     def _initialize_ssh_pools(self):
         """Initializes SSH connection pools based on config."""
@@ -1115,147 +1115,140 @@ class TorrentMover:
         transfer_mode = self.config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
         # --- UI Initialization ---
+        watchdog_timeout = self.config_manager.get_watchdog_timeout()
         if simple_mode:
-            self.ui = SimpleUIManager()
+            self.ui = SimpleUIManager(watchdog_timeout=watchdog_timeout)
         else:
-            self.ui = UIManagerV2(version=__version__, rich_handler=rich_handler)
+            self.ui = UIManagerV2(version=__version__, rich_handler=rich_handler, watchdog_timeout=watchdog_timeout)
 
         with self.ui as ui:
             # Assign self.ui now that the context is entered
             self.ui = ui
 
-            # Configure the watchdog
-            watchdog_timeout = self.config['SETTINGS'].getint('watchdog_timeout_seconds', 600)
-            self.watchdog = TransferWatchdog(timeout_seconds=watchdog_timeout)
+            ui.set_transfer_mode(transfer_mode)
+            ui.set_analysis_total(total_count)
+            ui.log(f"Found {total_count} torrents to process. Analyzing...")
+
+            analyzed_torrents: List[Tuple['qbittorrentapi.TorrentDictionary', int]] = []
+            total_transfer_size = 0
+            logging.info("STATE: Starting analysis phase...")
             try:
-                self.watchdog.start(ui)
-                ui.set_transfer_mode(transfer_mode)
-                ui.set_analysis_total(total_count)
-                ui.log(f"Found {total_count} torrents to process. Analyzing...")
+                source_server_section = self.config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
+                source_pool = self.ssh_connection_pools.get(source_server_section)
+                if not source_pool:
+                    raise ValueError(f"Error: SSH connection pool for server section '{source_server_section}' not found.")
 
-                analyzed_torrents: List[Tuple['qbittorrentapi.TorrentDictionary', int]] = []
-                total_transfer_size = 0
-                logging.info("STATE: Starting analysis phase...")
-                try:
-                    source_server_section = self.config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
-                    source_pool = self.ssh_connection_pools.get(source_server_section)
-                    if not source_pool:
-                        raise ValueError(f"Error: SSH connection pool for server section '{source_server_section}' not found.")
+                # Unified logic: Get all paths first
+                paths_to_check = []
+                for torrent in eligible_torrents:
+                    if self.checkpoint.is_recheck_failed(torrent.hash):
+                        logging.warning(f"Skipping torrent marked with recheck failure: {torrent.name}")
+                        ui.log(f"[yellow]Skipped (recheck fail): {torrent.name}[/yellow]")
+                        ui.advance_analysis()
+                        continue
+                    paths_to_check.append(torrent.content_path)
 
-                    # Unified logic: Get all paths first
-                    paths_to_check = []
-                    for torrent in eligible_torrents:
-                        if self.checkpoint.is_recheck_failed(torrent.hash):
-                            logging.warning(f"Skipping torrent marked with recheck failure: {torrent.name}")
-                            ui.log(f"[yellow]Skipped (recheck fail): {torrent.name}[/yellow]")
-                            ui.advance_analysis()
-                            continue
-                        paths_to_check.append(torrent.content_path)
-
-                    if not paths_to_check:
-                        logging.info("No new torrents to analyze.")
-                    else:
-                        # Get all sizes in one go
-                        with source_pool.get_connection() as (sftp, ssh):
-                            logging.debug(f"Batch analyzing size for {len(paths_to_check)} torrents...")
-                            sizes = batch_get_remote_sizes(ssh, paths_to_check)
-
-                        # Process the results
-                        for torrent in eligible_torrents:
-                            if torrent.content_path not in paths_to_check:
-                                continue # Was skipped due to recheck failure
-
-                            try:
-                                size = sizes.get(torrent.content_path)
-                                if size is not None and size > 0:
-                                    analyzed_torrents.append((torrent, size))
-                                    total_transfer_size += size
-                                    logging.debug(f"Analyzed '{torrent.name}': {size} bytes")
-                                elif size == 0:
-                                    logging.warning(f"Skipping zero-byte torrent: {torrent.name}")
-                                else: # size is None
-                                    logging.error(f"Failed to calculate size for: {torrent.name}. It may not exist on source.")
-                            except Exception as e:
-                                logging.exception(f"Error during torrent analysis for '{torrent.name}'")
-                                ui.log(f"[bold red]Error analyzing {torrent.name}: {e}[/bold red]")
-                            finally:
-                                ui.advance_analysis()
-
-                except Exception as e:
-                    logging.exception(f"A critical error occurred during the analysis phase: {e}")
-                    ui.set_final_status(f"Analysis failed: {e}")
-                    time.sleep(5)
-                    raise
-
-                logging.info("STATE: Analysis complete.")
-                ui.complete_analysis()
-                ui.log("Analysis complete. Verifying destination...")
-
-                if not analyzed_torrents:
-                    ui.set_final_status("No valid, non-zero size torrents to transfer.")
-                    logging.info("No valid, non-zero size torrents to transfer.")
-                    time.sleep(2)
-                    return
-
-                local_cache_sftp_upload = self.config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
-                transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
-                ui.set_overall_total(total_transfer_size * transfer_multiplier)
-
-                if not self.args.dry_run and not destination_health_check(self.config, total_transfer_size, self.ssh_connection_pools):
-                    ui.log("[bold red]Destination health check failed. Aborting transfer process.[/]")
-                    logging.error("FATAL: Destination health check failed.")
-                    time.sleep(5)
-                    raise RuntimeError("Destination health check failed.")
-
-                logging.info("STATE: Starting transfer phase...")
-                ui.log(f"Transferring {len(analyzed_torrents)} torrents... [green]Running[/]")
-                ui.log("Executing transfers...")
-                try:
-                    if self.args.parallel_jobs > 1:
-                        with ThreadPoolExecutor(max_workers=self.args.parallel_jobs, thread_name_prefix='Transfer') as executor:
-                            transfer_futures = {
-                                executor.submit(
-                                    self._transfer_worker, t, size, is_auto_move=False # Assuming manual run
-                                ): (t, size) for t, size in analyzed_torrents
-                            }
-                            for future in as_completed(transfer_futures):
-                                torrent, size = transfer_futures[future]
-                                try:
-                                    future.result() # Worker function handles its own logging/UI
-                                except Exception as e:
-                                    logging.error(f"An exception was thrown by worker for torrent '{torrent.name}': {e}", exc_info=True)
-                                    ui.complete_torrent_transfer(torrent.hash, success=False)
-                    else:
-                        for torrent, size in analyzed_torrents:
-                            try:
-                                self._transfer_worker(torrent, size, is_auto_move=False)
-                            except Exception as e:
-                                logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
-                                ui.complete_torrent_transfer(torrent.hash, success=False)
-
-
-                except KeyboardInterrupt:
-                    ui.log("[bold yellow]Process interrupted by user. Shutting down workers...[/]")
-                    ui.set_final_status("Shutdown requested.")
-                    if 'executor' in locals():
-                        executor.shutdown(wait=False, cancel_futures=True)
-                    raise
-
-                completed_count = 0
-                if simple_mode:
-                    simple_ui = cast(SimpleUIManager, ui)
-                    completed_count = simple_ui._stats['completed_transfers']
+                if not paths_to_check:
+                    logging.info("No new torrents to analyze.")
                 else:
-                    rich_ui = cast(UIManagerV2, ui)
-                    with rich_ui._lock:
-                        completed_count = rich_ui._stats['completed_transfers']
+                    # Get all sizes in one go
+                    with source_pool.get_connection() as (sftp, ssh):
+                        logging.debug(f"Batch analyzing size for {len(paths_to_check)} torrents...")
+                        sizes = batch_get_remote_sizes(ssh, paths_to_check)
 
-                ui.log(f"Processing complete. Moved {completed_count}/{total_count} torrent(s).")
-                ui.set_final_status("All tasks finished.")
-                logging.info(f"Processing complete. Successfully moved {completed_count}/{total_count} torrent(s).")
-            finally:
-                if self.watchdog:
-                    self.watchdog.stop()
+                    # Process the results
+                    for torrent in eligible_torrents:
+                        if torrent.content_path not in paths_to_check:
+                            continue # Was skipped due to recheck failure
+
+                        try:
+                            size = sizes.get(torrent.content_path)
+                            if size is not None and size > 0:
+                                analyzed_torrents.append((torrent, size))
+                                total_transfer_size += size
+                                logging.debug(f"Analyzed '{torrent.name}': {size} bytes")
+                            elif size == 0:
+                                logging.warning(f"Skipping zero-byte torrent: {torrent.name}")
+                            else: # size is None
+                                logging.error(f"Failed to calculate size for: {torrent.name}. It may not exist on source.")
+                        except Exception as e:
+                            logging.exception(f"Error during torrent analysis for '{torrent.name}'")
+                            ui.log(f"[bold red]Error analyzing {torrent.name}: {e}[/bold red]")
+                        finally:
+                            ui.advance_analysis()
+
+            except Exception as e:
+                logging.exception(f"A critical error occurred during the analysis phase: {e}")
+                ui.set_final_status(f"Analysis failed: {e}")
+                time.sleep(5)
+                raise
+
+            logging.info("STATE: Analysis complete.")
+            ui.complete_analysis()
+            ui.log("Analysis complete. Verifying destination...")
+
+            if not analyzed_torrents:
+                ui.set_final_status("No valid, non-zero size torrents to transfer.")
+                logging.info("No valid, non-zero size torrents to transfer.")
+                time.sleep(2)
+                return
+
+            local_cache_sftp_upload = self.config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
+            transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
+            ui.set_overall_total(total_transfer_size * transfer_multiplier)
+
+            if not self.args.dry_run and not destination_health_check(self.config, total_transfer_size, self.ssh_connection_pools):
+                ui.log("[bold red]Destination health check failed. Aborting transfer process.[/]")
+                logging.error("FATAL: Destination health check failed.")
+                time.sleep(5)
+                raise RuntimeError("Destination health check failed.")
+
+            logging.info("STATE: Starting transfer phase...")
+            ui.log(f"Transferring {len(analyzed_torrents)} torrents... [green]Running[/]")
+            ui.log("Executing transfers...")
+            try:
+                if self.args.parallel_jobs > 1:
+                    with ThreadPoolExecutor(max_workers=self.args.parallel_jobs, thread_name_prefix='Transfer') as executor:
+                        transfer_futures = {
+                            executor.submit(
+                                self._transfer_worker, t, size, is_auto_move=False # Assuming manual run
+                            ): (t, size) for t, size in analyzed_torrents
+                        }
+                        for future in as_completed(transfer_futures):
+                            torrent, size = transfer_futures[future]
+                            try:
+                                future.result() # Worker function handles its own logging/UI
+                            except Exception as e:
+                                logging.error(f"An exception was thrown by worker for torrent '{torrent.name}': {e}", exc_info=True)
+                                ui.complete_torrent_transfer(torrent.hash, success=False)
+                else:
+                    for torrent, size in analyzed_torrents:
+                        try:
+                            self._transfer_worker(torrent, size, is_auto_move=False)
+                        except Exception as e:
+                            logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
+                            ui.complete_torrent_transfer(torrent.hash, success=False)
+
+
+            except KeyboardInterrupt:
+                ui.log("[bold yellow]Process interrupted by user. Shutting down workers...[/]")
+                ui.set_final_status("Shutdown requested.")
+                if 'executor' in locals():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                raise
+
+            completed_count = 0
+            if simple_mode:
+                simple_ui = cast(SimpleUIManager, ui)
+                completed_count = simple_ui._stats['completed_transfers']
+            else:
+                rich_ui = cast(UIManagerV2, ui)
+                with rich_ui._lock:
+                    completed_count = rich_ui._stats['completed_transfers']
+
+            ui.log(f"Processing complete. Moved {completed_count}/{total_count} torrent(s).")
+            ui.set_final_status("All tasks finished.")
+            logging.info(f"Processing complete. Successfully moved {completed_count}/{total_count} torrent(s).")
 
 
 def main() -> int:
@@ -1357,14 +1350,14 @@ def main() -> int:
     logging.info(f"Using configuration file: {args.config}")
     if args.check_config:
         logging.info("--- Running Configuration Check ---")
-        config = load_config(args.config)
-        validator = ConfigValidator(config)
-        if validator.validate():
+        try:
+            ConfigManager(args.config)
             logging.info("[bold green]SUCCESS:[/] Configuration file appears to be valid.")
             return 0
-        else:
+        except SystemExit:
             logging.error("[bold red]FAILURE:[/] Configuration file has errors.")
             return 1
+
     config_template_path = script_dir / 'config.ini.template'
     update_config(args.config, str(config_template_path))
 
@@ -1372,23 +1365,19 @@ def main() -> int:
     file_tracker = FileTransferTracker(script_dir / 'file_transfer_tracker.json')
 
     # Initialize config and mover first
-    config = load_config(args.config)
-    mover = TorrentMover(args, config, script_dir)
+    config_manager = ConfigManager(args.config)
+    mover = TorrentMover(args, config_manager, script_dir)
 
     try:
-        validator = ConfigValidator(config)
-        if not validator.validate():
-            return 1
-
         mover._initialize_ssh_pools()
         mover.tracker_rules = load_tracker_rules(script_dir)
         mover.checkpoint = checkpoint
         mover.file_tracker = file_tracker
 
-        if _handle_utility_commands(args, config, mover.tracker_rules, script_dir, mover.ssh_connection_pools, checkpoint, file_tracker):
+        if _handle_utility_commands(args, mover.config, mover.tracker_rules, script_dir, mover.ssh_connection_pools, checkpoint, file_tracker):
             return 0
 
-        transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
+        transfer_mode = mover.config['SETTINGS'].get('transfer_mode', 'sftp').lower()
         if transfer_mode == 'rsync' or transfer_mode == 'rsync_upload':
             check_sshpass_installed()
 
