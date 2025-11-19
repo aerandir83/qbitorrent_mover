@@ -300,7 +300,10 @@ def _post_transfer_actions(
                     remote_config = None
                     path_to_chown = dest_content_path
 
-            change_ownership(path_to_chown, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
+            if not change_ownership(path_to_chown, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools):
+                msg = f"Ownership change failed for {dest_content_path}. Halting process to preserve source."
+                logging.error(msg)
+                return False, msg
 
     if not destination_qbit:
         logging.warning("No destination client provided. Skipping post-transfer client actions.")
