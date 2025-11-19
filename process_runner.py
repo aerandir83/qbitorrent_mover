@@ -80,38 +80,47 @@ def execute_streaming_command(
         last_transferred_bytes = 0
         last_update_time = time.time()
 
-        if process.stdout:
-            for line_buffer in _read_until_delimiter(process.stdout):
-                if heartbeat_callback:
-                    heartbeat_callback()
+        try:
+            if process.stdout:
+                for line_buffer in _read_until_delimiter(process.stdout):
+                    if heartbeat_callback:
+                        heartbeat_callback()
 
-                line = line_buffer.decode('utf-8', errors='replace').strip()
-                if not line:
-                    continue
+                    line = line_buffer.decode('utf-8', errors='replace').strip()
+                    if not line:
+                        continue
 
-                logger.debug(f"({torrent_hash[:10]}) [RSYNC_PROGRESS] {line}")
+                    logger.debug(f"({torrent_hash[:10]}) [RSYNC_PROGRESS] {line}")
 
-                match = progress_regex.match(line)
-                if match:
-                    human_readable_bytes_str = match.group(1)
-                    current_transferred_bytes = _parse_human_readable_bytes(human_readable_bytes_str)
-                    log_transfer(torrent_hash, f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
+                    match = progress_regex.match(line)
+                    if match:
+                        human_readable_bytes_str = match.group(1)
+                        current_transferred_bytes = _parse_human_readable_bytes(human_readable_bytes_str)
+                        log_transfer(torrent_hash, f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
 
-                    transferred_delta = current_transferred_bytes - last_transferred_bytes
-                    if transferred_delta > 0:
-                        elapsed_time = time.time() - last_update_time
-                        if elapsed_time > 0:
-                            speed = transferred_delta / elapsed_time
-                            last_update_time = time.time()
+                        transferred_delta = current_transferred_bytes - last_transferred_bytes
+                        if transferred_delta > 0:
+                            elapsed_time = time.time() - last_update_time
+                            if elapsed_time > 0:
+                                speed = transferred_delta / elapsed_time
+                                last_update_time = time.time()
 
-                    last_transferred_bytes = current_transferred_bytes
-                    progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
-                    _update_transfer_progress(
-                        torrent_hash,
-                        progress,
-                        current_transferred_bytes,
-                        total_size
-                    )
+                        last_transferred_bytes = current_transferred_bytes
+                        progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
+                        _update_transfer_progress(
+                            torrent_hash,
+                            progress,
+                            current_transferred_bytes,
+                            total_size
+                        )
+        finally:
+            if process.poll() is None:
+                logging.warning("Cleaning up orphaned rsync process...")
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
 
         process.wait()
         stderr_output_bytes = process.stderr.read() if process.stderr else b""
