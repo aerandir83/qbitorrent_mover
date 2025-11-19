@@ -14,7 +14,7 @@ import typing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import paramiko
 
@@ -848,7 +848,8 @@ def _transfer_content_rsync_upload_from_cache(
     total_size: int,
     log_transfer: typing.Callable,
     _update_transfer_progress: typing.Callable,
-    dry_run: bool = False
+    dry_run: bool = False,
+    heartbeat_callback: Optional[Callable[[], None]] = None
 ) -> None:
     """
     Transfers content from a local path to a remote server using rsync.
@@ -897,7 +898,8 @@ def _transfer_content_rsync_upload_from_cache(
             torrent_hash,
             total_size,
             log_transfer,
-            _update_transfer_progress
+            _update_transfer_progress,
+            heartbeat_callback=heartbeat_callback
         )
 
         if success:
@@ -923,7 +925,8 @@ def transfer_content_rsync(
     total_size: int,
     log_transfer: typing.Callable,
     _update_transfer_progress: typing.Callable,
-    dry_run: bool = False
+    dry_run: bool = False,
+    heartbeat_callback: Optional[Callable[[], None]] = None
 ) -> None:
     """Transfers content from a remote server to a local path using rsync."""
 
@@ -978,7 +981,8 @@ def transfer_content_rsync(
                 torrent_hash,
                 total_size,
                 log_transfer,
-                _update_transfer_progress
+                _update_transfer_progress,
+                heartbeat_callback=heartbeat_callback
             )
 
             if success:
@@ -1070,7 +1074,8 @@ def transfer_content_rsync_upload(
     log_transfer: typing.Callable,
     _update_transfer_progress: typing.Callable,
     dry_run: bool,
-    is_folder: bool
+    is_folder: bool,
+    heartbeat_callback: Optional[Callable[[], None]] = None
 ) -> bool:
     """
     Transfers content from a remote source to a remote destination
@@ -1103,7 +1108,8 @@ def transfer_content_rsync_upload(
             total_size=part_total_size,
             log_transfer=log_transfer,
             _update_transfer_progress=_update_transfer_progress,
-            dry_run=dry_run
+            dry_run=dry_run,
+            heartbeat_callback=heartbeat_callback
         )
         logging.info(f"Rsync-Upload: Download to cache complete for '{file_name}'.")
 
@@ -1119,7 +1125,8 @@ def transfer_content_rsync_upload(
             total_size=part_total_size,
             log_transfer=log_transfer,
             _update_transfer_progress=_update_transfer_progress,
-            dry_run=dry_run
+            dry_run=dry_run,
+            heartbeat_callback=heartbeat_callback
         )
         logging.info(f"Rsync-Upload: Upload from cache complete for '{file_name}'.")
 

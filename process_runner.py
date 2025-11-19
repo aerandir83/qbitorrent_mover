@@ -2,7 +2,7 @@ import subprocess
 import logging
 import re
 import time
-from typing import List, Callable, Any
+from typing import List, Callable, Any, Optional
 from utils import RemoteTransferError
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,8 @@ def execute_streaming_command(
     torrent_hash: str,
     total_size: int,
     log_transfer: Callable[..., Any],
-    _update_transfer_progress: Callable[..., Any]
+    _update_transfer_progress: Callable[..., Any],
+    heartbeat_callback: Optional[Callable[[], None]] = None
 ) -> bool:
     """
     Executes a command (like rsync) and streams its stdout to parse progress.
@@ -69,6 +70,8 @@ def execute_streaming_command(
                     break
 
                 if byte == b'\r' or byte == b'\n':
+                    if heartbeat_callback:
+                        heartbeat_callback()
                     if line_buffer:
                         line = line_buffer.decode('utf-8', errors='replace').strip()
                         logger.debug(f"({torrent_hash[:10]}) [RSYNC_PROGRESS] {line}")
