@@ -37,8 +37,9 @@ The system follows a strict hierarchical Manager pattern. Circular dependencies 
 
 Refactoring MUST preserve this sequence.
 
+0.  **Pre-flight Checks:** `TorrentMover` verifies client connectivity and destination disk space before starting the UI.
 1.  **Discovery:** `QbittorrentManager` fetches torrents completed > `min_seed_time`.
-2.  **Filtering:** `TorrentMover` compares torrents against `transfer_checkpoint.json` (loaded via `TransferManager`/`FileTransferTracker`) to skip already-moved items.
+2.  **Filtering:** `TorrentMover` excludes torrents based on `transfer_checkpoint.json` (already moved) AND Tracker Rules (ignored domains).
 3.  **Categorization:** `TrackerManager` applies rules to assign a category (modifying the torrent metadata in memory).
 4.  **Strategy Selection:** `TransferStrategies` selects the mode (`sftp`, `rsync`, `sftp_upload`).
 5.  **Execution:** `TransferManager` executes the strategy.

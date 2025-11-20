@@ -69,6 +69,7 @@ Torrent Mover is designed to handle failures gracefully and ensure data integrit
 *   **Watchdog & Smart Heartbeat**: A built-in watchdog monitors for hung transfers. It now uses "Smart Heartbeat" monitoring, which intelligently detects signs of life from `rsync` even during long checksum phases. If a transfer is truly stalled for an extended period (configurable via `watchdog_timeout`), it is terminated and requeued.
 *   **SSH KeepAlive**: The script now configures SSH connections with `ServerAliveInterval` to prevent intermediate firewalls or routers from silently dropping connections during long, quiet transfers.
 *   **Circuit Breaker**: For torrents that repeatedly fail to transfer, a circuit breaker pattern is employed. After a configurable number of failed attempts, the torrent is temporarily skipped, preventing it from blocking the queue of other, healthy torrents. The script will retry the failed torrent after a cool-down period.
+*   **Error Handling**: "Provisioning Errors" (e.g., permission failures) are now distinguished from general transfer failures, allowing for more targeted troubleshooting.
 
 ## Requirements
 
@@ -186,6 +187,8 @@ Once you've confirmed everything works, run the script normally:
 python3 torrent_mover.py
 ```
 
+**Startup Sequence**: The application now performs "Pre-flight Checks" (Connectivity, Disk Space) with visible console output before launching the main dashboard.
+
 ## Scheduling with Cron
 
 To run the script automatically, set up a cron job. **You must use absolute paths.**
@@ -238,3 +241,5 @@ This script can automatically assign a category to torrents on your destination 
     *   **List**: `python3 torrent_mover.py -l`
     *   **Add/Update**: `python3 torrent_mover.py -a "some-tracker.org" "My-TV-Shows"`
     *   **Delete**: `python3 torrent_mover.py -d "some-tracker.org"`
+
+**Note on "Ignore" Rules**: Torrents matching a rule set to "Ignore" (case-insensitive) are **strictly excluded** from the processing queue. They will not be analyzed, moved, or touched by the script.
