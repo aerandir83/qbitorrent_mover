@@ -50,7 +50,7 @@ from system_manager import (
 from tracker_manager import (
     categorize_torrents,
     load_tracker_rules, save_tracker_rules, set_category_based_on_tracker,
-    run_interactive_categorization, display_tracker_rules
+    run_interactive_categorization, display_tracker_rules, get_category_from_rules
 )
 from transfer_strategies import get_transfer_strategy, TransferFile
 from ui import BaseUIManager, SimpleUIManager, UIManagerV2
@@ -1039,6 +1039,21 @@ class TorrentMover:
         except Exception as e:
             logging.error(f"Error fetching eligible torrents: {e}")
             return None
+
+        # --- Implement Strict Tracker Exclusion ---
+        filtered_torrents = []
+        for torrent in eligible_torrents:
+            try:
+                category = get_category_from_rules(torrent, self.tracker_rules, self.source_qbit)
+                if category and category.lower() == 'ignore':
+                    logging.info(f"Skipping torrent '{torrent.name}' due to ignore rule.")
+                    continue
+            except Exception as e:
+                logging.warning(f"Error checking tracker rules for '{torrent.name}': {e}")
+
+            filtered_torrents.append(torrent)
+
+        eligible_torrents = filtered_torrents
 
         total_count = len(eligible_torrents)
         if total_count == 0:
