@@ -10,11 +10,17 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.11.1**. To check your version, run: `python3 torrent_mover.py --version`.
+The current version is **2.12.0**. To check your version, run: `python3 torrent_mover.py --version`.
 
 ## Changelog
 
-### Version 2.11.0 (Latest)
+### Version 2.12.0 (Latest)
+* **feat(startup):** Refactored startup sequence with explicit "Pre-flight Checks" for connectivity and disk space before UI launch.
+* **feat(filtering):** Implemented strict exclusion for torrents matching "Ignore" tracker rules.
+* **feat(resilience):** Added distinction for "Provisioning Errors" vs general transfer failures.
+* **docs**: Updated documentation to reflect architectural changes.
+
+### Version 2.11.0
 * **feat(resilience):** Added Smart Heartbeat monitoring, a configurable watchdog_timeout, and SSH KeepAlive to dramatically improve resilience against network stalls and long checksum operations.
 * **docs**: Updated README and config template with information about the new features.
 
