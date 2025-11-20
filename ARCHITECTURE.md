@@ -54,8 +54,8 @@ Refactoring MUST preserve this sequence.
 
 * **`transfer_checkpoint.json`**: Stores hashes of successfully moved torrents.
     * *Owner:* `TransferManager` (managed by `FileTransferTracker` class).
-* **`queue_state.pkl` (Circuit Breaker)**: Stores failure counts and backoff timers.
-    * *Owner:* `ResilientQueue`.
+* **`ResilientQueue` State**: In-memory only (Ephemeral).
+    * *Owner:* `ResilientQueue` (Reset on restart).
 * **`config.ini`**: Read-only during runtime.
     * *Owner:* `ConfigManager`.
 
@@ -66,3 +66,53 @@ Refactoring MUST preserve this sequence.
     * `SSHConnectionPool` is thread-safe.
     * `UIManagerV2` is thread-safe.
     * **Rule:** Do not share mutable state objects (like lists of torrents) across threads without explicit locking.
+
+## 5. Component Contracts
+
+Defines strict input/output boundaries and guarantees.
+
+* **`TransferManager`**
+    * **Input:** `Torrent` object + `TransferStrategy`.
+    * **Output:** Success/Failure boolean.
+    * **Guarantee:** Atomic file movement or rollback (no partial corrupt files left at destination).
+
+* **`FileTransferTracker`**
+    * **Input:** File chunks / Byte progress.
+    * **Output:** `file_transfer_tracker.json` (internal state).
+    * **Guarantee:** Persists bytes transferred to allow resume support (if strategy permits).
+
+## 6. Visual Reference
+
+### Retry Flow (Ephemeral Circuit Breaker)
+
+```text
+     +-----------+        (Fail)         +----------------------------------+
+     |  Attempt  | --------------------> | Increment Counter (RAM/Ephemeral)|
+     +-----------+                       +----------------------------------+
+           ^                                              |
+           |                                              v
+     +-----------+                             +-------------------+
+     |   Retry   | <-------------------------- |      Backoff      |
+     +-----------+                             +-------------------+
+```
+
+### System State Machine
+
+```text
+[Discovery]
+    |
+    v
+[Filtering] (Check: transfer_checkpoint.json)
+    |
+    v
+[Categorization] (Tracker Rule > Source Category)
+    |
+    v
+[Transfer] (Strategy: RSYNC/SFTP)
+    |
+    v
+[Verification] (Force Recheck)
+    |
+    v
+[Finalization] (Write Checkpoint -> Delete Source)
+```

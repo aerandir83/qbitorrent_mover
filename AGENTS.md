@@ -58,8 +58,9 @@ The system architecture is based on hierarchical Managers orchestrated by the ma
 
 Persistent state is tracked across dedicated files:
 
-* **transfer\_checkpoint.json**: Tracks all successful transfers.  
-* **queue\_state.pkl**: Tracks the circuit breaker state (e.g., failure counts for retry logic).
+* **transfer\_checkpoint.json**: Tracks all successful transfers.
+
+**Note:** Circuit breaker state (e.g., failure counts) is **ephemeral** and resets when the script exits.
 
 ## **Coding Standards**
 
