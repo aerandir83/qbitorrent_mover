@@ -491,6 +491,10 @@ def _post_transfer_actions(
     if recheck_status == "SUCCESS":
         logging.info("Destination re-check successful.")
         try:
+            # AI-CONTEXT: Category Precedence
+            # Tracker Rules > Source Category.
+            # We apply the source category first, then override it with tracker rules if a match is found.
+
             # 1. Apply Category FIRST (before starting)
             if torrent.category:
                 try:
@@ -604,6 +608,10 @@ def _execute_transfer(
                 local_cache, download_limit_bytes, upload_limit_bytes, sftp_chunk_size
             )
         elif transfer_mode == 'rsync':
+            # AI-CONTEXT: Rsync Progress Reporting
+            # Rsync operates in two phases: 1. Checksumming (calculating delta), 2. Transferring.
+            # During Phase 1, 'transferred_bytes' may jump or appear stalled.
+            # To prevent UI >100% bugs, we must clamp progress calculation and rely on Smart Heartbeat during stalls.
             rsync_options = shlex.split(config['SETTINGS'].get("rsync_options", "-avhHSP --partial --inplace"))
             sftp_config = config[config['SETTINGS']['source_server_section']]
             # For rsync, we assume 'files' contains a single entry for the root path
@@ -1119,7 +1127,13 @@ class TorrentMover:
         return analyzed_torrents, total_transfer_size, total_count
 
     def _update_transfer_progress(self, torrent_hash: str, progress: float, transferred_bytes: int, total_size: int):
-        """Callback to update torrent progress in the UI."""
+        """Callback to update torrent progress.
+
+        DEBUGGING HINTS:
+        - If progress > 100%: Check delta calculation logic.
+        - If speeds show 0: Verify last_known_bytes is updating.
+        - If UI freezes: Check if _lock is held too long.
+        """
         if isinstance(self.ui, UIManagerV2):
             with self.ui._lock:
                 if torrent_hash in self.ui._torrents:

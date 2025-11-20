@@ -99,6 +99,11 @@ class SFTPStrategy(TransferStrategy):
 class RsyncStrategy(TransferStrategy):
     """Strategy for handling file transfers using rsync."""
 
+    # AI-CONTEXT: Rsync Progress Reporting
+    # Phase 1: Checksumming (delta calc) - bytes may jump or stall.
+    # Phase 2: Transferring.
+    # We must track phases to prevent double-counting and UI >100% bugs.
+
     def __init__(self, config: Dict, ssh_connection_pools: Dict[str, SSHConnectionPool]):
         super().__init__(config, ssh_connection_pools)
         source_server_section = self.config['SETTINGS']['source_server_section']
