@@ -286,13 +286,11 @@ def _post_transfer_actions(
             if 'DESTINATION_SERVER' in config and config.has_section('DESTINATION_SERVER'):
                 try:
                     remote_config = config['DESTINATION_SERVER']
-
-                    # We need the content name (e.g., "My.Movie.2023")
                     content_name = os.path.basename(dest_content_path)
+                    remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path')
 
-                    # Get the remote *base* path from config
-                    dest_base_path = config['DESTINATION_PATHS']['destination_path']
-                    remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path') or dest_base_path
+                    if not remote_dest_base_path:
+                        raise ValueError("`remote_destination_path` is not defined in config under [DESTINATION_PATHS]")
 
                     # Construct the full *remote* path for chown
                     path_to_chown = os.path.join(remote_dest_base_path, content_name)
@@ -302,7 +300,10 @@ def _post_transfer_actions(
                     remote_config = None
                     path_to_chown = dest_content_path
 
-            change_ownership(path_to_chown, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools)
+            if not change_ownership(path_to_chown, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools):
+                msg = f"Ownership change failed for {dest_content_path}. Halting process to preserve source."
+                logging.error(msg)
+                return False, msg
 
     if not destination_qbit:
         logging.warning("No destination client provided. Skipping post-transfer client actions.")
@@ -378,6 +379,25 @@ def _post_transfer_actions(
 
     # (This logic goes *after* wait_for_recheck_completion and *before* the success block)
     # --- START MODIFICATION ---
+
+    if recheck_status == "FAILED_FINAL_REVIEW":
+        manual_review_category = config['SETTINGS'].get('manual_review_category')
+        logging.error("Torrent failed final verification. Preserving source and categorizing for review.")
+        ui.log(f"[bold red]Verification Failed: {name}. Flagging for review.[/bold red]")
+
+        if manual_review_category and not dry_run:
+            try:
+                destination_qbit.torrents_set_category(torrent_hashes=hash_, category=manual_review_category)
+            except Exception as e:
+                logging.warning(f"Failed to set manual review category: {e}")
+
+        if not dry_run:
+            try:
+                destination_qbit.torrents_pause(torrent_hashes=hash_)
+            except Exception as e:
+                logging.warning(f"Failed to pause torrent {name}: {e}")
+
+        return False, "Verification failed. Source preserved for manual review."
 
     if recheck_status == "FAILED_STUCK":
         # This is the new "Stuck" failure from Directive 2, Scenario B

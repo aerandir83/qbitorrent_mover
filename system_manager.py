@@ -303,7 +303,7 @@ def destination_health_check(config: configparser.ConfigParser, total_transfer_s
     logging.info("--- Destination Health Check Passed ---")
     return True
 
-def change_ownership(path_to_change: str, user: str, group: str, remote_config: Optional[configparser.SectionProxy] = None, dry_run: bool = False, ssh_connection_pools: Optional[Dict[str, SSHConnectionPool]] = None) -> None:
+def change_ownership(path_to_change: str, user: str, group: str, remote_config: Optional[configparser.SectionProxy] = None, dry_run: bool = False, ssh_connection_pools: Optional[Dict[str, SSHConnectionPool]] = None) -> bool:
     """Changes the ownership of a file or directory.
 
     This function can operate on both local and remote filesystems. If
@@ -320,46 +320,60 @@ def change_ownership(path_to_change: str, user: str, group: str, remote_config: 
             actually running it.
         ssh_connection_pools: A dictionary of SSH connection pools, required for
             remote operations.
+
+    Returns:
+        True if the operation was successful or not required (dry run, no user/group set).
+        False if the chown command failed (non-zero exit code or exception).
     """
     if not user and not group:
-        return
+        logging.debug("No chown user/group configured. Skipping ownership change.")
+        return True
     owner_spec = f"{user or ''}:{group or ''}".strip(':')
     if dry_run:
         logging.info(f"[DRY RUN] Would change ownership of '{path_to_change}' to '{owner_spec}'.")
-        return
+        return True
     if remote_config and ssh_connection_pools:
         logging.info(f"Attempting to change remote ownership of '{path_to_change}' to '{owner_spec}'...")
+        # Explicitly use the DESTINATION_SERVER pool, as this is the only remote chown context
         pool = ssh_connection_pools.get('DESTINATION_SERVER')
         if not pool:
-            logging.error("Could not find SSH pool for DESTINATION_SERVER.")
-            return
+            logging.error("Could not find SSH pool for DESTINATION_SERVER for chown operation.")
+            return False
+
         try:
             with pool.get_connection() as (sftp, ssh):
+                # Using shlex.quote to prevent command injection vulnerabilities
                 remote_command = f"chown -R -- {shlex.quote(owner_spec)} {shlex.quote(path_to_change)}"
                 logging.debug(f"Executing remote command: {remote_command}")
                 stdin, stdout, stderr = ssh.exec_command(remote_command, timeout=Timeouts.SSH_EXEC)
                 exit_status = stdout.channel.recv_exit_status()
                 if exit_status == 0:
-                    logging.info("Remote ownership changed successfully.")
+                    logging.info(f"Remote ownership changed successfully for '{path_to_change}'.")
+                    return True
                 else:
                     stderr_output = stderr.read().decode('utf-8').strip()
                     logging.error(f"Failed to change remote ownership for '{path_to_change}'. Exit code: {exit_status}, Stderr: {stderr_output}")
+                    return False
         except Exception as e:
-            logging.error(f"An exception occurred during remote chown: {e}", exc_info=True)
+            logging.error(f"An exception occurred during remote chown for '{path_to_change}': {e}", exc_info=True)
+            return False
     else:
         logging.info(f"Attempting to change local ownership of '{path_to_change}' to '{owner_spec}'...")
         try:
             if shutil.which("chown") is None:
                 logging.warning("'chown' command not found locally. Skipping ownership change.")
-                return
+                return False
             command = ["chown", "-R", owner_spec, path_to_change]
             process = subprocess.run(command, capture_output=True, text=True, check=False)
             if process.returncode == 0:
                 logging.info("Local ownership changed successfully.")
+                return True
             else:
                 logging.error(f"Failed to change local ownership for '{path_to_change}'. Exit code: {process.returncode}, Stderr: {process.stderr.strip()}")
+                return False
         except Exception as e:
             logging.error(f"An exception occurred during local chown: {e}", exc_info=True)
+            return False
 
 def setup_logging(script_dir: Path, dry_run: bool, test_run: bool, debug: bool) -> None:
     """Configures the root logger for file-based logging.

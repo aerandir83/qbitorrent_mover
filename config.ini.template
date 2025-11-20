@@ -81,6 +81,10 @@ source_server_section = SOURCE_SERVER
 
 # The category in the SOURCE qBittorrent client that marks torrents for moving.
 category_to_move = move-me
+# (Optional) The category to assign to destination torrents that fail the final
+# re-check/verification process (e.g., corrupt transfer). The source torrent
+# will be preserved if this category is applied.
+manual_review_category = review-failed
 # (Optional) The desired total size in GB for the category after moving.
 # If set, the script will only move the oldest torrents until the category's
 # total size is at or below this threshold.

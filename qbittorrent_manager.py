@@ -182,6 +182,8 @@ def wait_for_recheck_completion(
                     elapsed_stopped_time = time.time() - stopped_state_detected_time
                     if elapsed_stopped_time > recheck_stopped_timeout:
                         logging.error(f"Recheck FAILED for torrent {torrent_hash[:10]}. State confirmed as '{state}' for {recheck_stopped_timeout}s.")
+                        if current_progress < 1.0:
+                            return "FAILED_FINAL_REVIEW"
                         return "FAILED_STATE" # Triggers delta-sync
 
             else:
