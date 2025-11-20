@@ -1,4 +1,5 @@
 import configparser
+import errno
 import json
 import logging
 import os
@@ -454,6 +455,17 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
                 local_size = 0
             elif local_size > 0:
                 logging.info(f"Resuming download for {os.path.basename(source_file_path)} from {local_size / (1024*1024):.2f} MB.")
+
+            # JIT Capacity Check
+            required_space = total_size - local_size
+            if required_space > 0:
+                # Ensure parent directory exists to check usage (it should, as created by caller)
+                if local_cache_path.parent.exists():
+                    usage = shutil.disk_usage(local_cache_path.parent)
+                    if usage.free < required_space:
+                        msg = f"Insufficient local cache space for {os.path.basename(source_file_path)}. Required: {required_space}, Free: {usage.free}."
+                        logging.warning(msg)
+                        raise OSError(errno.ENOSPC, msg)
 
             mode = 'ab' if local_size > 0 else 'wb'
             with sftp.open(source_file_path, 'rb') as remote_f_raw:
