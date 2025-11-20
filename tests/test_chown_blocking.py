@@ -126,7 +126,7 @@ def test_post_transfer_halts_on_chown_failure(mock_change_ownership):
 
     # Assert
     assert result is False
-    assert "Ownership change failed" in msg
+    assert "PROVISIONING ERROR: Ownership change failed" in msg
     mock_change_ownership.assert_called_once()
 
 @patch('torrent_mover.change_ownership')

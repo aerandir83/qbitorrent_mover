@@ -50,7 +50,7 @@ from system_manager import (
 from tracker_manager import (
     categorize_torrents,
     load_tracker_rules, save_tracker_rules, set_category_based_on_tracker,
-    run_interactive_categorization, display_tracker_rules
+    run_interactive_categorization, display_tracker_rules, get_category_from_rules
 )
 from transfer_strategies import get_transfer_strategy, TransferFile
 from ui import BaseUIManager, SimpleUIManager, UIManagerV2
@@ -301,7 +301,7 @@ def _post_transfer_actions(
                     path_to_chown = dest_content_path
 
             if not change_ownership(path_to_chown, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools):
-                msg = f"Ownership change failed for {dest_content_path}. Halting process to preserve source."
+                msg = f"PROVISIONING ERROR: Ownership change failed for {dest_content_path}. Source preserved."
                 logging.error(msg)
                 return False, msg
 
@@ -970,17 +970,153 @@ class TorrentMover:
             )
             logging.info(f"Initialized SSH connection pool for '{section_name}' with size {max_sessions}.")
 
-    def _connect_qbit_clients(self):
-        """Connects to source and destination qBittorrent clients."""
+    def pre_flight_checks(self) -> Optional[Tuple[List[Tuple['qbittorrentapi.TorrentDictionary', int]], int, int]]:
+        """
+        Performs all necessary checks and preparations before starting the UI.
+        Returns a tuple of (analyzed_torrents, total_transfer_size, total_count) if successful.
+        Returns None if any check fails or if there are no torrents to move.
+        """
+        # 1. Check Configuration
+        print("Checking configuration...", end=" ", flush=True)
         try:
             source_section_name = self.config['SETTINGS']['source_client_section']
             dest_section_name = self.config['SETTINGS']['destination_client_section']
-            self.source_qbit = connect_qbit(self.config[source_section_name], "Source")
-            self.destination_qbit = connect_qbit(self.config[dest_section_name], "Destination")
-        except KeyError as e:
-            raise KeyError(f"Configuration Error: The client section '{e}' is defined in your [SETTINGS] but not found in the config file.") from e
+            if source_section_name not in self.config:
+                raise KeyError(f"Source section '{source_section_name}' missing.")
+            if dest_section_name not in self.config:
+                raise KeyError(f"Destination section '{dest_section_name}' missing.")
+            print("[OK]")
         except Exception as e:
-            raise RuntimeError(f"Failed to connect to qBittorrent client after multiple retries: {e}") from e
+            print("[FAILED]")
+            logging.error(f"Configuration check failed: {e}")
+            return None
+
+        # 2. Connect to Source Client
+        print("Connecting to Source Client...", end=" ", flush=True)
+        try:
+            self.source_qbit = connect_qbit(self.config[source_section_name], "Source")
+            print("[OK]")
+        except Exception as e:
+            print("[FAILED]")
+            logging.error(f"Failed to connect to Source Client: {e}")
+            return None
+
+        # 3. Connect to Destination Client
+        print("Connecting to Destination Client...", end=" ", flush=True)
+        try:
+            self.destination_qbit = connect_qbit(self.config[dest_section_name], "Destination")
+            print("[OK]")
+        except Exception as e:
+            print("[FAILED]")
+            logging.error(f"Failed to connect to Destination Client: {e}")
+            return None
+
+        # 4. Cleanup & Recovery
+        try:
+            cleanup_orphaned_cache(self.destination_qbit)
+            recovered_torrents = recover_cached_torrents(self.source_qbit, self.destination_qbit)
+        except Exception as e:
+            logging.error(f"Error during cache cleanup/recovery: {e}")
+            recovered_torrents = []
+
+        # 5. Get Eligible Torrents
+        try:
+            category_to_move = self.config['SETTINGS']['category_to_move']
+            size_threshold_gb_str = self.config['SETTINGS'].get('size_threshold_gb')
+            size_threshold_gb = None
+            if size_threshold_gb_str and size_threshold_gb_str.strip():
+                try:
+                    size_threshold_gb = float(size_threshold_gb_str)
+                except ValueError:
+                    logging.error(f"Invalid value for 'size_threshold_gb': '{size_threshold_gb_str}'. It must be a number.")
+
+            eligible_torrents = get_eligible_torrents(self.source_qbit, category_to_move, size_threshold_gb)
+            if recovered_torrents:
+                eligible_hashes = {t.hash for t in eligible_torrents}
+                for torrent in recovered_torrents:
+                    if torrent.hash not in eligible_hashes:
+                        eligible_torrents.append(torrent)
+        except Exception as e:
+            logging.error(f"Error fetching eligible torrents: {e}")
+            return None
+
+        # --- Implement Strict Tracker Exclusion ---
+        filtered_torrents = []
+        for torrent in eligible_torrents:
+            try:
+                category = get_category_from_rules(torrent, self.tracker_rules, self.source_qbit)
+                if category and category.lower() == 'ignore':
+                    logging.info(f"Skipping torrent '{torrent.name}' due to ignore rule.")
+                    continue
+            except Exception as e:
+                logging.warning(f"Error checking tracker rules for '{torrent.name}': {e}")
+
+            filtered_torrents.append(torrent)
+
+        eligible_torrents = filtered_torrents
+
+        total_count = len(eligible_torrents)
+        if total_count == 0:
+            logging.info("No torrents to move.")
+            print(f"\nNo torrents found in category '{category_to_move}'. Exiting.")
+            return None
+
+        # 6. Analysis (Fetching Sizes)
+        print("Analyzing eligible torrents...", end=" ", flush=True)
+        analyzed_torrents: List[Tuple['qbittorrentapi.TorrentDictionary', int]] = []
+        total_transfer_size = 0
+
+        try:
+            source_server_section = self.config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
+            source_pool = self.ssh_connection_pools.get(source_server_section)
+            if not source_pool:
+                 raise ValueError(f"Error: SSH connection pool for server section '{source_server_section}' not found.")
+
+            paths_to_check = []
+            for torrent in eligible_torrents:
+                if self.checkpoint.is_recheck_failed(torrent.hash):
+                    logging.warning(f"Skipping torrent marked with recheck failure: {torrent.name}")
+                    continue
+                paths_to_check.append(torrent.content_path)
+
+            if not paths_to_check:
+                 print("[OK] (No new torrents to analyze)")
+            else:
+                with source_pool.get_connection() as (sftp, ssh):
+                     sizes = batch_get_remote_sizes(ssh, paths_to_check)
+
+                for torrent in eligible_torrents:
+                    if torrent.content_path not in paths_to_check:
+                        continue
+
+                    size = sizes.get(torrent.content_path)
+                    if size is not None and size > 0:
+                        analyzed_torrents.append((torrent, size))
+                        total_transfer_size += size
+                    elif size == 0:
+                        logging.warning(f"Skipping zero-byte torrent: {torrent.name}")
+                    else:
+                        logging.error(f"Failed to calculate size for: {torrent.name}")
+
+            print("[OK]")
+        except Exception as e:
+            print("[FAILED]")
+            logging.exception(f"Analysis failed: {e}")
+            return None
+
+        if not analyzed_torrents:
+            print("No valid, non-zero size torrents to transfer.")
+            return None
+
+        # 7. Destination Health Check
+        print("Checking Destination Disk Space...", end=" ", flush=True)
+        if not self.args.dry_run:
+            if not destination_health_check(self.config, total_transfer_size, self.ssh_connection_pools):
+                 print("[FAILED]")
+                 return None
+        print("[OK]")
+
+        return analyzed_torrents, total_transfer_size, total_count
 
     def _update_transfer_progress(self, torrent_hash: str, progress: float, transferred_bytes: int, total_size: int):
         """Callback to update torrent progress in the UI."""
@@ -1105,33 +1241,17 @@ class TorrentMover:
         """The main orchestration function for the torrent transfer process.
         This is the refactored version of _run_transfer_operation.
         """
-        if not (self.source_qbit and self.destination_qbit and self.config and self.checkpoint and self.file_tracker):
-            logging.error("FATAL: Class not initialized before run.")
+        # Run pre-flight checks
+        # Note: source_qbit and destination_qbit are initialized in pre_flight_checks
+        if not (self.config and self.checkpoint and self.file_tracker):
+             logging.error("FATAL: Class not initialized before run.")
+             return
+
+        pre_flight_result = self.pre_flight_checks()
+        if not pre_flight_result:
             return
 
-        cleanup_orphaned_cache(self.destination_qbit)
-        recovered_torrents = recover_cached_torrents(self.source_qbit, self.destination_qbit)
-        category_to_move = self.config['SETTINGS']['category_to_move']
-        size_threshold_gb_str = self.config['SETTINGS'].get('size_threshold_gb')
-        size_threshold_gb = None
-        if size_threshold_gb_str and size_threshold_gb_str.strip():
-            try:
-                size_threshold_gb = float(size_threshold_gb_str)
-            except ValueError:
-                logging.error(f"Invalid value for 'size_threshold_gb': '{size_threshold_gb_str}'. It must be a number. Disabling threshold.")
-
-        eligible_torrents = get_eligible_torrents(self.source_qbit, category_to_move, size_threshold_gb)
-        if recovered_torrents:
-            eligible_hashes = {t.hash for t in eligible_torrents}
-            for torrent in recovered_torrents:
-                if torrent.hash not in eligible_hashes:
-                    eligible_torrents.append(torrent)
-
-        if not eligible_torrents:
-            logging.info("No torrents to move.")
-            return
-
-        total_count = len(eligible_torrents)
+        analyzed_torrents, total_transfer_size, total_count = pre_flight_result
         transfer_mode = self.config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
         # --- UI Initialization ---
@@ -1147,81 +1267,11 @@ class TorrentMover:
 
             ui.set_transfer_mode(transfer_mode)
             ui.set_analysis_total(total_count)
-            ui.log(f"Found {total_count} torrents to process. Analyzing...")
-
-            analyzed_torrents: List[Tuple['qbittorrentapi.TorrentDictionary', int]] = []
-            total_transfer_size = 0
-            logging.info("STATE: Starting analysis phase...")
-            try:
-                source_server_section = self.config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
-                source_pool = self.ssh_connection_pools.get(source_server_section)
-                if not source_pool:
-                    raise ValueError(f"Error: SSH connection pool for server section '{source_server_section}' not found.")
-
-                # Unified logic: Get all paths first
-                paths_to_check = []
-                for torrent in eligible_torrents:
-                    if self.checkpoint.is_recheck_failed(torrent.hash):
-                        logging.warning(f"Skipping torrent marked with recheck failure: {torrent.name}")
-                        ui.log(f"[yellow]Skipped (recheck fail): {torrent.name}[/yellow]")
-                        ui.advance_analysis()
-                        continue
-                    paths_to_check.append(torrent.content_path)
-
-                if not paths_to_check:
-                    logging.info("No new torrents to analyze.")
-                else:
-                    # Get all sizes in one go
-                    with source_pool.get_connection() as (sftp, ssh):
-                        logging.debug(f"Batch analyzing size for {len(paths_to_check)} torrents...")
-                        sizes = batch_get_remote_sizes(ssh, paths_to_check)
-
-                    # Process the results
-                    for torrent in eligible_torrents:
-                        if torrent.content_path not in paths_to_check:
-                            continue # Was skipped due to recheck failure
-
-                        try:
-                            size = sizes.get(torrent.content_path)
-                            if size is not None and size > 0:
-                                analyzed_torrents.append((torrent, size))
-                                total_transfer_size += size
-                                logging.debug(f"Analyzed '{torrent.name}': {size} bytes")
-                            elif size == 0:
-                                logging.warning(f"Skipping zero-byte torrent: {torrent.name}")
-                            else: # size is None
-                                logging.error(f"Failed to calculate size for: {torrent.name}. It may not exist on source.")
-                        except Exception as e:
-                            logging.exception(f"Error during torrent analysis for '{torrent.name}'")
-                            ui.log(f"[bold red]Error analyzing {torrent.name}: {e}[/bold red]")
-                        finally:
-                            ui.advance_analysis()
-
-            except Exception as e:
-                logging.exception(f"A critical error occurred during the analysis phase: {e}")
-                ui.set_final_status(f"Analysis failed: {e}")
-                time.sleep(5)
-                raise
-
-            logging.info("STATE: Analysis complete.")
-            ui.complete_analysis()
-            ui.log("Analysis complete. Verifying destination...")
-
-            if not analyzed_torrents:
-                ui.set_final_status("No valid, non-zero size torrents to transfer.")
-                logging.info("No valid, non-zero size torrents to transfer.")
-                time.sleep(2)
-                return
+            ui.complete_analysis() # Already done in pre-flight
 
             local_cache_sftp_upload = self.config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
             transfer_multiplier = 2 if transfer_mode == 'sftp_upload' and local_cache_sftp_upload else 1
             ui.set_overall_total(total_transfer_size * transfer_multiplier)
-
-            if not self.args.dry_run and not destination_health_check(self.config, total_transfer_size, self.ssh_connection_pools):
-                ui.log("[bold red]Destination health check failed. Aborting transfer process.[/]")
-                logging.error("FATAL: Destination health check failed.")
-                time.sleep(5)
-                raise RuntimeError("Destination health check failed.")
 
             logging.info("STATE: Starting transfer phase...")
             ui.log(f"Transferring {len(analyzed_torrents)} torrents... [green]Running[/]")
@@ -1401,9 +1451,7 @@ def main() -> int:
         if transfer_mode == 'rsync' or transfer_mode == 'rsync_upload':
             check_sshpass_installed()
 
-        # Connect clients before running
-        mover._connect_qbit_clients()
-
+        # Clients are now connected within mover.run() -> mover.pre_flight_checks()
         mover.run(simple_mode, rich_handler)
 
     except KeyboardInterrupt:

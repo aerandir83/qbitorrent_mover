@@ -1,0 +1,34 @@
+[SETTINGS]
+source_client_section = SOURCE_QBITTORRENT
+destination_client_section = DESTINATION_QBITTORRENT
+transfer_mode = sftp
+category_to_move = radarr
+size_threshold_gb = 0.1
+source_server_section = SOURCE_SERVER
+
+[SOURCE_QBITTORRENT]
+host = localhost
+port = 8080
+username = admin
+password = adminadmin
+
+[DESTINATION_QBITTORRENT]
+host = localhost
+port = 8081
+username = admin
+password = adminadmin
+
+[SOURCE_SERVER]
+host = localhost
+port = 22
+username = user
+password = pass
+
+[DESTINATION_SERVER]
+host = localhost
+port = 22
+username = user
+password = pass
+
+[DESTINATION_PATHS]
+destination_path = /tmp/dest
