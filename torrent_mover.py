@@ -301,7 +301,7 @@ def _post_transfer_actions(
                     path_to_chown = dest_content_path
 
             if not change_ownership(path_to_chown, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools):
-                msg = f"Ownership change failed for {dest_content_path}. Halting process to preserve source."
+                msg = f"PROVISIONING ERROR: Ownership change failed for {dest_content_path}. Source preserved."
                 logging.error(msg)
                 return False, msg
 
