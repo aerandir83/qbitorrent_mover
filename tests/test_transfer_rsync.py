@@ -191,6 +191,9 @@ class TestRsyncCommandConstruction:
         assert "--info=progress2" in called_command
         assert "--partial" in called_command # from user options
 
+        # Assert --timeout is NOT present (it's now adaptive)
+        assert "--timeout" not in " ".join(called_command)
+
         # 2. Assert source and destination paths are present and correctly formatted
         expected_remote_spec = f"user@source.server.com:{source_path}"
         assert expected_remote_spec in called_command
@@ -614,7 +617,75 @@ class TestRsyncUploadWorkflow:
         assert "--info=progress2" in called_command
         assert "--custom-flag" in called_command # User option
 
+        # Assert --timeout is NOT present
+        assert "--timeout" not in " ".join(called_command)
+
         # 3. Verify sshpass usage
         assert "sshpass" in called_command
         assert "-p" in called_command
         assert "dest_password" in called_command
+
+class TestRsyncAdaptiveTimeout:
+    @patch('transfer_manager.SSHConnectionPool')
+    @patch('ssh_manager.batch_get_remote_sizes')
+    @patch('process_runner.execute_streaming_command')
+    @patch('time.sleep')
+    def test_adaptive_timeout_backoff(
+        self,
+        mock_sleep,
+        mock_execute_command,
+        mock_batch_get_sizes,
+        MockSshPool,
+        rsync_config,
+        mock_file_tracker,
+        fs
+    ):
+        """
+        Verifies that retries use increasing timeout values.
+        """
+        # --- Setup ---
+        source_path = "/remote/file"
+        local_path = "/local/file"
+        fs.create_dir("/local")
+        mock_batch_get_sizes.return_value = {source_path: 1000}
+        MockSshPool.return_value = MockSSHConnectionPool(host="", port=22, username="", password="")
+
+        # First call fails with timeout, second succeeds
+        def side_effect(*args, **kwargs):
+            timeout = kwargs.get('timeout_seconds')
+            if timeout == 60:
+                raise RemoteTransferError("Timeout")
+            elif timeout == 120: # 60 + 60
+                fs.create_file(local_path, contents="a" * 1000)
+                return True
+            return False
+
+        mock_execute_command.side_effect = side_effect
+
+        # --- Execute ---
+        transfer_content_rsync(
+            sftp_config=rsync_config['SOURCE_SERVER'],
+            remote_path=source_path,
+            local_path=local_path,
+            torrent_hash="hash_adaptive",
+            rsync_options=[],
+            file_tracker=mock_file_tracker,
+            total_size=1000,
+            log_transfer=MagicMock(),
+            _update_transfer_progress=MagicMock(),
+            dry_run=False
+        )
+
+        # --- Assert ---
+        assert mock_execute_command.call_count == 2
+
+        # Check first call had timeout=60
+        args1, kwargs1 = mock_execute_command.call_args_list[0]
+        assert kwargs1['timeout_seconds'] == 60
+
+        # Check second call had timeout=120
+        args2, kwargs2 = mock_execute_command.call_args_list[1]
+        assert kwargs2['timeout_seconds'] == 120
+
+        # Verify sleep was called
+        mock_sleep.assert_called_with(10)
