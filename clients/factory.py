@@ -2,6 +2,7 @@ import configparser
 import logging
 from typing import Optional
 from clients.base import TorrentClient
+from clients.qbittorrent import QBittorrentClient
 
 def get_client(config_section: configparser.SectionProxy, client_type: str, client_name: str) -> Optional[TorrentClient]:
     """
@@ -16,8 +17,7 @@ def get_client(config_section: configparser.SectionProxy, client_type: str, clie
         An instance of TorrentClient, or None if the client type is unknown.
     """
     if client_type.lower() == 'qbittorrent':
-        # TODO: Implement qBittorrent client creation in the next task
-        return None
+        return QBittorrentClient(config_section, client_name)
     else:
         logging.error(f"Unknown client type: {client_type}")
         return None

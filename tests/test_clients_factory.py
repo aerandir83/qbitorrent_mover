@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 import configparser
 from clients.factory import get_client
+from clients.qbittorrent import QBittorrentClient
 
 class TestClientFactory(unittest.TestCase):
     def setUp(self):
@@ -9,9 +10,8 @@ class TestClientFactory(unittest.TestCase):
 
     @patch('clients.factory.logging.error')
     def test_get_client_qbittorrent(self, mock_logging_error):
-        # Should return None for now, and NOT log error
         client = get_client(self.config_section, 'qbittorrent', 'test_client')
-        self.assertIsNone(client)
+        self.assertIsInstance(client, QBittorrentClient)
         mock_logging_error.assert_not_called()
 
     @patch('clients.factory.logging.error')
