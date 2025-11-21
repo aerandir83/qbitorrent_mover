@@ -574,7 +574,25 @@ def _execute_transfer(
 ) -> bool:
     """
     Executes the file transfer for a given list of files using the specified strategy.
-    This function is now a pass-through that provides the correct callbacks.
+
+    This function orchestrates the actual data movement by delegating to the appropriate
+    strategy function (rsync, sftp, etc.) based on `transfer_mode`.
+
+    Args:
+        transfer_mode: The transfer strategy to use ('sftp', 'rsync', etc.).
+        files: A list of TransferFile objects representing files to transfer.
+        torrent: The source torrent object.
+        total_size_calc: The pre-calculated total size of the transfer.
+        config: The application configuration.
+        ui: The UI manager for progress updates.
+        file_tracker: Tracks file progress for resumability.
+        ssh_connection_pools: Managed SSH connections.
+        dry_run: If True, simulate transfer without moving data.
+        log_transfer: Callback for logging transfer events.
+        _update_transfer_progress: Callback for updating UI progress.
+
+    Returns:
+        bool: True if the transfer was successful, False otherwise.
     """
     hash_ = torrent.hash
     sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
@@ -710,7 +728,32 @@ def transfer_torrent(
     log_transfer: Callable,
     _update_transfer_progress: Callable
 ) -> Tuple[str, str]:
-    """Orchestrates the entire transfer process for a single torrent."""
+    """Orchestrates the entire transfer process for a single torrent.
+
+    Lifecycle:
+    1. Pre-flight checks (path resolution, size comparison).
+    2. Strategy selection (SFTP vs Rsync).
+    3. Execution (The actual data transfer).
+    4. Post-transfer actions (Add to dest, Force Recheck, Categorize, Delete Source).
+
+    Args:
+        torrent: The torrent to transfer.
+        total_size: Total size of the torrent content.
+        source_qbit: Source qBittorrent client.
+        destination_qbit: Destination qBittorrent client.
+        config: App configuration.
+        tracker_rules: Rules for categorizing torrents.
+        ui: UI Manager.
+        file_tracker: Tracker for file progress.
+        ssh_connection_pools: SSH pools.
+        checkpoint: Transfer checkpoint manager.
+        args: Command line arguments.
+        log_transfer: Logging callback.
+        _update_transfer_progress: Progress callback.
+
+    Returns:
+        Tuple[str, str]: A status code ('success', 'failed', 'skipped') and a message.
+    """
     name, hash_ = torrent.name, torrent.hash
     start_time = time.time()
     dry_run = args.dry_run
@@ -1128,6 +1171,10 @@ class TorrentMover:
 
     def _update_transfer_progress(self, torrent_hash: str, progress: float, transferred_bytes: int, total_size: int):
         """Callback to update torrent progress.
+
+        # AI-GOTCHA: Transfer progress clamping
+        # Progress > 100% breaks the UI progress bar and causes visual glitches.
+        # AI-INVARIANT: Progress MUST be clamped to 100.0 (or 1.0 depending on scale) before setting.
 
         DEBUGGING HINTS:
         - If progress > 100%: Check delta calculation logic.

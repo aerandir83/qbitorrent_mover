@@ -1,3 +1,30 @@
+"""
+GOTCHAS FOR AI AGENTS
+=====================
+
+1. FileTransferTracker._save() is throttled (5s):
+   - Do not rely on immediate disk persistence for high-frequency updates.
+   - Use in-memory state for logic, disk for recovery.
+
+2. RateLimitedFile proxies read/write calls:
+   - This wrapper intentionally slows down I/O.
+   - Do not bypass it unless you intend to ignore user-configured bandwidth limits.
+
+3. Rsync has two phases (checksum + transfer):
+   - Phase 1 (checksum) can take a long time with no bytes transferred.
+   - Phase 2 (transfer) updates bytes.
+   - Use 'AI-CONTEXT: Rsync Progress Reporting' in `torrent_mover.py` for UI handling.
+
+4. Thread Safety:
+   - SSHConnectionPool is thread-safe.
+   - FileTransferTracker methods are thread-safe (use self._lock).
+   - UIManager is thread-safe.
+   - Shared mutable lists/dicts MUST use explicit locking if accessed across threads.
+
+5. @retry decorator usage:
+   - Used on low-level transfer functions (e.g., `_sftp_download_to_cache`).
+   - Be aware that exceptions may be caught and retried before bubbling up.
+"""
 import configparser
 import errno
 import json
@@ -360,7 +387,9 @@ class FileTransferTracker:
             if not corruption_info:
                 return False
 
-            # Allow retry after 24 hours
+            # AI-CONTEXT: Corruption Expiry Logic
+            # We block corrupted files for 24 hours (86400 seconds) to prevent infinite retry loops
+            # on broken files, but allow eventual recovery if the file is fixed on the source.
             if time.time() - corruption_info.get("timestamp", 0) > 86400: # 24 * 60 * 60
                 logging.info(f"Corruption marker for '{file_path}' has expired. Allowing a new attempt.")
                 del self.state["corruption_hashes"][key]
