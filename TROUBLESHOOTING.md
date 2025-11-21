@@ -24,3 +24,25 @@ This guide helps diagnose and resolve common issues encountered during the opera
 *   **Root Cause:** The user running the script does not have the necessary read/write permissions on the source or destination directories.
 *   **Solution:** Verify permissions using the `--test-permissions` flag. Ensure the user has the correct ownership and mode bits set on the target paths.
 *   **Related Code:** `torrent_mover.py` (Main entry point), `SystemManager` (`test_path_permissions` check).
+
+## Diagnostic Decision Trees
+
+### Tree 1: 0% Progress Stalls
+
+*   **Is the transfer mode `rsync`?**
+    *   **YES:** Check `process_runner.py`.
+        *   Verify regex parsing matches the rsync version's output.
+        *   Check the "Smart Heartbeat" mechanism to ensure it detects activity.
+    *   **NO (it is `sftp`):** Check `transfer_manager.py`.
+        *   Verify that progress callbacks are being invoked.
+        *   Check for potential deadlocks in the UI lock mechanism.
+
+### Tree 2: Permission Denied Errors
+
+*   **Is the error on the Destination?**
+    *   **Local Destination:**
+        *   Run with `--test-permissions` to verify the user has write access.
+        *   Check directory ownership and mode bits (`chmod`/`chown`).
+    *   **Remote Destination (SFTP/Rsync):**
+        *   Check SSH access and key authentication.
+        *   Verify the remote user has write permissions on the target path.
