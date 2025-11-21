@@ -503,15 +503,8 @@ def _post_transfer_actions(
             if tracker_rules and not dry_run:
                 try:
                     from tracker_manager import set_category_based_on_tracker
-                    # Access underlying client for legacy tracker manager support if needed
-                    # or update set_category_based_on_tracker to accept TorrentClient.
-                    # For now, we assume we might need to pass the underlying client if the function requires it.
-                    # But wait, set_category_based_on_tracker uses qbittorrentapi.Client.
-                    # Let's check if we can access it.
-                    if hasattr(destination_client, 'client'):
-                         set_category_based_on_tracker(destination_client.client, torrent.hash, tracker_rules, dry_run)
-                    else:
-                         logging.warning("Cannot apply tracker rules: Client does not expose underlying client object.")
+                    # Updated to pass TorrentClient instance directly
+                    set_category_based_on_tracker(destination_client, torrent.hash, tracker_rules, dry_run)
                     time.sleep(1)
                 except Exception as e:
                     logging.warning(f"Failed to apply tracker-based category: {e}")
@@ -892,13 +885,17 @@ def _handle_utility_commands(args: argparse.Namespace, config: configparser.Conf
             dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
             dest_client_wrapper = get_client(config[dest_client_section], 'qbittorrent', "Destination")
             if dest_client_wrapper and dest_client_wrapper.connect():
-                destination_qbit = dest_client_wrapper.client
-                logging.info("Fetching all completed torrents from destination for categorization...")
-                completed_torrents = [t for t in destination_qbit.torrents_info() if t.progress == 1]
-                if completed_torrents:
-                    categorize_torrents(destination_qbit, completed_torrents, tracker_rules)
+                # ToDo: Expand Interface - TorrentClient needs generic get_torrents(filter)
+                if hasattr(dest_client_wrapper, 'client') and dest_client_wrapper.client:
+                    destination_qbit = dest_client_wrapper.client
+                    logging.info("Fetching all completed torrents from destination for categorization...")
+                    completed_torrents = [t for t in destination_qbit.torrents_info() if t.progress == 1]
+                    if completed_torrents:
+                        categorize_torrents(dest_client_wrapper, completed_torrents, tracker_rules)
+                    else:
+                        logging.info("No completed torrents found on destination to categorize.")
                 else:
-                    logging.info("No completed torrents found on destination to categorize.")
+                    logging.warning("Client does not expose underlying 'client' object. Cannot fetch torrents.")
             else:
                 logging.error("Failed to connect to destination client.")
         except Exception as e:
@@ -944,9 +941,8 @@ def _handle_utility_commands(args: argparse.Namespace, config: configparser.Conf
             dest_client_section = config['SETTINGS'].get('destination_client_section', 'DESTINATION_QBITTORRENT')
             dest_client_wrapper = get_client(config[dest_client_section], 'qbittorrent', "Destination")
             if dest_client_wrapper and dest_client_wrapper.connect():
-                destination_qbit = dest_client_wrapper.client
                 cat_to_scan = args.category or config['SETTINGS'].get('category_to_move') or ''
-                run_interactive_categorization(destination_qbit, tracker_rules, script_dir, cat_to_scan, args.no_rules)
+                run_interactive_categorization(dest_client_wrapper, tracker_rules, script_dir, cat_to_scan, args.no_rules)
             else:
                 logging.error("Failed to connect to destination client.")
         except Exception as e:
@@ -1078,12 +1074,12 @@ class TorrentMover:
 
         # 4. Cleanup & Recovery
         try:
-            # Temporary: Access underlying client for legacy system_manager support
-            if hasattr(self.destination_client, 'client'):
-                 cleanup_orphaned_cache(self.destination_client.client)
+            # Updated to pass TorrentClient instances directly
+            if self.destination_client:
+                 cleanup_orphaned_cache(self.destination_client)
 
-            if hasattr(self.source_client, 'client') and hasattr(self.destination_client, 'client'):
-                 recovered_torrents = recover_cached_torrents(self.source_client.client, self.destination_client.client)
+            if self.source_client and self.destination_client:
+                 recovered_torrents = recover_cached_torrents(self.source_client, self.destination_client)
             else:
                  recovered_torrents = []
         except Exception as e:

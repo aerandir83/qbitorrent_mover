@@ -21,6 +21,7 @@ from ssh_manager import SSHConnectionPool
 from transfer_manager import Timeouts
 from rich.logging import RichHandler
 from rich.console import Console
+from clients.base import TorrentClient
 
 if TYPE_CHECKING:
     import qbittorrentapi
@@ -132,7 +133,7 @@ class LockFile:
 
 # --- System & Health Check Functions ---
 
-def cleanup_orphaned_cache(destination_qbit: "qbittorrentapi.Client") -> None:
+def cleanup_orphaned_cache(destination_client: TorrentClient) -> None:
     """Removes orphaned local cache directories from previous runs.
 
     This function scans the system's temporary directory for cache folders
@@ -141,14 +142,19 @@ def cleanup_orphaned_cache(destination_qbit: "qbittorrentapi.Client") -> None:
     folder is deleted to free up disk space.
 
     Args:
-        destination_qbit: An authenticated qBittorrent client instance for the
+        destination_client: An authenticated TorrentClient instance for the
             destination client.
     """
     temp_dir = Path(tempfile.gettempdir())
     cache_prefix = "torrent_mover_cache_"
     logging.info("--- Running Orphaned Cache Cleanup ---")
     try:
-        all_dest_hashes: Set[str] = {t.hash for t in destination_qbit.torrents_info() if t.progress == 1}
+        # ToDo: Expand Interface - TorrentClient needs generic get_torrents(filter)
+        if not (hasattr(destination_client, 'client') and destination_client.client):
+             logging.warning("Destination client does not expose underlying 'client' object. Skipping cache cleanup.")
+             return
+
+        all_dest_hashes: Set[str] = {t.hash for t in destination_client.client.torrents_info() if t.progress == 1}
         logging.info(f"Found {len(all_dest_hashes)} completed torrent hashes on the destination client for cleanup check.")
     except Exception as e:
         logging.error(f"Could not retrieve torrents from destination client for cache cleanup: {e}")
@@ -173,7 +179,7 @@ def cleanup_orphaned_cache(destination_qbit: "qbittorrentapi.Client") -> None:
     else:
         logging.info(f"Cleanup complete. Removed {cleaned_cache_dirs}/{found_cache_dirs} orphaned cache directories.")
 
-def recover_cached_torrents(source_qbit: "qbittorrentapi.Client", destination_qbit: "qbittorrentapi.Client") -> List["qbittorrentapi.TorrentDictionary"]:
+def recover_cached_torrents(source_client: TorrentClient, destination_client: TorrentClient) -> List["qbittorrentapi.TorrentDictionary"]:
     """Identifies and recovers torrents from incomplete cached transfers.
 
     This function scans the temporary directory for cache folders from previous
@@ -183,8 +189,8 @@ def recover_cached_torrents(source_qbit: "qbittorrentapi.Client", destination_qb
     can be added back into the processing queue for a retry.
 
     Args:
-        source_qbit: An authenticated qBittorrent client instance for the source.
-        destination_qbit: An authenticated qBittorrent client instance for the
+        source_client: An authenticated TorrentClient instance for the source.
+        destination_client: An authenticated TorrentClient instance for the
             destination.
 
     Returns:
@@ -194,8 +200,14 @@ def recover_cached_torrents(source_qbit: "qbittorrentapi.Client", destination_qb
     temp_dir = Path(tempfile.gettempdir())
     cache_prefix = "torrent_mover_cache_"
     logging.info("--- Checking for incomplete cached transfers to recover ---")
+
+    # ToDo: Expand Interface - TorrentClient needs generic get_torrents() and access to underlying client
+    if not (hasattr(source_client, 'client') and source_client.client and hasattr(destination_client, 'client') and destination_client.client):
+         logging.warning("Clients do not expose underlying 'client' object. Skipping cache recovery.")
+         return []
+
     try:
-        all_dest_hashes: Set[str] = {t.hash for t in destination_qbit.torrents_info()}
+        all_dest_hashes: Set[str] = {t.hash for t in destination_client.client.torrents_info()}
         logging.info(f"Found {len(all_dest_hashes)} torrent hashes on the destination client for recovery check.")
     except Exception as e:
         logging.error(f"Could not retrieve torrents from destination client for cache recovery: {e}")
@@ -215,7 +227,7 @@ def recover_cached_torrents(source_qbit: "qbittorrentapi.Client", destination_qb
         logging.info("All found cache directories correspond to completed torrents.")
         return []
     try:
-        source_torrents = source_qbit.torrents_info(torrent_hashes=hashes_to_recover)
+        source_torrents = source_client.client.torrents_info(torrent_hashes=hashes_to_recover)
         recovered_torrents = list(source_torrents)
         if recovered_torrents:
             logging.info(f"Successfully recovered {len(recovered_torrents)} torrent(s) from cache. They will be added to the queue.")
