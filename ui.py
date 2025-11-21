@@ -289,7 +289,7 @@ class _ActiveTorrentsPanel:
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
 
                     # --- ADD THIS LINE (Fix for 106%) ---
-                    progress = min(progress, 100.0)
+                    progress = min(progress, 100.0) # AI-INVARIANT
                     # --- END ADDITION ---
 
                     # Build file list
@@ -1003,6 +1003,9 @@ class UIManagerV2(BaseUIManager):
 
     def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str):
         """Updates the progress for a torrent and the overall progress bar.
+
+        # AI-CONTEXT: Delta Calculation
+        # We calculate the delta since the last update to drive the overall progress bar.
 
         Args:
             torrent_hash: The hash of the torrent to update.

@@ -85,6 +85,11 @@ def execute_streaming_command(
         fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
         # This regex is used to parse rsync's progress output
+        # AI-CONTEXT: Rsync Progress Parsing
+        # We parse the BYTES_TRANSFERRED from rsync's output to update the UI.
+        # The regex must handle comma-separated numbers and human-readable units (e.g., "1.2G").
+        # CRITICAL: If this regex breaks, the UI will show 0% progress for rsync transfers.
+        # AI-TEST: Verify via tests/test_process_runner_smart.py
         progress_regex = re.compile(r"^\s*([\d,.]+[kMGT]?).*?$") # Regex to find human-readable bytes
         last_transferred_bytes = 0
         last_update_time = time.time()
