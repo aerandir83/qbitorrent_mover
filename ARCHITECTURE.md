@@ -50,6 +50,39 @@ Refactoring MUST preserve this sequence.
     * Success: `TransferManager` (via `FileTransferTracker`) writes to `transfer_checkpoint.json`. Source torrent deleted (if config enabled).
     * Failure: `ResilientQueue` updates failure count (Circuit Breaker).
 
+## 2.1. Transfer Execution Flow
+
+This diagram illustrates the call stack and callback mechanisms during a transfer operation.
+
+```text
++------------------+            +--------------------+            +------------------+
+| torrent_mover.py |            | transfer_manager.py|            | process_runner.py|
++------------------+            +--------------------+            +------------------+
+         |                                |                                |
+         | calls transfer strategy        |                                |
+         | (e.g. transfer_content_rsync)  |                                |
+         |------------------------------->|                                |
+         |                                |                                |
+         |                                | execute_streaming_command()    |
+         |                                |------------------------------->|
+         |                                |                                |
+         |                                |                                |--- (Subprocess: rsync/ssh)
+         |                                |                                |
+         |                                |                                |<-- stdout parsing
+         |                                |                                |
+         | _handle_transfer_log()         |                                |
+         |<----------------------------------------------------------------|
+         |                                |                                |
+         | _update_transfer_progress()    |                                |
+         |<----------------------------------------------------------------|
+         |                                |                                |
+         |                                | returns success/fail           |
+         |                                |<-------------------------------|
+         |                                |                                |
+         | returns success/fail           |                                |
+         |<-------------------------------|                                |
+```
+
 ## 3. State Persistence
 
 * **`transfer_checkpoint.json`**: Stores hashes of successfully moved torrents.
