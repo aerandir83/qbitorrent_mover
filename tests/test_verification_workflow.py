@@ -92,9 +92,8 @@ def test_wait_for_recheck_returns_failed_final_review(mock_time, mock_ui):
 
 # --- Test torrent_mover.py logic ---
 
-@patch('torrent_mover.wait_for_recheck_completion')
 @patch('torrent_mover.change_ownership', return_value=True)
-def test_post_transfer_handles_failed_final_review(mock_chown, mock_wait_recheck, mock_config, mock_ui):
+def test_post_transfer_handles_failed_final_review(mock_chown, mock_config, mock_ui):
     """
     Verifies that _post_transfer_actions handles 'FAILED_FINAL_REVIEW' correctly:
     1. Does NOT delete source.
@@ -102,22 +101,21 @@ def test_post_transfer_handles_failed_final_review(mock_chown, mock_wait_recheck
     3. Pauses destination torrent.
     4. Returns False.
     """
-    mock_wait_recheck.return_value = "FAILED_FINAL_REVIEW"
-
     torrent = MockTorrent(name="Test", hash_="hash123", content_path="/src", save_path="/src")
     # Patch hash
     torrent.hash = torrent.hash_
 
-    dest_qbit = MagicMock()
-    dest_qbit.torrents_info.return_value = [torrent]
+    dest_client = MagicMock()
+    dest_client.get_torrent_info.return_value = torrent
+    dest_client.wait_for_recheck.return_value = "FAILED_FINAL_REVIEW"
 
-    source_qbit = MagicMock()
+    source_client = MagicMock()
 
     # Call function
     success, msg = _post_transfer_actions(
         torrent=torrent,
-        source_qbit=source_qbit,
-        destination_qbit=dest_qbit,
+        source_client=source_client,
+        destination_client=dest_client,
         config=mock_config,
         tracker_rules={},
         ssh_connection_pools={},
@@ -139,10 +137,10 @@ def test_post_transfer_handles_failed_final_review(mock_chown, mock_wait_recheck
     assert "Verification failed" in msg
 
     # Check category set
-    dest_qbit.torrents_set_category.assert_called_with(torrent_hashes="hash123", category="review-failed")
+    dest_client.set_category.assert_called_with(torrent_hash="hash123", category="review-failed")
 
     # Check pause
-    dest_qbit.torrents_pause.assert_called_with(torrent_hashes="hash123")
+    dest_client.pause_torrent.assert_called_with(torrent_hash="hash123")
 
     # Check source NOT deleted
-    source_qbit.torrents_delete.assert_not_called()
+    source_client.delete_torrent.assert_not_called()

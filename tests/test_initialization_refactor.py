@@ -45,25 +45,32 @@ def mock_mover(mock_config):
     return mover
 
 @patch('torrent_mover.print') # Mock built-in print
-@patch('torrent_mover.connect_qbit')
+@patch('torrent_mover.get_client')
 @patch('torrent_mover.cleanup_orphaned_cache')
 @patch('torrent_mover.recover_cached_torrents')
-@patch('torrent_mover.get_eligible_torrents')
 @patch('torrent_mover.batch_get_remote_sizes')
 @patch('torrent_mover.destination_health_check')
 def test_pre_flight_checks_success(
-    mock_health_check, mock_batch_sizes, mock_get_eligible, mock_recover, mock_cleanup, mock_connect, mock_print,
+    mock_health_check, mock_batch_sizes, mock_recover, mock_cleanup, mock_get_client, mock_print,
     mock_mover
 ):
     # Setup mocks
-    mock_connect.side_effect = [MagicMock(name="Source"), MagicMock(name="Dest")]
+    source_client = MagicMock(name="SourceClient")
+    source_client.connect.return_value = True
+    source_client.client = MagicMock(name="SourceQbit") # for recovery/cleanup
+
+    dest_client = MagicMock(name="DestClient")
+    dest_client.connect.return_value = True
+    dest_client.client = MagicMock(name="DestQbit")
+
+    mock_get_client.side_effect = [source_client, dest_client]
     mock_recover.return_value = []
 
     torrent = MagicMock()
     torrent.hash = "hash1"
     torrent.name = "Test Torrent"
     torrent.content_path = "/path/to/torrent"
-    mock_get_eligible.return_value = [torrent]
+    source_client.get_eligible_torrents.return_value = [torrent]
 
     mock_batch_sizes.return_value = {"/path/to/torrent": 1024}
     mock_health_check.return_value = True
@@ -100,9 +107,9 @@ def test_pre_flight_checks_success(
     mock_print.assert_has_calls(expected_calls, any_order=False)
 
 @patch('torrent_mover.print')
-@patch('torrent_mover.connect_qbit')
-def test_pre_flight_checks_fail_connect(mock_connect, mock_print, mock_mover):
-    mock_connect.side_effect = Exception("Connection failed")
+@patch('torrent_mover.get_client')
+def test_pre_flight_checks_fail_connect(mock_get_client, mock_print, mock_mover):
+    mock_get_client.side_effect = Exception("Connection failed")
 
     result = mock_mover.pre_flight_checks()
 
@@ -116,18 +123,21 @@ def test_pre_flight_checks_fail_connect(mock_connect, mock_print, mock_mover):
     ])
 
 @patch('torrent_mover.print')
-@patch('torrent_mover.connect_qbit')
-@patch('torrent_mover.get_eligible_torrents')
+@patch('torrent_mover.get_client')
 @patch('torrent_mover.recover_cached_torrents')
 @patch('torrent_mover.cleanup_orphaned_cache')
 @patch('torrent_mover.batch_get_remote_sizes')
 @patch('torrent_mover.destination_health_check')
 def test_pre_flight_checks_fail_health(
-    mock_health, mock_sizes, mock_cleanup, mock_recover, mock_eligible, mock_connect, mock_print, mock_mover
+    mock_health, mock_sizes, mock_cleanup, mock_recover, mock_get_client, mock_print, mock_mover
 ):
-    mock_connect.return_value = MagicMock()
+    client_mock = MagicMock()
+    client_mock.connect.return_value = True
+    client_mock.client = MagicMock()
+    mock_get_client.return_value = client_mock
+
     mock_recover.return_value = []
-    mock_eligible.return_value = [MagicMock(content_path="/path", hash="h")]
+    client_mock.get_eligible_torrents.return_value = [MagicMock(content_path="/path", hash="h")]
     mock_sizes.return_value = {"/path": 100}
     mock_health.return_value = False # Health check fails
 

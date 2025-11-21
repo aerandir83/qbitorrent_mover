@@ -106,8 +106,8 @@ def test_post_transfer_halts_on_chown_failure(mock_change_ownership):
     # Execute
     result, msg = _post_transfer_actions(
         torrent=mock_torrent,
-        source_qbit=MagicMock(),
-        destination_qbit=MagicMock(),
+        source_client=MagicMock(),
+        destination_client=MagicMock(),
         config=mock_config,
         tracker_rules={},
         ssh_connection_pools={},
@@ -148,31 +148,30 @@ def test_post_transfer_continues_on_chown_success(mock_change_ownership):
     }.get(key, {})
     mock_config.getboolean.return_value = False
 
-    mock_dest_qbit = MagicMock()
-    mock_dest_qbit.torrents_info.return_value = [] # Simulate torrent not present
+    mock_dest_client = MagicMock()
+    mock_dest_client.get_torrent_info.return_value = None # Simulate torrent not present
+    mock_dest_client.wait_for_recheck.return_value = "SUCCESS"
 
-    # Mock recheck wait to return SUCCESS so we don't hit other logic
-    with patch('torrent_mover.wait_for_recheck_completion', return_value="SUCCESS"):
-        # Execute
-        result, msg = _post_transfer_actions(
-            torrent=mock_torrent,
-            source_qbit=MagicMock(),
-            destination_qbit=mock_dest_qbit,
-            config=mock_config,
-            tracker_rules={},
-            ssh_connection_pools={},
-            dest_content_path="/dest/content",
-            destination_save_path="/remote/content",
-            transfer_executed=True,
-            dry_run=False,
-            test_run=False,
-            file_tracker=MagicMock(),
-            transfer_mode="sftp",
-            all_files=[],
-            ui=MagicMock(),
-            log_transfer=MagicMock(),
-            _update_transfer_progress=MagicMock()
-        )
+    # Execute
+    result, msg = _post_transfer_actions(
+        torrent=mock_torrent,
+        source_client=MagicMock(),
+        destination_client=mock_dest_client,
+        config=mock_config,
+        tracker_rules={},
+        ssh_connection_pools={},
+        dest_content_path="/dest/content",
+        destination_save_path="/remote/content",
+        transfer_executed=True,
+        dry_run=False,
+        test_run=False,
+        file_tracker=MagicMock(),
+        transfer_mode="sftp",
+        all_files=[],
+        ui=MagicMock(),
+        log_transfer=MagicMock(),
+        _update_transfer_progress=MagicMock()
+    )
 
     # Assert
     assert result is True

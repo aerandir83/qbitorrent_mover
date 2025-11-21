@@ -69,8 +69,8 @@ def mock_ssh():
 def mock_dependencies(mock_config, mock_args, mock_ui):
     """A bundle of common mock dependencies for the worker."""
     return {
-        "source_qbit": MagicMock(),
-        "destination_qbit": MagicMock(),
+        "source_client": MagicMock(),
+        "destination_client": MagicMock(),
         "config": mock_config,
         "tracker_rules": {},
         "ui": mock_ui,
@@ -116,8 +116,8 @@ def test_transfer_worker_skips_failed_torrent(mock_logging, mock_transfer_torren
     mover = TorrentMover(args=mock_dependencies["args"], config_manager=mock_config_manager, script_dir=Path("."))
 
     # Manually set the dependencies on the mover instance, as 'run' would normally do
-    mover.source_qbit = mock_dependencies["source_qbit"]
-    mover.destination_qbit = mock_dependencies["destination_qbit"]
+    mover.source_client = mock_dependencies["source_client"]
+    mover.destination_client = mock_dependencies["destination_client"]
     mover.tracker_rules = mock_dependencies["tracker_rules"]
     mover.ui = mock_dependencies["ui"]
     mover.file_tracker = mock_dependencies["file_tracker"]
@@ -148,28 +148,28 @@ def test_transfer_worker_skips_failed_torrent(mock_logging, mock_transfer_torren
     assert mock_logging.error.call_count == 1
     # (Assert: The script does not crash) - This is proven by execution reaching this line
 
-@patch('torrent_mover.wait_for_recheck_completion', return_value="SUCCESS")
-def test_post_transfer_calls_recheck(mock_wait_recheck, mock_dependencies):
+def test_post_transfer_calls_recheck(mock_dependencies):
     """
     Tests the "Re-check Logic" from Directive #4.
-    Verifies that _post_transfer_actions correctly calls torrents_recheck
-    on the destination and torrents_delete on the source.
+    Verifies that _post_transfer_actions correctly calls recheck_torrent
+    on the destination and delete_torrent on the source.
     """
     # --- Setup ---
     torrent = MockTorrent(name="Test", hash_="hash123", content_path="/src/test", save_path="/src")
     # Patch the mock object to have the 'hash' attribute that the real API uses
     torrent.hash = torrent.hash_
-    mock_dest_qbit = mock_dependencies["destination_qbit"]
-    mock_src_qbit = mock_dependencies["source_qbit"]
+    mock_dest_client = mock_dependencies["destination_client"]
+    mock_src_client = mock_dependencies["source_client"]
 
     # Mock destination client to return the torrent
-    mock_dest_qbit.torrents_info.return_value = [torrent]
+    mock_dest_client.get_torrent_info.return_value = torrent
+    mock_dest_client.wait_for_recheck.return_value = "SUCCESS"
 
     # --- Execute ---
     success, msg = _post_transfer_actions(
         torrent=torrent,
-        source_qbit=mock_src_qbit,
-        destination_qbit=mock_dest_qbit,
+        source_client=mock_src_client,
+        destination_client=mock_dest_client,
         config=mock_dependencies["config"],
         tracker_rules=mock_dependencies["tracker_rules"],
         ssh_connection_pools=mock_dependencies["ssh_connection_pools"],
@@ -190,13 +190,13 @@ def test_post_transfer_calls_recheck(mock_wait_recheck, mock_dependencies):
     assert success is True
 
     # 1. Assert Re-check was called on DESTINATION
-    mock_dest_qbit.torrents_recheck.assert_called_once_with(torrent_hashes="hash123")
+    mock_dest_client.recheck_torrent.assert_called_once_with(torrent_hash="hash123")
 
     # 2. Assert Re-check Wait was called
-    mock_wait_recheck.assert_called_once()
+    mock_dest_client.wait_for_recheck.assert_called_once()
 
     # 3. Assert Delete was called on SOURCE
-    mock_src_qbit.torrents_delete.assert_called_once_with(torrent_hashes="hash123", delete_files=True)
+    mock_src_client.delete_torrent.assert_called_once_with(torrent_hash="hash123", delete_files=True)
 
 @patch('torrent_mover.batch_get_remote_sizes', return_value={})
 def test_pre_transfer_path_mapping(mock_batch_get_sizes, mock_config, mock_args, mock_ssh):
