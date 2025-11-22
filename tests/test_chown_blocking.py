@@ -70,10 +70,44 @@ def test_change_ownership_remote_failure():
     pools = {'DESTINATION_SERVER': mock_pool}
     remote_config = MagicMock()
 
-    result = change_ownership("/path/to/file", "user", "group", remote_config=remote_config, ssh_connection_pools=pools)
+    with patch('time.sleep') as mock_sleep:
+        result = change_ownership("/path/to/file", "user", "group", remote_config=remote_config, ssh_connection_pools=pools)
 
     assert result is False
-    mock_ssh.exec_command.assert_called_once()
+    assert mock_ssh.exec_command.call_count == 3
+    assert mock_sleep.call_count == 2
+
+def test_change_ownership_remote_retry_success():
+    mock_pool = MagicMock(spec=SSHConnectionPool)
+    mock_ssh = MagicMock()
+    mock_stdout_fail = MagicMock()
+    mock_stdout_fail.channel.recv_exit_status.return_value = 1
+
+    mock_stdout_success = MagicMock()
+    mock_stdout_success.channel.recv_exit_status.return_value = 0
+
+    mock_stderr = MagicMock()
+    mock_stderr.read.return_value = b"Error"
+
+    # First call fails, second succeeds
+    mock_ssh.exec_command.side_effect = [
+        (None, mock_stdout_fail, mock_stderr),
+        (None, mock_stdout_success, MagicMock())
+    ]
+
+    context_manager = MagicMock()
+    context_manager.__enter__.return_value = (None, mock_ssh)
+    mock_pool.get_connection.return_value = context_manager
+
+    pools = {'DESTINATION_SERVER': mock_pool}
+    remote_config = MagicMock()
+
+    with patch('time.sleep') as mock_sleep:
+        result = change_ownership("/path/to/file", "user", "group", remote_config=remote_config, ssh_connection_pools=pools)
+
+    assert result is True
+    assert mock_ssh.exec_command.call_count == 2
+    mock_sleep.assert_called_once_with(2)
 
 def test_change_ownership_no_op():
     result = change_ownership("/path/to/file", "", "")
@@ -106,8 +140,8 @@ def test_post_transfer_halts_on_chown_failure(mock_change_ownership):
     # Execute
     result, msg = _post_transfer_actions(
         torrent=mock_torrent,
-        source_qbit=MagicMock(),
-        destination_qbit=MagicMock(),
+        source_client=MagicMock(),
+        destination_client=MagicMock(),
         config=mock_config,
         tracker_rules={},
         ssh_connection_pools={},
@@ -148,31 +182,30 @@ def test_post_transfer_continues_on_chown_success(mock_change_ownership):
     }.get(key, {})
     mock_config.getboolean.return_value = False
 
-    mock_dest_qbit = MagicMock()
-    mock_dest_qbit.torrents_info.return_value = [] # Simulate torrent not present
+    mock_dest_client = MagicMock()
+    mock_dest_client.get_torrent_info.return_value = None # Simulate torrent not present
+    mock_dest_client.wait_for_recheck.return_value = "SUCCESS"
 
-    # Mock recheck wait to return SUCCESS so we don't hit other logic
-    with patch('torrent_mover.wait_for_recheck_completion', return_value="SUCCESS"):
-        # Execute
-        result, msg = _post_transfer_actions(
-            torrent=mock_torrent,
-            source_qbit=MagicMock(),
-            destination_qbit=mock_dest_qbit,
-            config=mock_config,
-            tracker_rules={},
-            ssh_connection_pools={},
-            dest_content_path="/dest/content",
-            destination_save_path="/remote/content",
-            transfer_executed=True,
-            dry_run=False,
-            test_run=False,
-            file_tracker=MagicMock(),
-            transfer_mode="sftp",
-            all_files=[],
-            ui=MagicMock(),
-            log_transfer=MagicMock(),
-            _update_transfer_progress=MagicMock()
-        )
+    # Execute
+    result, msg = _post_transfer_actions(
+        torrent=mock_torrent,
+        source_client=MagicMock(),
+        destination_client=mock_dest_client,
+        config=mock_config,
+        tracker_rules={},
+        ssh_connection_pools={},
+        dest_content_path="/dest/content",
+        destination_save_path="/remote/content",
+        transfer_executed=True,
+        dry_run=False,
+        test_run=False,
+        file_tracker=MagicMock(),
+        transfer_mode="sftp",
+        all_files=[],
+        ui=MagicMock(),
+        log_transfer=MagicMock(),
+        _update_transfer_progress=MagicMock()
+    )
 
     # Assert
     assert result is True

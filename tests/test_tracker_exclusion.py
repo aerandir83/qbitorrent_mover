@@ -35,17 +35,21 @@ def mock_args():
     )
 
 @patch('torrent_mover.destination_health_check')
-@patch('torrent_mover.get_eligible_torrents')
 @patch('torrent_mover.get_category_from_rules')
 @patch('torrent_mover.batch_get_remote_sizes')
-@patch('torrent_mover.connect_qbit')
+@patch('torrent_mover.get_client')
 @patch('torrent_mover.SSHConnectionPool')
-def test_exclusion_logic(mock_ssh_pool_cls, mock_connect, mock_batch_sizes, mock_get_cat, mock_get_eligible, mock_health_check, mock_config, mock_args):
+def test_exclusion_logic(mock_ssh_pool_cls, mock_get_client, mock_batch_sizes, mock_get_cat, mock_health_check, mock_config, mock_args):
     mock_health_check.return_value = True
     # Setup
-    mock_src_qbit = MagicMock()
-    mock_dst_qbit = MagicMock()
-    mock_connect.side_effect = [mock_src_qbit, mock_dst_qbit]
+    mock_src_client = MagicMock()
+    mock_src_client.connect.return_value = True
+    mock_src_client.client = MagicMock() # Underlying client for rules check
+
+    mock_dst_client = MagicMock()
+    mock_dst_client.connect.return_value = True
+
+    mock_get_client.side_effect = [mock_src_client, mock_dst_client]
 
     t1 = MockTorrent(name="T1", hash_="h1", content_path="/p1", save_path="/s1")
     t2 = MockTorrent(name="T2", hash_="h2", content_path="/p2", save_path="/s2")
@@ -53,7 +57,7 @@ def test_exclusion_logic(mock_ssh_pool_cls, mock_connect, mock_batch_sizes, mock
     t2.hash = "h2"
 
     # Mocking get_eligible_torrents to return our test torrents
-    mock_get_eligible.return_value = [t1, t2]
+    mock_src_client.get_eligible_torrents.return_value = [t1, t2]
 
     # Mocking get_category_from_rules to ignore T2
     def side_effect_get_cat(torrent, rules, client):
