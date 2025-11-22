@@ -93,7 +93,7 @@ def execute_streaming_command(
         progress_regex = re.compile(r"^\s*([\d,.]+[kMGT]?).*?$") # Regex to find human-readable bytes
         last_transferred_bytes = 0
         last_update_time = time.time()
-        last_output_time = time.time()
+        last_activity_time = time.time()
 
         read_buffer = bytearray()
 
@@ -114,7 +114,9 @@ def execute_streaming_command(
                         chunk = b""
 
                     if chunk:
-                        last_output_time = time.time()
+                        last_activity_time = time.time()
+                        if heartbeat_callback:
+                            heartbeat_callback()
                         read_buffer.extend(chunk)
 
                         # Process buffer for lines
@@ -136,9 +138,6 @@ def execute_streaming_command(
                                 del read_buffer[:split_idx+1]
                             else:
                                 break
-
-                            if heartbeat_callback:
-                                heartbeat_callback()
 
                             line = line_bytes.decode('utf-8', errors='replace').strip()
                             if not line:
@@ -177,7 +176,7 @@ def execute_streaming_command(
                         break
 
                     # Check timeout
-                    if time.time() - last_output_time > timeout_seconds:
+                    if time.time() - last_activity_time > timeout_seconds:
                         logger.error(f"Process timed out after {timeout_seconds}s of silence.")
                         # Sanitize command before raising exception to hide passwords in traceback
                         safe_cmd = _create_safe_command_for_logging(command)
