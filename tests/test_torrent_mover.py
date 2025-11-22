@@ -305,3 +305,43 @@ def test_repair_recheck_explicit_trigger(mock_get_strategy, mock_execute_transfe
 
     # 4. Verify wait_for_recheck was called TWICE
     assert mock_dest_client.wait_for_recheck.call_count == 2
+
+@patch('torrent_mover.change_ownership')
+def test_chown_called_when_transfer_skipped(mock_change_ownership, mock_dependencies):
+    """
+    Tests that change_ownership is called even if transfer_executed is False,
+    as long as it is not a dry_run.
+    """
+    torrent = MockTorrent(name="Test", hash_="hash123", content_path="/src/test", save_path="/src")
+    torrent.hash = torrent.hash_
+
+    mock_dependencies["destination_client"].get_torrent_info.return_value = torrent
+    mock_dependencies["destination_client"].wait_for_recheck.return_value = "SUCCESS"
+    mock_change_ownership.return_value = True
+
+    # Ensure config has chown settings
+    mock_dependencies["config"]['SETTINGS']['chown_user'] = 'testuser'
+    mock_dependencies["config"]['SETTINGS']['chown_group'] = 'testgroup'
+
+    success, msg = _post_transfer_actions(
+        torrent=torrent,
+        source_client=mock_dependencies["source_client"],
+        destination_client=mock_dependencies["destination_client"],
+        config=mock_dependencies["config"],
+        tracker_rules=mock_dependencies["tracker_rules"],
+        ssh_connection_pools=mock_dependencies["ssh_connection_pools"],
+        dest_content_path="/remote/downloads/test",
+        destination_save_path="/remote/downloads-docker",
+        transfer_executed=False, # <--- This is the key condition
+        dry_run=False,
+        test_run=False,
+        file_tracker=mock_dependencies["file_tracker"],
+        transfer_mode="rsync",
+        all_files=[],
+        ui=mock_dependencies["ui"],
+        log_transfer=mock_dependencies["log_transfer"],
+        _update_transfer_progress=mock_dependencies["_update_transfer_progress"]
+    )
+
+    assert success is True
+    mock_change_ownership.assert_called_once()

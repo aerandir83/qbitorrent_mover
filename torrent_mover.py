@@ -271,11 +271,12 @@ def _post_transfer_actions(
     name, hash_ = torrent.name, torrent.hash
     transfer_mode = config['SETTINGS'].get('transfer_mode', 'sftp').lower()
 
-    # --- 1. Change Ownership (if transfer was executed) ---
-    if transfer_executed and not dry_run:
+    # --- 1. Change Ownership ---
+    if not dry_run:
         chown_user = config['SETTINGS'].get('chown_user', '').strip()
         chown_group = config['SETTINGS'].get('chown_group', '').strip()
         if chown_user or chown_group:
+            logging.info(f"Ensuring ownership on destination content... (User: {chown_user}, Group: {chown_group})")
             remote_config = None
             path_to_chown = dest_content_path
 
