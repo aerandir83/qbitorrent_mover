@@ -136,6 +136,7 @@ def test_post_transfer_halts_on_chown_failure(mock_change_ownership):
         'DESTINATION_SERVER': {},
         'DESTINATION_PATHS': {'destination_path': '/dest', 'remote_destination_path': '/remote'}
     }.get(key, {})
+    mock_config.__contains__.side_effect = lambda key: key in ['SETTINGS', 'DESTINATION_SERVER', 'DESTINATION_PATHS']
 
     # Execute
     result, msg = _post_transfer_actions(
@@ -161,7 +162,10 @@ def test_post_transfer_halts_on_chown_failure(mock_change_ownership):
     # Assert
     assert result is False
     assert "PROVISIONING ERROR: Ownership change failed" in msg
-    mock_change_ownership.assert_called_once()
+    # Verify we strictly used the dest_content_path (/dest/content), IGNORING the remote mapping (/remote)
+    mock_change_ownership.assert_called_once_with(
+        "/dest/content", "u", "g", {}, False, {}
+    )
 
 @patch('torrent_mover.change_ownership')
 def test_post_transfer_continues_on_chown_success(mock_change_ownership):
@@ -180,6 +184,7 @@ def test_post_transfer_continues_on_chown_success(mock_change_ownership):
         'DESTINATION_CLIENT': {'add_torrents_paused': 'false', 'start_torrents_after_recheck': 'false'},
         'SOURCE_CLIENT': {'delete_after_transfer': 'false'}
     }.get(key, {})
+    mock_config.__contains__.side_effect = lambda key: key in ['SETTINGS', 'DESTINATION_SERVER', 'DESTINATION_PATHS']
     mock_config.getboolean.return_value = False
 
     mock_dest_client = MagicMock()
@@ -209,4 +214,7 @@ def test_post_transfer_continues_on_chown_success(mock_change_ownership):
 
     # Assert
     assert result is True
-    mock_change_ownership.assert_called_once()
+    # Verify we strictly used the dest_content_path (/dest/content), IGNORING the remote mapping (/remote)
+    mock_change_ownership.assert_called_once_with(
+        "/dest/content", "u", "g", {}, False, {}
+    )
