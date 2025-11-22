@@ -6,7 +6,7 @@ import select
 import os
 import fcntl
 from typing import List, Callable, Any, Optional, Generator, IO
-from utils import RemoteTransferError
+from utils import RemoteTransferError, _create_safe_command_for_logging
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +179,9 @@ def execute_streaming_command(
                     # Check timeout
                     if time.time() - last_output_time > timeout_seconds:
                         logger.error(f"Process timed out after {timeout_seconds}s of silence.")
-                        raise subprocess.TimeoutExpired(command, timeout_seconds)
+                        # Sanitize command before raising exception to hide passwords in traceback
+                        safe_cmd = _create_safe_command_for_logging(command)
+                        raise subprocess.TimeoutExpired(safe_cmd, timeout_seconds)
 
         finally:
             if process.poll() is None:
