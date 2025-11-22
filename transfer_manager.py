@@ -874,7 +874,8 @@ def _transfer_content_rsync_upload_from_cache(
     log_transfer: typing.Callable,
     _update_transfer_progress: typing.Callable,
     dry_run: bool = False,
-    heartbeat_callback: Optional[Callable[[], None]] = None
+    heartbeat_callback: Optional[Callable[[], None]] = None,
+    rsync_timeout: int = 600
 ) -> None:
     """
     Transfers content from a local path to a remote server using rsync.
@@ -917,7 +918,7 @@ def _transfer_content_rsync_upload_from_cache(
         return
 
     MAX_RETRY_ATTEMPTS = 3
-    adaptive_timeout = 60
+    adaptive_timeout = rsync_timeout
 
     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
         logging.info(f"Starting rsync upload from cache for '{file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
@@ -971,7 +972,8 @@ def transfer_content_rsync(
     log_transfer: typing.Callable,
     _update_transfer_progress: typing.Callable,
     dry_run: bool = False,
-    heartbeat_callback: Optional[Callable[[], None]] = None
+    heartbeat_callback: Optional[Callable[[], None]] = None,
+    rsync_timeout: int = 600
 ) -> None:
     """Transfers content from a remote server to a local path using rsync.
 
@@ -1008,7 +1010,7 @@ def transfer_content_rsync(
     remote_spec = f"{username}@{host}:{remote_path}"
 
     MAX_RETRY_ATTEMPTS = 3
-    adaptive_timeout = 60
+    adaptive_timeout = rsync_timeout
 
     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
         try:
@@ -1145,7 +1147,8 @@ def transfer_content_rsync_upload(
     _update_transfer_progress: typing.Callable,
     dry_run: bool,
     is_folder: bool,
-    heartbeat_callback: Optional[Callable[[], None]] = None
+    heartbeat_callback: Optional[Callable[[], None]] = None,
+    rsync_timeout: int = 600
 ) -> bool:
     """
     Transfers content from a remote source to a remote destination
@@ -1232,7 +1235,8 @@ def transfer_content_rsync_upload(
             log_transfer=log_transfer,
             _update_transfer_progress=download_progress_wrapper,
             dry_run=dry_run,
-            heartbeat_callback=heartbeat_callback
+            heartbeat_callback=heartbeat_callback,
+            rsync_timeout=rsync_timeout
         )
         logging.info(f"Rsync-Upload: Download to cache complete for '{file_name}'.")
 
@@ -1249,7 +1253,8 @@ def transfer_content_rsync_upload(
             log_transfer=log_transfer,
             _update_transfer_progress=upload_progress_wrapper,
             dry_run=dry_run,
-            heartbeat_callback=heartbeat_callback
+            heartbeat_callback=heartbeat_callback,
+            rsync_timeout=rsync_timeout
         )
         logging.info(f"Rsync-Upload: Upload from cache complete for '{file_name}'.")
 

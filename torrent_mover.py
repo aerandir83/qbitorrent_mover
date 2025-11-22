@@ -635,6 +635,7 @@ def _execute_transfer(
             source_content_path = files[0].source_path
             dest_content_path = files[0].dest_path
             heartbeat_callback = ui.pet_watchdog
+            rsync_timeout = config.getint('General', 'rsync_timeout', fallback=600)
             transfer_content_rsync(
                 sftp_config=sftp_config,
                 remote_path=source_content_path,
@@ -646,7 +647,8 @@ def _execute_transfer(
                 file_tracker=file_tracker,
                 total_size=total_size_calc,
                 dry_run=dry_run,
-                heartbeat_callback=heartbeat_callback
+                heartbeat_callback=heartbeat_callback,
+                rsync_timeout=rsync_timeout
             )
         elif transfer_mode == 'rsync_upload':
             heartbeat_callback = ui.pet_watchdog
@@ -664,6 +666,7 @@ def _execute_transfer(
             if not files: raise ValueError("No files provided for rsync upload.")
             source_content_path = files[0].source_path
             dest_content_path = files[0].dest_path
+            rsync_timeout = config.getint('General', 'rsync_timeout', fallback=600)
             transfer_content_rsync_upload(
                 source_config=source_config,
                 dest_config=dest_config,
@@ -677,7 +680,8 @@ def _execute_transfer(
                 _update_transfer_progress=_update_transfer_progress,
                 dry_run=dry_run,
                 is_folder=is_folder,
-                heartbeat_callback=heartbeat_callback
+                heartbeat_callback=heartbeat_callback,
+                rsync_timeout=rsync_timeout
             )
 
         return True # Transfer success

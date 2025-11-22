@@ -129,6 +129,10 @@ chown_group =
 # Time in seconds to wait for activity before killing the process (Default: 1500 = 25 min)
 # Increase this if you transfer very large files (e.g., 50GB+) that take a long time to checksum.
 watchdog_timeout = 1500
+# (Optional) Time in seconds for rsync to wait for data during transfer phases.
+# Large files can cause long pauses during checksum verification.
+# Default is 600 (10 minutes).
+rsync_timeout = 600
 # (Optional) Bandwidth limits for SFTP transfers in megabits per second (Mbps).
 # Set to 0 for unlimited speed.
 sftp_download_limit_mbps = 0
