@@ -6,14 +6,13 @@ from contextlib import contextmanager
 import typing
 import shlex
 import os
-import subprocess
 import re
 import shutil
 import tempfile
 import getpass
 import time
 
-from utils import retry
+from utils import retry, _create_safe_command_for_logging
 
 # Constants
 DEFAULT_KEEPALIVE_INTERVAL = 30
@@ -45,6 +44,15 @@ def setup_ssh_control_path() -> None:
     except Exception as e:
         logging.warning(f"Could not create SSH control path directory. Multiplexing will be disabled. Error: {e}")
         SSH_CONTROL_PATH = None
+
+def log_secure_command(command: typing.List[str], level: int = logging.DEBUG) -> None:
+    """Logs a command list securely by redacting sensitive information.
+
+    This function utilizes the shared sanitization logic to ensure that
+    sensitive arguments (like passwords in sshpass) are not written to logs.
+    """
+    safe_cmd = _create_safe_command_for_logging(command)
+    logging.log(level, f"Executing command: {' '.join(safe_cmd)}")
 
 def check_sshpass_installed() -> None:
     """Checks if sshpass is installed and exits if it is not.
