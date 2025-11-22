@@ -62,6 +62,7 @@ The script offers several modes to transfer data, each suited for different serv
 
 *   **`sftp` (Download)**: The default mode. Securely downloads files from the source server to the local machine running the script using the SFTP protocol. This is ideal for simple setups where you want to centralize downloads.
 *   **`sftp_upload` (Cache-to-Remote)**: Securely transfers files directly from a source SFTP server to a destination SFTP server. The machine running the script orchestrates the transfer, downloading to a local cache and then uploading to the remote destination. This is useful when the source and destination servers are remote.
+*   **`rsync_upload` (Relay Sync)**: Uses the machine running the script as a bridge. Downloads data from Source using rsync (delta-sync) to a local cache, then uploads to Destination. Requires 2x bandwidth and local storage matching the torrent size. Recommended to configure `local_cache_path` for large torrents.
 *   **`rsync` (Delta-Sync)**: Uses `rsync` for potentially faster transfers from the source to the local machine. `rsync` is highly efficient as it only transfers the differences between files (delta synchronization), making it ideal for resuming interrupted transfers or syncing large files.
 
 ### Resilience & Self-Healing
