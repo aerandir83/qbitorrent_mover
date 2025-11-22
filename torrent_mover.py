@@ -1477,6 +1477,12 @@ def main() -> int:
         return 0
     setup_logging(script_dir, args.dry_run, args.test_run, args.debug)
 
+    if args.debug:
+        # Explicitly lower threshold for critical libraries to surface transport issues
+        for lib in ["paramiko", "urllib3", "requests", "asyncio"]:
+            logging.getLogger(lib).setLevel(logging.DEBUG)
+        logging.info("Verbose transport logging is enabled.")
+
     logger = logging.getLogger()
     log_level = logging.DEBUG if args.debug else logging.INFO
     rich_handler: Optional[logging.Handler] = None
