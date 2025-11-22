@@ -90,6 +90,44 @@ def test_wait_for_recheck_returns_failed_final_review(mock_time, mock_ui):
     assert result == "FAILED_FINAL_REVIEW"
 
 
+@patch('qbittorrent_manager.time')
+def test_wait_for_recheck_handles_new_stopped_states(mock_time, mock_ui):
+    """
+    Verifies that wait_for_recheck_completion correctly handles 'stoppedDL' and 'stoppedUP'
+    as stopped states (waiting for timeout) rather than immediate failure.
+    """
+    client = MagicMock()
+
+    # Test cases for both new states
+    for state in ['stoppedDL', 'stoppedUP']:
+        torrent = MockTorrent(name="T", hash_="h", content_path="/", save_path="/", state=state, progress=0.5)
+
+        # Reset mock calls for new iteration
+        client.torrents_info.reset_mock()
+        client.torrents_info.return_value = [torrent]
+        mock_time.time.reset_mock()
+        mock_time.time.side_effect = None # Clear side effects from previous run
+
+        # Time simulation
+        # 1. init last_progress_increase_time
+        # 2. loop 1: detects stopped state, sets timer.
+        # 3. loop 2: checks timer, elapsed < timeout.
+        # 4. loop 3: checks timer, elapsed > timeout.
+
+        mock_time.time.side_effect = [1000, 1000, 1005, 1020]
+
+        result = wait_for_recheck_completion(
+            client=client,
+            torrent_hash="h",
+            ui=mock_ui,
+            recheck_stuck_timeout=60,
+            recheck_stopped_timeout=15,
+            dry_run=False
+        )
+
+        assert result == "FAILED_FINAL_REVIEW", f"Failed for state {state}"
+
+
 # --- Test torrent_mover.py logic ---
 
 @patch('torrent_mover.change_ownership', return_value=True)

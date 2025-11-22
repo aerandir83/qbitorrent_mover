@@ -163,7 +163,7 @@ def wait_for_recheck_completion(
                         logging.error(f"Recheck FAILED for {torrent_hash[:10]}: No progress for {recheck_stuck_timeout} seconds (State: {state}).")
                         return "FAILED_STUCK" # New "Stuck" failure state
 
-            elif state in ['error', 'missingFiles', 'stopped', 'pausedUP', 'pausedDL']:
+            elif state in ['error', 'missingFiles', 'stopped', 'pausedUP', 'pausedDL', 'stoppedDL', 'stoppedUP']:
                 # This is the "Stopped" or "Explicit Failure" state
                 if stopped_state_detected_time is None:
                     # First time seeing this state, start the timer
