@@ -352,7 +352,7 @@ def change_ownership(path_to_change: str, user: str, group: str, remote_config: 
         # Explicitly use the DESTINATION_SERVER pool, as this is the only remote chown context
         pool = ssh_connection_pools.get('DESTINATION_SERVER')
         if not pool:
-            logging.error("Could not find SSH pool for DESTINATION_SERVER for chown operation.")
+            logging.error("SSH pool 'DESTINATION_SERVER' not found. Cannot perform remote chown.")
             return False
 
         max_attempts = 3
