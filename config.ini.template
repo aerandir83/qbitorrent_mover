@@ -151,9 +151,11 @@ pool_wait_timeout = 60
 # does not increase for this long, it will be considered a "stuck"
 # failure, and the script will move on without attempting a delta-sync.
 recheck_stuck_timeout = 60
-# (Optional) Time in seconds to confirm a "stopped" re-check.
+# (Optional) Time in seconds to confirm a 'stopped' or 'error' state during re-check.
 # If a torrent's status becomes "Stopped" or "Error" during a re-check,
 # the script will wait this long to confirm the state. If progress remains
 # at 0% (or unchanged) for this period, it will trigger a "failed"
 # re-check (and subsequent delta-sync).
 recheck_stopped_timeout = 5
+# (Optional) Grace period in seconds for re-checks starting at 0% progress (e.g., queuing).
+recheck_grace_period = 60
