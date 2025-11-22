@@ -51,7 +51,7 @@ from resilient_queue import ResilientTransferQueue
 from ssh_manager import SSHConnectionPool, sftp_mkdir_p, _get_ssh_command
 from transfer_strategies import TransferFile
 from ui import UIManagerV2 as UIManager
-from utils import RemoteTransferError, retry
+from utils import RemoteTransferError, retry, _create_safe_command_for_logging
 
 
 if typing.TYPE_CHECKING:
@@ -64,21 +64,6 @@ logger = logging.getLogger(__name__)
 def _is_sshpass_installed() -> bool:
     """Checks if sshpass is installed and available in the system's PATH."""
     return shutil.which("sshpass") is not None
-
-def _create_safe_command_for_logging(command: List[str]) -> List[str]:
-    """Creates a copy of a command list with the sshpass password redacted."""
-    safe_command = list(command)
-    try:
-        # Find the index of 'sshpass' and redact the password after the '-p' flag
-        sshpass_index = safe_command.index("sshpass")
-        if "-p" in safe_command[sshpass_index:]:
-            p_index = safe_command.index("-p", sshpass_index)
-            if p_index + 1 < len(safe_command):
-                safe_command[p_index + 1] = "'********'"
-    except ValueError:
-        # 'sshpass' not in command, nothing to redact
-        pass
-    return safe_command
 
 class RateLimitedFile:
     """Wraps a file-like object to throttle read and write operations.

@@ -1,7 +1,7 @@
 import time
 import logging
 from functools import wraps
-from typing import Callable, Any
+from typing import Callable, Any, List
 
 def retry(tries: int = 2, delay: int = 5, backoff: int = 1) -> Callable:
     """Creates a decorator that retries a function call.
@@ -42,3 +42,18 @@ def retry(tries: int = 2, delay: int = 5, backoff: int = 1) -> Callable:
 class RemoteTransferError(Exception):
     """Custom exception for remote transfer failures."""
     pass
+
+def _create_safe_command_for_logging(command: List[str]) -> List[str]:
+    """Creates a copy of a command list with the sshpass password redacted."""
+    safe_command = list(command)
+    try:
+        # Find the index of 'sshpass' and redact the password after the '-p' flag
+        sshpass_index = safe_command.index("sshpass")
+        if "-p" in safe_command[sshpass_index:]:
+            p_index = safe_command.index("-p", sshpass_index)
+            if p_index + 1 < len(safe_command):
+                safe_command[p_index + 1] = "'********'"
+    except ValueError:
+        # 'sshpass' not in command, nothing to redact
+        pass
+    return safe_command
