@@ -2,6 +2,15 @@
 
 This log tracks architectural changes and refactors that significantly affect how an AI agent should understand and modify the codebase.
 
+## Unreleased
+
+**Summary:** Refactored rsync_upload mode to 'Relay Mode'. Added local_cache_path configuration, pre-flight storage capacity checks, and weighted progress bars (50% DL / 50% UL) for smoother UI feedback.
+
+**Impact on AI:**
+*   **Rsync Relay Mode:** `rsync_upload` now strictly follows a Download -> Cache -> Upload workflow.
+*   **Storage Checks:** The system now enforces storage capacity checks before starting transfers. Ensure `local_cache_path` is configured for large transfers.
+*   **Progress Reporting:** Progress for `rsync_upload` is split: 0-50% for download, 50-100% for upload.
+
 ## 2024-01-15 - Delta Progress Calculation Refactor
 
 **Summary:** Progress reporting logic in `process_runner.py` and `ui.py` was refactored to strictly use **delta** updates instead of absolute values.
