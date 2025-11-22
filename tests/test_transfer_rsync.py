@@ -493,8 +493,8 @@ class TestRsyncUploadWorkflow:
         source_path = "/remote/source/my_file"
         dest_path = "/remote/dest/my_file"
 
-        # Ensure the configured local_cache_path can be created in the fake filesystem
-        # fs fixture handles this automatically
+        # Determine expected cache path from mock_configs
+        expected_cache_root = source_config.parser['SETTINGS']['local_cache_path']
 
         # --- Execute ---
         transfer_content_rsync_upload(
@@ -519,7 +519,9 @@ class TestRsyncUploadWorkflow:
         assert download_args['sftp_config'] == source_config
         assert download_args['remote_path'] == source_path
         assert download_args['torrent_hash'] == "hash_upload"
-        # Check that the local path is inside a temporary cache directory
+
+        # Check that the local path is inside the custom cache directory
+        assert expected_cache_root in download_args['local_path']
         assert "torrent_mover_cache_hash_upload" in download_args['local_path']
 
         # 2. Assert upload was called correctly
@@ -528,13 +530,130 @@ class TestRsyncUploadWorkflow:
         assert upload_args['dest_config'] == dest_config
         assert upload_args['remote_path'] == dest_path
         assert upload_args['torrent_hash'] == "hash_upload"
-        assert "torrent_mover_cache_hash_upload" in upload_args['local_path']
+        assert expected_cache_root in upload_args['local_path']
 
         # 3. Assert cleanup was performed
         mock_rmtree.assert_called_once()
         # Get the path passed to rmtree and check it's the correct cache dir
         rmtree_path = mock_rmtree.call_args[0][0]
+        assert expected_cache_root in str(rmtree_path)
         assert "torrent_mover_cache_hash_upload" in str(rmtree_path)
+
+    @patch('transfer_manager.shutil.disk_usage')
+    @patch('transfer_manager.transfer_content_rsync')
+    def test_rsync_upload_insufficient_storage(
+        self,
+        mock_rsync_download,
+        mock_disk_usage,
+        mock_configs,
+        mock_file_tracker,
+        fs
+    ):
+        """
+        Verifies that transfer is rejected if storage is insufficient.
+        """
+        source_config, dest_config = mock_configs
+
+        # Set a very small free space (e.g., 1 KB)
+        mock_disk_usage.return_value.free = 1024
+        total_size = 200 * 1024 * 1024 # 200 MB needed
+
+        # Ensure padding logic is triggered (100MB padding + total_size)
+
+        with pytest.raises(RemoteTransferError) as exc:
+            transfer_content_rsync_upload(
+                source_config=source_config,
+                dest_config=dest_config,
+                rsync_options=[],
+                source_content_path="/remote/source",
+                dest_content_path="/remote/dest",
+                torrent_hash="hash_storage",
+                file_tracker=mock_file_tracker,
+                total_size=total_size,
+                log_transfer=MagicMock(),
+                _update_transfer_progress=MagicMock(),
+                dry_run=False,
+                is_folder=False
+            )
+
+        assert "Insufficient space" in str(exc.value)
+        mock_rsync_download.assert_not_called()
+
+    def test_rsync_upload_progress_weighting(
+        self,
+        mock_configs,
+        mock_file_tracker,
+        fs
+    ):
+        """
+        Verifies the progress weighting logic (50% DL, 50% UL).
+        """
+        source_config, dest_config = mock_configs
+        main_callback = MagicMock()
+        total_size = 200
+        doubled_total = 400
+
+        with patch('transfer_manager.transfer_content_rsync') as mock_dl, \
+             patch('transfer_manager._transfer_content_rsync_upload_from_cache') as mock_ul, \
+             patch('shutil.rmtree'):
+
+            # Simulate DL and UL functions calling their progress callback
+            def dl_side_effect(**kwargs):
+                callback = kwargs['_update_transfer_progress']
+                # Simulate 100 bytes transferred out of 200 (50% of DL phase)
+                # rsync progress=0.5, bytes=100
+                callback("hash", 0.5, 100, 200)
+
+            mock_dl.side_effect = dl_side_effect
+
+            def ul_side_effect(**kwargs):
+                callback = kwargs['_update_transfer_progress']
+                # Simulate 100 bytes transferred out of 200 (50% of UL phase)
+                # rsync progress=0.5, bytes=100
+                callback("hash", 0.5, 100, 200)
+
+            mock_ul.side_effect = ul_side_effect
+
+            transfer_content_rsync_upload(
+                source_config=source_config,
+                dest_config=dest_config,
+                rsync_options=[],
+                source_content_path="/src",
+                dest_content_path="/dest",
+                torrent_hash="hash",
+                file_tracker=mock_file_tracker,
+                total_size=total_size,
+                log_transfer=MagicMock(),
+                _update_transfer_progress=main_callback,
+                dry_run=False,
+                is_folder=False
+            )
+
+            calls = main_callback.call_args_list
+
+            # 1. Verify DL call:
+            # Input to wrapper: progress=0.5, transferred=100
+            # Wrapper logic: weighted = 0.5 * 0.5 = 0.25
+            #                cumulative = 100
+            dl_call_found = False
+            for c in calls:
+                args = c[0]
+                if args[1] == 0.25 and args[2] == 100 and args[3] == doubled_total:
+                    dl_call_found = True
+                    break
+            assert dl_call_found, "Main callback not called with correct DL values"
+
+            # 2. Verify UL call:
+            # Input to wrapper: progress=0.5, transferred=100
+            # Wrapper logic: weighted = 0.5 + (0.5 * 0.5) = 0.75
+            #                cumulative = total_size + transferred = 200 + 100 = 300
+            ul_call_found = False
+            for c in calls:
+                args = c[0]
+                if args[1] == 0.75 and args[2] == 300 and args[3] == doubled_total:
+                    ul_call_found = True
+                    break
+            assert ul_call_found, "Main callback not called with correct UL values"
 
     @patch('transfer_manager._transfer_content_rsync_upload_from_cache')
     @patch('transfer_manager.transfer_content_rsync', side_effect=RemoteTransferError("Download failed"))
