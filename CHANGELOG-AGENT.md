@@ -19,3 +19,11 @@ This log tracks architectural changes and refactors that significantly affect ho
 *   **`FAILED_STUCK`**: Indicates the recheck process hung (0% progress for `recheck_stuck_timeout`). The system *should* attempt a delta-sync repair.
 *   **`FAILED_FINAL_REVIEW`**: Indicates the recheck completed (or stopped) but the data is corrupt (progress < 100%). The system *should* attempt a delta-sync repair.
 *   This distinction allows for more granular timeouts and better logging. When debugging recheck issues, check which of these two states triggered the failure.
+
+## 2024-01-24 - Smart Heartbeat Verification
+
+**Summary:** The "Smart Heartbeat" logic in `process_runner.py` was verified using `tests/test_process_runner_smart.py`.
+
+**Impact on AI:**
+*   The `execute_streaming_command` function is confirmed to handle slow streams (using `heartbeat_callback`) and complete hangs (using `timeout_seconds`).
+*   Tests `test_smart_progress_success` and `test_smart_progress_timeout` are the canonical references for this behavior.
