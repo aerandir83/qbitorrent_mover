@@ -1146,20 +1146,70 @@ def transfer_content_rsync_upload(
     from the cache to the destination via rsync.
     """
     file_name = os.path.basename(source_content_path)
-    temp_dir = Path(tempfile.gettempdir()) / f"torrent_mover_cache_{torrent_hash}"
+
+    # --- Config Reading ---
+    local_cache_path = None
+    if hasattr(source_config, 'parser'):
+        local_cache_path = source_config.parser['SETTINGS'].get('local_cache_path')
+
+    if local_cache_path:
+        cache_base_path = Path(local_cache_path)
+        cache_base_path.mkdir(parents=True, exist_ok=True)
+    else:
+        cache_base_path = Path(tempfile.gettempdir())
+
+    # --- Storage Safety Check ---
+    if not dry_run:
+        padding = 100 * 1024 * 1024  # 100MB padding
+        required_space = total_size + padding
+        try:
+            usage = shutil.disk_usage(cache_base_path)
+            if usage.free < required_space:
+                msg = (f"Insufficient space in cache directory '{cache_base_path}'. "
+                       f"Required: {required_space / (1024**2):.2f} MB (including 100MB padding), "
+                       f"Available: {usage.free / (1024**2):.2f} MB.")
+                logging.error(msg)
+                raise RemoteTransferError(msg)
+        except FileNotFoundError:
+            # This might happen if cache_base_path is invalid or inaccessible
+            msg = f"Cache directory not found or inaccessible: {cache_base_path}"
+            logging.error(msg)
+            raise RemoteTransferError(msg)
+
+    temp_dir = cache_base_path / f"torrent_mover_cache_{torrent_hash}"
     temp_dir.mkdir(exist_ok=True)
 
     # The local path for the *content itself* inside the cache dir
     local_cache_content_path = str(temp_dir / file_name)
 
+    # --- Weighted Progress Wrappers ---
+    # The UI expects a unified byte stream. We report double the total size (2x).
+    # Download phase: 0 -> 50% (Transferred: 0 -> total_size)
+    # Upload phase: 50% -> 100% (Transferred: total_size -> 2*total_size)
+
+    doubled_total_size = total_size * 2
+
+    def download_progress_wrapper(hash, progress, transferred, total):
+        # progress comes from rsync (0.0 -> 1.0)
+        # transferred is real bytes transferred (0 -> total_size)
+        # We map this to 0 -> 50% of doubled_total_size
+        weighted_progress = progress * 0.5
+        # _update_transfer_progress expects cumulative bytes for its stats logic
+        # For DL phase, cumulative bytes = transferred (real bytes)
+        _update_transfer_progress(hash, weighted_progress, transferred, doubled_total_size)
+
+    def upload_progress_wrapper(hash, progress, transferred, total):
+        # progress comes from rsync (0.0 -> 1.0)
+        # transferred is real bytes transferred in THIS phase (0 -> total_size)
+        # We map this to 50% -> 100% of doubled_total_size
+        weighted_progress = 0.5 + (progress * 0.5)
+        # For UL phase, cumulative bytes = total_size (from DL) + transferred (from UL)
+        cumulative_bytes = total_size + transferred
+        _update_transfer_progress(hash, weighted_progress, cumulative_bytes, doubled_total_size)
+
     try:
         # --- 1. Download from Source to Cache ---
         logging.info(f"Rsync-Upload: Downloading '{file_name}' to cache...")
-        # We pass temp_dir as the local_path, so rsync downloads
-        # the content *into* this directory.
-        # For rsync_upload, DL is the first half, UL is the second.
-        # So, the total_size for each part is half the total.
-        part_total_size = total_size / 2 if total_size else 0
 
         transfer_content_rsync(
             sftp_config=source_config,
@@ -1168,9 +1218,9 @@ def transfer_content_rsync_upload(
             torrent_hash=torrent_hash,
             rsync_options=rsync_options,
             file_tracker=file_tracker,
-            total_size=part_total_size,
+            total_size=total_size,  # Pass full size, wrapper handles scaling
             log_transfer=log_transfer,
-            _update_transfer_progress=_update_transfer_progress,
+            _update_transfer_progress=download_progress_wrapper,
             dry_run=dry_run,
             heartbeat_callback=heartbeat_callback
         )
@@ -1185,25 +1235,26 @@ def transfer_content_rsync_upload(
             remote_path=dest_content_path,
             torrent_hash=torrent_hash,
             rsync_options=rsync_options,
-            total_size=part_total_size,
+            total_size=total_size, # Pass full size, wrapper handles scaling
             log_transfer=log_transfer,
-            _update_transfer_progress=_update_transfer_progress,
+            _update_transfer_progress=upload_progress_wrapper,
             dry_run=dry_run,
             heartbeat_callback=heartbeat_callback
         )
         logging.info(f"Rsync-Upload: Upload from cache complete for '{file_name}'.")
 
-        # --- 3. Cleanup Cache ---
-        if not dry_run:
-            logging.debug(f"Cleaning up cache directory: {temp_dir}")
-            shutil.rmtree(temp_dir)
-
         return True
 
     except Exception as e:
         logging.error(f"Exception during rsync_upload for '{file_name}': {e}", exc_info=True)
-        # Don't clean up cache on failure, so it can be resumed
         raise RemoteTransferError(f"Rsync_upload transfer failed for {file_name}") from e
+
+    finally:
+        # --- 3. Robust Cleanup ---
+        # Ensure disk space is reclaimed even if the transfer crashes or is interrupted.
+        if not dry_run and temp_dir.exists():
+            logging.debug(f"Cleaning up cache directory: {temp_dir}")
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def transfer_content_with_queue(

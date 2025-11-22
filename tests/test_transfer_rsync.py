@@ -467,6 +467,9 @@ class TestRsyncUploadWorkflow:
         config['DEST'] = {
             'host': 'dest.host', 'port': '22', 'username': 'dest_user', 'password': 'dest_password'
         }
+        config['SETTINGS'] = {
+            'local_cache_path': '/tmp/custom_cache'
+        }
         return config['SOURCE'], config['DEST']
 
     @patch('transfer_manager._transfer_content_rsync_upload_from_cache')
@@ -478,7 +481,8 @@ class TestRsyncUploadWorkflow:
         mock_rsync_download,
         mock_rsync_upload_from_cache,
         mock_configs,
-        mock_file_tracker
+        mock_file_tracker,
+        fs  # Add fs fixture
     ):
         """
         Verifies the correct sequence of operations: download then upload.
@@ -488,6 +492,9 @@ class TestRsyncUploadWorkflow:
         source_config, dest_config = mock_configs
         source_path = "/remote/source/my_file"
         dest_path = "/remote/dest/my_file"
+
+        # Ensure the configured local_cache_path can be created in the fake filesystem
+        # fs fixture handles this automatically
 
         # --- Execute ---
         transfer_content_rsync_upload(
@@ -532,16 +539,17 @@ class TestRsyncUploadWorkflow:
     @patch('transfer_manager._transfer_content_rsync_upload_from_cache')
     @patch('transfer_manager.transfer_content_rsync', side_effect=RemoteTransferError("Download failed"))
     @patch('shutil.rmtree')
-    def test_upload_workflow_no_cleanup_on_download_failure(
+    def test_upload_workflow_cleanup_even_on_failure(
         self,
         mock_rmtree,
         mock_rsync_download,
         mock_rsync_upload_from_cache,
         mock_configs,
-        mock_file_tracker
+        mock_file_tracker,
+        fs  # Add fs fixture
     ):
         """
-        Verifies that cache is NOT cleaned up if the initial download phase fails.
+        Verifies that cache IS cleaned up even if the initial download phase fails.
         """
         # --- Setup ---
         source_config, dest_config = mock_configs
@@ -567,8 +575,8 @@ class TestRsyncUploadWorkflow:
         mock_rsync_download.assert_called_once()
         mock_rsync_upload_from_cache.assert_not_called()
 
-        # Assert that cleanup was NOT performed
-        mock_rmtree.assert_not_called()
+        # Assert that cleanup WAS performed (Robust Cleanup)
+        mock_rmtree.assert_called_once()
 
 
     @patch('process_runner.execute_streaming_command', return_value=True)
