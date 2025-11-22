@@ -148,5 +148,82 @@ class TestQBittorrentPatience(unittest.TestCase):
         # It should fail after 3 checks
         self.assertEqual(self.client.client.torrents_info.call_count, 3)
 
+    @patch('time.sleep')
+    @patch('time.time')
+    def test_recheck_returns_failed_state_on_stop(self, mock_time, mock_sleep):
+        """
+        Test that wait_for_recheck returns "FAILED_STATE" (triggering repair)
+        when a torrent enters stoppedUP state with progress < 100%.
+        """
+        self.cur_time = 1000.0
+        mock_time.side_effect = lambda: self.cur_time
+
+        def advance_time(sec):
+            self.cur_time += sec
+        mock_sleep.side_effect = advance_time
+
+        # Mock Torrent: Stopped with 99.8% progress
+        t_stopped = MagicMock(state='stoppedUP', progress=0.998)
+
+        # We need to simulate enough calls to exceed stopped_timeout (10s)
+        # Poll interval is 2s.
+        self.client.client.torrents_info.return_value = [t_stopped]
+
+        result = self.client.wait_for_recheck(
+            torrent_hash='hash1',
+            ui_manager=self.ui_mock,
+            stuck_timeout=5,
+            stopped_timeout=10,
+            grace_period=0
+        )
+
+        self.assertEqual(result, "FAILED_STATE")
+        # Time check: Initial detection + wait > 10s.
+        # It starts at 1000. Detects stopped at 1000.
+        # Loops: 1002, 1004, 1006, 1008, 1010 (elapsed 10, not > 10), 1012 (elapsed 12 > 10).
+        self.assertEqual(self.cur_time, 1012.0)
+
+    @patch('time.sleep')
+    @patch('time.time')
+    def test_wait_for_recheck_grace_period(self, mock_time, mock_sleep):
+        """
+        Test Grace Period Scenario:
+        1. Torrent is checking at 0.0%.
+        2. Ensure function does not return FAILED_STUCK within grace_period.
+        3. Advance time beyond grace_period + stuck_timeout -> FAILED_STUCK.
+        """
+        self.cur_time = 1000.0
+        mock_time.side_effect = lambda: self.cur_time
+
+        def advance_time(sec):
+            self.cur_time += sec
+        mock_sleep.side_effect = advance_time
+
+        # Mock Torrent: Checking at 0.0%
+        t_zero = MagicMock(state='checkingDL', progress=0.0)
+        self.client.client.torrents_info.return_value = [t_zero]
+
+        # stuck_timeout=5, grace_period=10
+        # Expected failure time: 1000 + 10 (grace) + 5 (stuck) = 1015?
+        # Let's trace logic:
+        # T=1000. Start. Last progress=1000.
+        # ...
+        # T=1008. Elapsed since start=8 < 10. Reset last_progress=1008.
+        # T=1010. Elapsed since start=10. Not < 10. Do NOT reset.
+        # T=1012. Elapsed stuck = 1012 - 1008 = 4 < 5.
+        # T=1014. Elapsed stuck = 1014 - 1008 = 6 > 5. FAIL.
+        # So failure at 1014.
+
+        result = self.client.wait_for_recheck(
+            torrent_hash='hash1',
+            ui_manager=self.ui_mock,
+            stuck_timeout=5,
+            stopped_timeout=10,
+            grace_period=10
+        )
+
+        self.assertEqual(result, "FAILED_STUCK")
+        self.assertEqual(self.cur_time, 1014.0)
+
 if __name__ == '__main__':
     unittest.main()
