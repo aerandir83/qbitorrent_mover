@@ -70,10 +70,44 @@ def test_change_ownership_remote_failure():
     pools = {'DESTINATION_SERVER': mock_pool}
     remote_config = MagicMock()
 
-    result = change_ownership("/path/to/file", "user", "group", remote_config=remote_config, ssh_connection_pools=pools)
+    with patch('time.sleep') as mock_sleep:
+        result = change_ownership("/path/to/file", "user", "group", remote_config=remote_config, ssh_connection_pools=pools)
 
     assert result is False
-    mock_ssh.exec_command.assert_called_once()
+    assert mock_ssh.exec_command.call_count == 3
+    assert mock_sleep.call_count == 2
+
+def test_change_ownership_remote_retry_success():
+    mock_pool = MagicMock(spec=SSHConnectionPool)
+    mock_ssh = MagicMock()
+    mock_stdout_fail = MagicMock()
+    mock_stdout_fail.channel.recv_exit_status.return_value = 1
+
+    mock_stdout_success = MagicMock()
+    mock_stdout_success.channel.recv_exit_status.return_value = 0
+
+    mock_stderr = MagicMock()
+    mock_stderr.read.return_value = b"Error"
+
+    # First call fails, second succeeds
+    mock_ssh.exec_command.side_effect = [
+        (None, mock_stdout_fail, mock_stderr),
+        (None, mock_stdout_success, MagicMock())
+    ]
+
+    context_manager = MagicMock()
+    context_manager.__enter__.return_value = (None, mock_ssh)
+    mock_pool.get_connection.return_value = context_manager
+
+    pools = {'DESTINATION_SERVER': mock_pool}
+    remote_config = MagicMock()
+
+    with patch('time.sleep') as mock_sleep:
+        result = change_ownership("/path/to/file", "user", "group", remote_config=remote_config, ssh_connection_pools=pools)
+
+    assert result is True
+    assert mock_ssh.exec_command.call_count == 2
+    mock_sleep.assert_called_once_with(2)
 
 def test_change_ownership_no_op():
     result = change_ownership("/path/to/file", "", "")

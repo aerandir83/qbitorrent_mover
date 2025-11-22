@@ -345,30 +345,45 @@ def change_ownership(path_to_change: str, user: str, group: str, remote_config: 
         logging.info(f"[DRY RUN] Would change ownership of '{path_to_change}' to '{owner_spec}'.")
         return True
     if remote_config and ssh_connection_pools:
+        # Normalize the path for remote execution (ensure forward slashes, remove quotes)
+        path_to_change = path_to_change.replace('\\', '/').strip("'\"")
         logging.info(f"Attempting to change remote ownership of '{path_to_change}' to '{owner_spec}'...")
+
         # Explicitly use the DESTINATION_SERVER pool, as this is the only remote chown context
         pool = ssh_connection_pools.get('DESTINATION_SERVER')
         if not pool:
             logging.error("Could not find SSH pool for DESTINATION_SERVER for chown operation.")
             return False
 
-        try:
-            with pool.get_connection() as (sftp, ssh):
-                # Using shlex.quote to prevent command injection vulnerabilities
-                remote_command = f"chown -R -- {shlex.quote(owner_spec)} {shlex.quote(path_to_change)}"
-                logging.debug(f"Executing remote command: {remote_command}")
-                stdin, stdout, stderr = ssh.exec_command(remote_command, timeout=Timeouts.SSH_EXEC)
-                exit_status = stdout.channel.recv_exit_status()
-                if exit_status == 0:
-                    logging.info(f"Remote ownership changed successfully for '{path_to_change}'.")
-                    return True
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                with pool.get_connection() as (sftp, ssh):
+                    # Using shlex.quote to prevent command injection vulnerabilities
+                    remote_command = f"chown -R -- {shlex.quote(owner_spec)} {shlex.quote(path_to_change)}"
+                    logging.debug(f"Executing remote command (Attempt {attempt}/{max_attempts}): {remote_command}")
+
+                    stdin, stdout, stderr = ssh.exec_command(remote_command, timeout=Timeouts.SSH_EXEC)
+                    exit_status = stdout.channel.recv_exit_status()
+
+                    if exit_status == 0:
+                        logging.info(f"Remote ownership changed successfully for '{path_to_change}'.")
+                        return True
+                    else:
+                        stderr_output = stderr.read().decode('utf-8').strip()
+                        if attempt < max_attempts:
+                            logging.warning(f"Attempt {attempt}/{max_attempts} failed to change remote ownership. Exit code: {exit_status}, Stderr: {stderr_output}. Retrying in 2 seconds...")
+                            time.sleep(2)
+                        else:
+                            logging.error(f"Failed to change remote ownership for '{path_to_change}' after {max_attempts} attempts. Final Exit code: {exit_status}, Stderr: {stderr_output}")
+                            return False
+            except Exception as e:
+                if attempt < max_attempts:
+                     logging.warning(f"Attempt {attempt}/{max_attempts} encountered an exception during remote chown: {e}. Retrying in 2 seconds...")
+                     time.sleep(2)
                 else:
-                    stderr_output = stderr.read().decode('utf-8').strip()
-                    logging.error(f"Failed to change remote ownership for '{path_to_change}'. Exit code: {exit_status}, Stderr: {stderr_output}")
+                    logging.error(f"An exception occurred during remote chown for '{path_to_change}' after {max_attempts} attempts: {e}", exc_info=True)
                     return False
-        except Exception as e:
-            logging.error(f"An exception occurred during remote chown for '{path_to_change}': {e}", exc_info=True)
-            return False
     else:
         logging.info(f"Attempting to change local ownership of '{path_to_change}' to '{owner_spec}'...")
         try:
