@@ -353,7 +353,8 @@ class TestRsyncResilience:
             total_size=1000,
             log_transfer=MagicMock(),
             _update_transfer_progress=MagicMock(),
-            dry_run=False
+            dry_run=False,
+            rsync_timeout=60 # Explicitly set to 60 to match test expectations
         )
 
         # --- Assert ---
@@ -446,7 +447,8 @@ class TestRsyncResilience:
             total_size=1000,
             log_transfer=MagicMock(),
             _update_transfer_progress=MagicMock(),
-            dry_run=False
+            dry_run=False,
+            rsync_timeout=60 # Explicitly set to 60 to match test expectations
         )
 
         # --- Assert ---
@@ -681,7 +683,8 @@ class TestRsyncAdaptiveTimeout:
             total_size=1000,
             log_transfer=MagicMock(),
             _update_transfer_progress=MagicMock(),
-            dry_run=False
+            dry_run=False,
+            rsync_timeout=60 # Explicitly set to 60 to match test expectations
         )
 
         # --- Assert ---
