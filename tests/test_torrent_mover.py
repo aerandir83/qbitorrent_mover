@@ -237,3 +237,71 @@ def test_pre_transfer_path_mapping(mock_batch_get_sizes, mock_config, mock_args,
 
     # 3. Assert Save Path is the remote_destination_path (from config)
     assert save_path == "/remote/downloads-docker"
+
+
+@patch('torrent_mover._execute_transfer')
+@patch('torrent_mover.get_transfer_strategy')
+def test_repair_recheck_explicit_trigger(mock_get_strategy, mock_execute_transfer, mock_dependencies, mock_ui):
+    """
+    Tests that when a recheck fails with FAILED_STATE, and repair succeeds,
+    an explicit recheck is triggered on the destination client.
+    """
+    # --- Setup ---
+    torrent = MockTorrent(name="Test Repair", hash_="hash_repair", content_path="/src/test", save_path="/src")
+    torrent.hash = torrent.hash_
+
+    mock_dest_client = mock_dependencies["destination_client"]
+    mock_src_client = mock_dependencies["source_client"]
+
+    # Mock recheck behavior:
+    # 1. First wait_for_recheck returns FAILED_STATE
+    # 2. Second wait_for_recheck (after repair) returns SUCCESS
+    mock_dest_client.wait_for_recheck.side_effect = ["FAILED_STATE", "SUCCESS"]
+
+    # Mock strategy to support delta correction
+    mock_strategy = MagicMock()
+    mock_strategy.supports_delta_correction.return_value = True
+    mock_get_strategy.return_value = mock_strategy
+
+    # Mock repair transfer success
+    mock_execute_transfer.return_value = True
+
+    # --- Execute ---
+    success, msg = _post_transfer_actions(
+        torrent=torrent,
+        source_client=mock_src_client,
+        destination_client=mock_dest_client,
+        config=mock_dependencies["config"],
+        tracker_rules=mock_dependencies["tracker_rules"],
+        ssh_connection_pools=mock_dependencies["ssh_connection_pools"],
+        dest_content_path="/dest/path",
+        destination_save_path="/dest/save",
+        transfer_executed=True,
+        dry_run=False,
+        test_run=False,
+        file_tracker=mock_dependencies["file_tracker"],
+        transfer_mode="rsync",
+        all_files=[],
+        ui=mock_ui,
+        log_transfer=mock_dependencies["log_transfer"],
+        _update_transfer_progress=mock_dependencies["_update_transfer_progress"]
+    )
+
+    # --- Assert ---
+    # 1. Verify success
+    assert success is True
+
+    # 2. Verify recheck_torrent was called TWICE
+    # First time: Initial recheck
+    # Second time: After repair
+    assert mock_dest_client.recheck_torrent.call_count == 2
+    mock_dest_client.recheck_torrent.assert_has_calls([
+        call(torrent_hash="hash_repair"),
+        call(torrent_hash="hash_repair")
+    ])
+
+    # 3. Verify repair was attempted
+    mock_execute_transfer.assert_called_once()
+
+    # 4. Verify wait_for_recheck was called TWICE
+    assert mock_dest_client.wait_for_recheck.call_count == 2

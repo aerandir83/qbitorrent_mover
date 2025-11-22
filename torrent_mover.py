@@ -434,6 +434,10 @@ def _post_transfer_actions(
                     logging.warning(f"Failed to pause torrent {name} after repair failure: {e}")
                 return False, "Automated repair transfer failed."
 
+            logging.info(f"Automated repair transfer complete. Triggering re-check for {name}...")
+            destination_client.recheck_torrent(torrent_hash=hash_)
+            time.sleep(1) # Allow API to process
+
             # Run re-check a final time
             logging.info(f"Automated repair complete. Triggering final re-check for {name}...")
             ui.log(f"Repair complete. Final re-check for {name}...")
