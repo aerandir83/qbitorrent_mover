@@ -879,6 +879,9 @@ def _transfer_content_rsync_upload_from_cache(
     """
     Transfers content from a local path to a remote server using rsync.
     This is the UPLOAD part of the cache-based rsync_upload mode.
+
+    Updates:
+        Heartbeat callback support integrated for watchdog petting.
     """
     file_name = os.path.basename(local_path)
     log_transfer(torrent_hash, f"Starting rsync upload from cache for '{file_name}'")
@@ -970,7 +973,11 @@ def transfer_content_rsync(
     dry_run: bool = False,
     heartbeat_callback: Optional[Callable[[], None]] = None
 ) -> None:
-    """Transfers content from a remote server to a local path using rsync."""
+    """Transfers content from a remote server to a local path using rsync.
+
+    Updates:
+        Heartbeat callback support integrated for watchdog petting.
+    """
 
     remote_path = remote_path.strip('\'"')
     rsync_file_name = os.path.basename(remote_path)
@@ -1144,6 +1151,9 @@ def transfer_content_rsync_upload(
     Transfers content from a remote source to a remote destination
     by downloading to a local cache via rsync, then uploading
     from the cache to the destination via rsync.
+
+    Updates:
+        Heartbeat callback support integrated for watchdog petting.
     """
     file_name = os.path.basename(source_content_path)
 
