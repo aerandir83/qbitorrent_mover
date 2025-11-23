@@ -180,10 +180,26 @@ class QBittorrentClient(TorrentClient):
             logging.error(f"Could not get file list for torrent {torrent_hash[:10]}: {e}")
             return []
 
-    def wait_for_recheck(self, torrent_hash: str, ui_manager: Any, stuck_timeout: int, stopped_timeout: int, dry_run: bool = False) -> str:
+    def wait_for_recheck(self, torrent_hash: str, ui_manager: Any, stuck_timeout: int, stopped_timeout: int, grace_period: int = 0, dry_run: bool = False) -> str:
         """
-        Waits for recheck to complete.
-        Adapts logic from qbittorrent_manager.wait_for_recheck_completion.
+        Waits for recheck to complete using Intelligent Patience logic.
+
+        State Machine:
+          1. Grace Period: If checking/queued and progress is 0%, ignore stuck timer until grace_period elapsed.
+          2. Stuck Detection: If progress > 0% but stops increasing for stuck_timeout, FAILED_STUCK.
+          3. Stopped Confirmation: If stopped/error, wait stopped_timeout. Returns FAILED_STATE or FAILED_FINAL_REVIEW.
+          4. Success: 100% progress.
+
+        Args:
+            torrent_hash: The hash of the torrent to monitor.
+            ui_manager: UI Manager to keep watchdog alive.
+            stuck_timeout: Seconds to wait if progress stalls.
+            stopped_timeout: Seconds to wait if state becomes stopped/error.
+            grace_period: Seconds to allow 0% progress at start.
+            dry_run: If true, returns SUCCESS immediately.
+
+        Returns:
+            str: "SUCCESS", "FAILED_STUCK", "FAILED_STATE", "FAILED_FINAL_REVIEW"
         """
         if dry_run:
             logging.info(f"[DRY RUN] Would wait for recheck on {torrent_hash[:10]}. Assuming success.")
@@ -195,23 +211,41 @@ class QBittorrentClient(TorrentClient):
 
         logging.info(f"Waiting for recheck to complete for torrent {torrent_hash[:10]}...")
 
-        # We need to track two separate timeouts
+        # Timer tracking
+        start_time = time.time()
         last_progress_increase_time = time.time()
         last_known_progress = -1.0
-
         stopped_state_detected_time = None
         last_stopped_progress = -1.0
 
+        # API Safety counters
+        consecutive_not_found_count = 0
+
+        # States considered "active checking"
+        checking_states = ['checkingUP', 'checkingDL', 'queuedUP', 'queuedDL']
+        # States considered "stopped/error"
+        stopped_states = ['error', 'missingFiles', 'stopped', 'pausedUP', 'pausedDL']
+
         while True:
-            # Ensure it accepts ui_manager as an argument to call pet_watchdog()
+            # Ensure watchdog is pet
             if hasattr(ui_manager, 'pet_watchdog'):
                 ui_manager.pet_watchdog()
 
             try:
                 torrent_info = self.client.torrents_info(torrent_hashes=torrent_hash)
+
+                # --- API Safety: Handle Disappearance ---
                 if not torrent_info:
-                    logging.error(f"Torrent {torrent_hash[:10]} disappeared while waiting for recheck.")
-                    return "FAILED_STATE" # Triggers delta-sync
+                    consecutive_not_found_count += 1
+                    logging.warning(f"Torrent {torrent_hash[:10]} not returned by API (Attempt {consecutive_not_found_count}).")
+                    if consecutive_not_found_count >= 3:
+                        logging.error(f"Torrent {torrent_hash[:10]} disappeared permanently after {consecutive_not_found_count} checks.")
+                        return "FAILED_STATE"
+                    time.sleep(2)
+                    continue
+
+                # Reset disappeared counter if found
+                consecutive_not_found_count = 0
 
                 torrent = torrent_info[0]
                 state = torrent.state
@@ -223,8 +257,7 @@ class QBittorrentClient(TorrentClient):
                     return "SUCCESS"
 
                 # --- State Handling ---
-                if state in ['checkingUP', 'checkingDL']:
-                    # This is the "Checking" state
+                if state in checking_states:
                     stopped_state_detected_time = None # Reset stopped timer
 
                     if current_progress > last_known_progress:
@@ -235,11 +268,18 @@ class QBittorrentClient(TorrentClient):
                     else:
                         # No progress. Check if we are "stuck".
                         elapsed_stuck_time = time.time() - last_progress_increase_time
-                        if elapsed_stuck_time > stuck_timeout:
-                            logging.error(f"Recheck FAILED for {torrent_hash[:10]}: No progress for {stuck_timeout} seconds (State: {state}).")
-                            return "FAILED_STUCK" # New "Stuck" failure state
+                        elapsed_since_start = time.time() - start_time
 
-                elif state in ['error', 'missingFiles', 'stopped', 'pausedUP', 'pausedDL']:
+                        # Grace Period Logic
+                        if current_progress == 0.0 and elapsed_since_start < grace_period:
+                            # Reset stuck timer while in grace period
+                            last_progress_increase_time = time.time()
+                            logging.debug(f"Torrent initializing... (Grace Period: {elapsed_since_start:.1f}/{grace_period}s)")
+                        elif elapsed_stuck_time > stuck_timeout:
+                            logging.error(f"Recheck FAILED for {torrent_hash[:10]}: No progress for {stuck_timeout} seconds (State: {state}).")
+                            return "FAILED_STUCK"
+
+                elif state in stopped_states:
                     # This is the "Stopped" or "Explicit Failure" state
                     if stopped_state_detected_time is None:
                         # First time seeing this state, start the timer
@@ -259,8 +299,8 @@ class QBittorrentClient(TorrentClient):
                         if elapsed_stopped_time > stopped_timeout:
                             logging.error(f"Recheck FAILED for torrent {torrent_hash[:10]}. State confirmed as '{state}' for {stopped_timeout}s.")
                             if current_progress < 1.0:
-                                return "FAILED_FINAL_REVIEW"
-                            return "FAILED_STATE" # Triggers delta-sync
+                                return "FAILED_STATE"
+                            return "FAILED_FINAL_REVIEW" # Stopped at 100% but not "Completed" state
 
                 else:
                     # Any other state (e.g., 'uploading', 'stalledUP') means recheck is done
@@ -269,10 +309,10 @@ class QBittorrentClient(TorrentClient):
                     if current_progress >= 1.0:
                         return "SUCCESS" # It might be 100% and just changed state
                     else:
-                        return "FAILED_STATE" # Triggers delta-sync
+                        return "FAILED_STATE"
 
                 time.sleep(2) # Poll every 2 seconds
 
             except Exception as e:
                 logging.error(f"Error while waiting for recheck on {torrent_hash[:10]}: {e}", exc_info=True)
-                return "FAILED_STATE" # Triggers delta-sync
+                return "FAILED_STATE"
