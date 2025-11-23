@@ -232,19 +232,19 @@ class ConfigValidator:
 
     def _check_numeric_values(self) -> None:
         """Validate numeric configuration values."""
-        if not self.config.has_section('SETTINGS'):
-            return
+        # Validation rules: (Section, Option, Min, Max)
+        validation_rules = [
+            ('SETTINGS', 'max_concurrent_downloads', 1, 20),
+            ('SETTINGS', 'max_concurrent_uploads', 1, 20),
+            ('General', 'pool_wait_timeout', 30, 3600),
+            ('General', 'recheck_stopped_timeout', 1, 300),
+            ('General', 'recheck_grace_period', 0, 600),
+        ]
 
-        numeric_options = {
-            'max_concurrent_downloads': (1, 20),
-            'max_concurrent_uploads': (1, 20),
-            'pool_wait_timeout': (30, 3600),
-        }
-
-        for option, (min_val, max_val) in numeric_options.items():
-            if self.config.has_option('SETTINGS', option):
+        for section, option, min_val, max_val in validation_rules:
+            if self.config.has_section(section) and self.config.has_option(section, option):
                 try:
-                    value = self.config.getint('SETTINGS', option)
+                    value = self.config.getint(section, option)
                     if value < min_val or value > max_val:
                         self.warnings.append(
                             f"{option}={value} is outside recommended range [{min_val}-{max_val}]"
