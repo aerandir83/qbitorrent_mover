@@ -280,11 +280,12 @@ def _post_transfer_actions(
             remote_config = None
             path_to_chown = dest_content_path
 
-            # New logic: If a DESTINATION_SERVER is defined, *always*
-            # attempt the chown on that server, but use the internal filesystem path.
-            if 'DESTINATION_SERVER' in config and config.has_section('DESTINATION_SERVER'):
+            # If a DESTINATION_SERVER is defined, *always* attempt the chown on that server,
+            # regardless of transfer mode, but use the internal filesystem path.
+            if config.has_section('DESTINATION_SERVER'):
+                # Strict priority for remote config regardless of transfer mode
                 remote_config = config['DESTINATION_SERVER']
-                logging.info(f"DESTINATION_SERVER defined. Will run chown on path: {path_to_chown}")
+                logging.info(f"DESTINATION_SERVER configured. Enforcing remote chown on path: {path_to_chown}")
 
             if not change_ownership(path_to_chown, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools):
                 msg = f"PROVISIONING ERROR: Ownership change failed for {dest_content_path}. Source preserved."
