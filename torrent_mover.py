@@ -44,7 +44,7 @@ from system_manager import (
     LockFile, setup_logging, destination_health_check, change_ownership,
     test_path_permissions, cleanup_orphaned_cache,
     recover_cached_torrents, delete_destination_content,
-    delete_destination_files
+    delete_destination_files, force_remote_permissions
 )
 from tracker_manager import (
     categorize_torrents,
@@ -162,33 +162,32 @@ def _pre_transfer_setup(
         logging.info(f"[DRY RUN] Would check for existing content at: {dest_content_path}")
     else:
         try:
-            # Check if we should use remote check:
-            # 1. Explicit remote transfer mode (sftp_upload, rsync_upload)
-            # 2. OR DESTINATION_SERVER section exists. This allows remote checking even for 'rsync' mode,
-            #    bypassing local mount permission issues (e.g., restricted mounts).
-            should_use_remote_check = is_remote_dest or config.has_section('DESTINATION_SERVER')
-
-            if should_use_remote_check:
-                # Remote check
+            # Priority Remote Check (Fix for Config Logic)
+            # We ALWAYS prioritize remote checks if DESTINATION_SERVER exists, regardless of transfer_mode.
+            # This bypasses permission issues on local mounts (e.g., restricted users).
+            if config.has_section('DESTINATION_SERVER'):
                 dest_server_section = 'DESTINATION_SERVER'
                 dest_pool = ssh_connection_pools.get(dest_server_section)
                 if not dest_pool:
-                    return "failed", f"SSH pool '{dest_server_section}' not found.", None, None, None
+                    # Should not block execution if pool missing but config present (config error),
+                    # but for safety, we report it.
+                    return "failed", f"SSH pool '{dest_server_section}' not found but section exists.", None, None, None
 
-                logging.debug(f"Checking remote destination size for: {dest_content_path}")
+                logging.debug(f"Checking remote destination size (via SSH) for: {dest_content_path}")
                 with dest_pool.get_connection() as (sftp, ssh):
-                    # Use batch_get_remote_sizes for a single path; it's robust.
+                    # Use batch_get_remote_sizes for a single path; it's robust and uses 'du' or 'stat'.
                     size_map = batch_get_remote_sizes(ssh, [dest_content_path])
                     if dest_content_path in size_map:
                         destination_size = size_map[dest_content_path]
                         destination_exists = True
             else:
-                # Local check for 'sftp' or 'rsync'
-                logging.debug(f"Checking local destination size for: {dest_content_path}")
+                # Fallback: Local check only if NO remote server configured.
+                # Only use os.path.exists as an else fallback.
+                logging.debug(f"Checking local destination size (via Mount) for: {dest_content_path}")
                 if os.path.exists(dest_content_path):
                     destination_exists = True
                     if os.path.isdir(dest_content_path):
-                        # Calculate local directory size (this can be slow, but necessary)
+                        # Calculate local directory size
                         destination_size = sum(f.stat().st_size for f in Path(dest_content_path).glob('**/*') if f.is_file())
                     else:
                         destination_size = os.path.getsize(dest_content_path)
@@ -595,6 +594,29 @@ def _execute_transfer(
     """
     hash_ = torrent.hash
     sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
+
+    # --- PRE-FLIGHT PERMISSION UNLOCK ---
+    # Attempt to fix permissions on the parent folder before starting.
+    # This prevents "Permission Denied" errors when creating the target directory.
+    if not dry_run and config.has_section('DESTINATION_SERVER'):
+        try:
+            # We need a path to unlock. Ideally the parent of the destination.
+            # If 'files' list is valid, use the first file's destination.
+            if files:
+                path_to_unlock = files[0].dest_path
+                # For SFTP, dest_path is a file, so we want the directory.
+                if transfer_mode.startswith('sftp'):
+                    path_to_unlock = os.path.dirname(path_to_unlock)
+
+                dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
+                if dest_pool:
+                    logging.debug(f"Attempting pre-flight permission unlock on: {path_to_unlock}")
+                    force_remote_permissions(path_to_unlock, dest_pool)
+        except Exception as e:
+            # Non-fatal: Log and proceed. The transfer *might* still work or fail later.
+            logging.warning(f"Pre-flight permission unlock failed (ignoring): {e}")
+    # -------------------------------------
+
     try:
         if transfer_mode == 'sftp':
             source_pool = ssh_connection_pools.get(config['SETTINGS']['source_server_section'])
