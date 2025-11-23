@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 import configparser
 import os
+import shutil
 from transfer_manager import transfer_content_rsync
 from tests.mocks.mock_ssh import MockSSHConnectionPool
 
@@ -127,3 +128,52 @@ def test_atomic_fallback_corruption_flag(
 
     # Logic triggers on attempt 1 because is_corrupted is True
     assert file_existence_log == [False]
+
+@patch('process_runner.execute_streaming_command')
+@patch('transfer_manager.SSHConnectionPool')
+@patch('ssh_manager.batch_get_remote_sizes')
+def test_atomic_fallback_directory_cleanup(
+    mock_batch_get_sizes,
+    MockSshPool,
+    mock_execute_command,
+    rsync_config,
+    fs
+):
+    """
+    Verifies that if the local path is a directory, it is removed using shutil.rmtree.
+    """
+    local_path = "/local/corrupt_dir"
+    fs.create_dir(local_path)
+    # create some files inside
+    fs.create_file(os.path.join(local_path, "somefile"), contents="data")
+
+    mock_file_tracker = MagicMock()
+    mock_file_tracker.is_corrupted.return_value = True # Force fallback on 1st try
+
+    def side_effect(*args, **kwargs):
+        # The directory should have been removed by now by the fallback logic
+        if os.path.exists(local_path):
+             # If it exists, it must not be a directory if we are to create a file
+             # But actually we expect it to be GONE.
+             raise Exception(f"Cleanup failed: {local_path} still exists")
+
+        # rsync succeeds
+        fs.create_file(local_path, contents="a" * 2000)
+        return True
+
+    mock_execute_command.side_effect = side_effect
+    mock_batch_get_sizes.return_value = {"/remote/file": 2000}
+    MockSshPool.return_value = MockSSHConnectionPool(host="", port=22, username="", password="")
+
+    transfer_content_rsync(
+        sftp_config=rsync_config['SOURCE_SERVER'],
+        remote_path="/remote/file",
+        local_path=local_path,
+        torrent_hash="hash",
+        rsync_options=[],
+        file_tracker=mock_file_tracker,
+        total_size=2000,
+        log_transfer=MagicMock(),
+        _update_transfer_progress=MagicMock(),
+        dry_run=False
+    )
