@@ -163,7 +163,8 @@ def _pre_transfer_setup(
         try:
             # Check if we should use remote check:
             # 1. Explicit remote transfer mode (sftp_upload, rsync_upload)
-            # 2. OR DESTINATION_SERVER section exists (implies we can check remotely even for rsync)
+            # 2. OR DESTINATION_SERVER section exists. This allows remote checking even for 'rsync' mode,
+            #    bypassing local mount permission issues (e.g., restricted mounts).
             should_use_remote_check = is_remote_dest or config.has_section('DESTINATION_SERVER')
 
             if should_use_remote_check:
@@ -532,6 +533,7 @@ def _post_transfer_actions(
 
             # 4. Delete Source (AFTER everything else is confirmed)
             if not dry_run and not test_run:
+                # Retrieve source section dynamically to support user renaming
                 source_section = config['SETTINGS'].get('source_client_section', 'SOURCE_CLIENT')
                 if config.getboolean(source_section, 'delete_after_transfer', fallback=True):
                     try:
