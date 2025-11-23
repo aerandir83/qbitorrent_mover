@@ -281,23 +281,10 @@ def _post_transfer_actions(
             path_to_chown = dest_content_path
 
             # New logic: If a DESTINATION_SERVER is defined, *always*
-            # attempt the chown on that server using the remote path.
+            # attempt the chown on that server, but use the internal filesystem path.
             if 'DESTINATION_SERVER' in config and config.has_section('DESTINATION_SERVER'):
-                try:
-                    remote_config = config['DESTINATION_SERVER']
-                    content_name = os.path.basename(dest_content_path)
-                    remote_dest_base_path = config['DESTINATION_PATHS'].get('remote_destination_path')
-
-                    if not remote_dest_base_path:
-                        raise ValueError("`remote_destination_path` is not defined in config under [DESTINATION_PATHS]")
-
-                    # Construct the full *remote* path for chown
-                    path_to_chown = os.path.join(remote_dest_base_path, content_name)
-                    logging.info(f"DESTINATION_SERVER defined. Will run chown on remote path: {path_to_chown}")
-                except Exception as e:
-                    logging.error(f"Error determining remote chown path, falling back to local. Error: {e}")
-                    remote_config = None
-                    path_to_chown = dest_content_path
+                remote_config = config['DESTINATION_SERVER']
+                logging.info(f"DESTINATION_SERVER defined. Will run chown on path: {path_to_chown}")
 
             if not change_ownership(path_to_chown, chown_user, chown_group, remote_config, dry_run, ssh_connection_pools):
                 msg = f"PROVISIONING ERROR: Ownership change failed for {dest_content_path}. Source preserved."
