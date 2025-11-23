@@ -671,7 +671,8 @@ def _execute_transfer(
                 total_size=total_size_calc,
                 dry_run=dry_run,
                 heartbeat_callback=heartbeat_callback,
-                rsync_timeout=rsync_timeout
+                rsync_timeout=rsync_timeout,
+                update_speed_callback=ui.update_speed_history if isinstance(ui, UIManagerV2) else None
             )
         elif transfer_mode == 'rsync_upload':
             heartbeat_callback = ui.pet_watchdog
@@ -704,7 +705,8 @@ def _execute_transfer(
                 dry_run=dry_run,
                 is_folder=is_folder,
                 heartbeat_callback=heartbeat_callback,
-                rsync_timeout=rsync_timeout
+                rsync_timeout=rsync_timeout,
+                update_speed_callback=ui.update_speed_history if isinstance(ui, UIManagerV2) else None
             )
 
         return True # Transfer success
