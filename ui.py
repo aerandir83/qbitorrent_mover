@@ -258,11 +258,6 @@ class _StatsPanel:
             stats_table.add_row("⚡ Speed: ", f"[green]DL:{dl_str}[/] [yellow]UL:{ul_str}[/] MB/s")
             stats_table.add_row("📈 Avg/Peak: ", f"[dim]{avg_speed_hist / (1024**2):.1f}/{stats['peak_speed'] / (1024**2):.1f} MB/s[/]")
 
-            # Sparkline
-            history = self.ui_manager._speed_history_data
-            sparkline = TextSparkline(history, width=40)
-            stats_table.add_row("Activity:", sparkline)
-
             # Detailed counts
             stats_table.add_row("🔄 Active: ", f"[white]{stats['active_transfers']}[/]")
             stats_table.add_row("✅ Completed: ", f"[green]{stats['completed_transfers']}[/]")
@@ -294,11 +289,32 @@ class _StatsPanel:
                     recent_table.add_row(f"✓ {display_name}", f"{speed / (1024**2):.1f} MB/s")
 
                 yield Group(
-                    Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460"),
+                    Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="none"),
                     Panel(recent_table, title="[bold green]🎉 Recent Completions", border_style="dim", style="on #16213e")
                 )
             else:
-                yield Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="on #0f3460")
+                yield Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="none")
+
+class _ActivityPanel:
+    """Renders the Sparkline in a dedicated panel."""
+    def __init__(self, ui_manager):
+        self.ui_manager = ui_manager
+
+    def __rich_console__(self, console, options):
+        with self.ui_manager._lock:
+            # Retrieve history from Task 2's implementation
+            history = getattr(self.ui_manager, "_speed_history_data", [])
+
+            # Use the TextSparkline class from Task 2
+            # options.max_width helps size it dynamically
+            sparkline = TextSparkline(history, width=options.max_width - 4)
+
+        yield Panel(
+            sparkline,
+            title="[bold cyan]Network Activity (5m)[/]",
+            border_style="dim",
+            style="none", # Transparent
+        )
 
 class _ActiveTorrentsPanel:
     """A renderable class for the Active Torrents list."""
@@ -828,7 +844,8 @@ class UIManagerV2(BaseUIManager):
                 border_style="dim",
                 style="on #16213e"
             ),
-            _ActiveTorrentsPanel(self) # Add the new renderable panel
+            _ActiveTorrentsPanel(self), # Add the new renderable panel
+            _ActivityPanel(self)  # <--- NEW POSITION
         )
         self.layout["left"].update(left_group)
 
@@ -1008,6 +1025,17 @@ class UIManagerV2(BaseUIManager):
                     self._update_torrent_progress_table()
 
     # ===== Public API (keeping existing methods) =====
+
+    def update_current_speed(self, download_speed: float, upload_speed: float = 0.0):
+        """Overrides internal speed calculation with external monitor data."""
+        with self._lock:
+            self._stats["current_dl_speed"] = download_speed
+            self._stats["current_ul_speed"] = upload_speed
+            # Important: Update the history queues used by the internal logic
+            # so Avg/Peak stats remain consistent if they use these queues.
+            self._dl_speed_history.append(download_speed)
+            if upload_speed > 0:
+                self._ul_speed_history.append(upload_speed)
 
     def update_speed_history(self, history: List[float]):
         with self._lock:
