@@ -185,6 +185,7 @@ def test_post_transfer_continues_on_chown_success(mock_change_ownership):
         'SOURCE_CLIENT': {'delete_after_transfer': 'false'}
     }.get(key, {})
     mock_config.__contains__.side_effect = lambda key: key in ['SETTINGS', 'DESTINATION_SERVER', 'DESTINATION_PATHS']
+    mock_config.has_section.side_effect = lambda key: key in ['SETTINGS', 'DESTINATION_SERVER', 'DESTINATION_PATHS']
     mock_config.getboolean.return_value = False
 
     mock_dest_client = MagicMock()
@@ -218,3 +219,91 @@ def test_post_transfer_continues_on_chown_success(mock_change_ownership):
     mock_change_ownership.assert_called_once_with(
         "/dest/content", "u", "g", {}, False, {}
     )
+
+@patch('torrent_mover.change_ownership')
+def test_post_transfer_remote_chown_on_local_mode(mock_change_ownership):
+    # Setup
+    mock_change_ownership.return_value = True
+
+    mock_torrent = MagicMock()
+    mock_torrent.name = "Test Torrent"
+    mock_torrent.hash = "hash123"
+
+    # Mock Config
+    mock_config = MagicMock()
+
+    settings_dict = {
+        'transfer_mode': 'rsync',
+        'chown_user': 'user',
+        'chown_group': 'group'
+    }
+    dest_server_dict = {
+        'host': '1.2.3.4',
+        'username': 'testuser'
+    }
+    dest_paths_dict = {
+        'destination_path': '/local/dest',
+        'remote_destination_path': '/remote/dest'
+    }
+
+    def get_section(key):
+        if key == 'SETTINGS': return settings_dict
+        if key == 'DESTINATION_SERVER': return dest_server_dict
+        if key == 'DESTINATION_PATHS': return dest_paths_dict
+        if key == 'DESTINATION_CLIENT': return {'add_torrents_paused': 'false', 'start_torrents_after_recheck': 'false'}
+        if key == 'SOURCE_CLIENT': return {'delete_after_transfer': 'false'}
+        return {}
+
+    mock_config.__getitem__.side_effect = get_section
+    # Support 'in' operator and has_section
+    mock_config.__contains__.side_effect = lambda key: key in ['SETTINGS', 'DESTINATION_SERVER', 'DESTINATION_PATHS', 'DESTINATION_CLIENT', 'SOURCE_CLIENT']
+    mock_config.has_section.side_effect = lambda key: key == 'DESTINATION_SERVER'
+
+    mock_config.getboolean.return_value = False
+
+    # Mock SSH Pool
+    mock_pool = MagicMock()
+    ssh_connection_pools = {'DESTINATION_SERVER': mock_pool}
+
+    # Mock Destination Client
+    mock_dest_client = MagicMock()
+    mock_dest_client.get_torrent_info.return_value = None
+    mock_dest_client.wait_for_recheck.return_value = "SUCCESS"
+
+    # Execution
+    result, msg = _post_transfer_actions(
+        torrent=mock_torrent,
+        source_client=MagicMock(),
+        destination_client=mock_dest_client,
+        config=mock_config,
+        tracker_rules={},
+        ssh_connection_pools=ssh_connection_pools,
+        dest_content_path="/local/dest/content",
+        destination_save_path="/remote/dest/content",
+        transfer_executed=True,
+        dry_run=False,
+        test_run=False,
+        file_tracker=MagicMock(),
+        transfer_mode="rsync",
+        all_files=[],
+        ui=MagicMock(),
+        log_transfer=MagicMock(),
+        _update_transfer_progress=MagicMock()
+    )
+
+    # Assertion
+    assert result is True
+    mock_change_ownership.assert_called_once()
+
+    # Check arguments
+    args, kwargs = mock_change_ownership.call_args
+
+    # Expected call: change_ownership(dest_content_path, user, group, remote_config, dry_run, ssh_connection_pools)
+    # Args: ("/local/dest/content", "user", "group", dest_server_dict, False, ssh_connection_pools)
+
+    assert args[0] == "/local/dest/content"
+    assert args[1] == "user"
+    assert args[2] == "group"
+    assert args[3] == dest_server_dict # remote_config
+    assert args[4] is False # dry_run
+    assert args[5] == ssh_connection_pools
