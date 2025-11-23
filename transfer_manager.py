@@ -934,7 +934,8 @@ def _transfer_content_rsync_upload_from_cache(
     dry_run: bool = False,
     heartbeat_callback: Optional[Callable[[], None]] = None,
     rsync_timeout: int = 600,
-    update_speed_callback: Optional[Callable[[List[float]], None]] = None
+    update_speed_callback: Optional[Callable[[List[float]], None]] = None,
+    ui: Optional[UIManager] = None
 ) -> None:
     """
     Transfers content from a local path to a remote server using rsync.
@@ -987,11 +988,24 @@ def _transfer_content_rsync_upload_from_cache(
     def monitor_callback(delta, current, speed):
         progress = (current / total_size) if total_size > 0 else 0
         _update_transfer_progress(torrent_hash, progress, current, total_size)
-        if update_speed_callback and monitor:
-            try:
-                update_speed_callback(monitor.get_status()['history'])
-            except Exception:
-                pass
+        if monitor:
+            status = monitor.get_status()
+            history_data = status['history']
+            current_speed_val = status['current_speed']
+
+            if update_speed_callback:
+                try:
+                    update_speed_callback(history_data)
+                except Exception:
+                    pass
+
+            # 1. Update Sparkline History (Bridge established in Task 2)
+            if ui and hasattr(ui, 'update_speed_history'):
+                 ui.update_speed_history(history_data)
+
+            # 2. FORCE update the UI speed text (The Fix for 0.00)
+            if ui and isinstance(ui, UIManager): # Check type to be safe
+                ui.update_current_speed(download_speed=0.0, upload_speed=current_speed_val)
 
     monitor = SpeedMonitor(
         remote_path,
@@ -1061,7 +1075,8 @@ def transfer_content_rsync(
     dry_run: bool = False,
     heartbeat_callback: Optional[Callable[[], None]] = None,
     rsync_timeout: int = 600,
-    update_speed_callback: Optional[Callable[[List[float]], None]] = None
+    update_speed_callback: Optional[Callable[[List[float]], None]] = None,
+    ui: Optional[UIManager] = None
 ) -> None:
     """Transfers content from a remote server to a local path using rsync.
 
@@ -1106,11 +1121,24 @@ def transfer_content_rsync(
     def monitor_callback(delta, current, speed):
         progress = (current / total_size) if total_size > 0 else 0
         _update_transfer_progress(torrent_hash, progress, current, total_size)
-        if update_speed_callback and monitor:
-            try:
-                update_speed_callback(monitor.get_status()['history'])
-            except Exception:
-                pass
+        if monitor:
+            status = monitor.get_status()
+            history_data = status['history']
+            current_speed_val = status['current_speed']
+
+            if update_speed_callback:
+                try:
+                    update_speed_callback(history_data)
+                except Exception:
+                    pass
+
+            # 1. Update Sparkline History (Bridge established in Task 2)
+            if ui and hasattr(ui, 'update_speed_history'):
+                 ui.update_speed_history(history_data)
+
+            # 2. FORCE update the UI speed text (The Fix for 0.00)
+            if ui and isinstance(ui, UIManager): # Check type to be safe
+                ui.update_current_speed(download_speed=current_speed_val)
 
     def safe_getsize():
         try:
@@ -1270,7 +1298,8 @@ def transfer_content_rsync_upload(
     is_folder: bool,
     heartbeat_callback: Optional[Callable[[], None]] = None,
     rsync_timeout: int = 600,
-    update_speed_callback: Optional[Callable[[List[float]], None]] = None
+    update_speed_callback: Optional[Callable[[List[float]], None]] = None,
+    ui: Optional[UIManager] = None
 ) -> bool:
     """
     Transfers content from a remote source to a remote destination
@@ -1359,7 +1388,8 @@ def transfer_content_rsync_upload(
             dry_run=dry_run,
             heartbeat_callback=heartbeat_callback,
             rsync_timeout=rsync_timeout,
-            update_speed_callback=update_speed_callback
+            update_speed_callback=update_speed_callback,
+            ui=ui
         )
         logging.info(f"Rsync-Upload: Download to cache complete for '{file_name}'.")
 
@@ -1378,7 +1408,8 @@ def transfer_content_rsync_upload(
             dry_run=dry_run,
             heartbeat_callback=heartbeat_callback,
             rsync_timeout=rsync_timeout,
-            update_speed_callback=update_speed_callback
+            update_speed_callback=update_speed_callback,
+            ui=ui
         )
         logging.info(f"Rsync-Upload: Upload from cache complete for '{file_name}'.")
 
