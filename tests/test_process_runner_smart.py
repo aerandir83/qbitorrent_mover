@@ -90,8 +90,8 @@ class TestProcessRunnerSmart(unittest.TestCase):
         self.assertTrue(success)
         # Check heartbeat called
         self.assertTrue(self.heartbeat.called)
-        # Check parsing happened
-        self.update_progress.assert_called()
+        # Check parsing happened (Removed: We no longer parse stdout for progress)
+        # self.update_progress.assert_called()
         # Check process wasn't killed
         process.kill.assert_not_called()
         process.terminate.assert_not_called()

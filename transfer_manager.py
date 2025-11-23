@@ -52,6 +52,7 @@ from ssh_manager import SSHConnectionPool, sftp_mkdir_p, _get_ssh_command
 from transfer_strategies import TransferFile
 from ui import UIManagerV2 as UIManager
 from utils import RemoteTransferError, retry, _create_safe_command_for_logging, Timeouts
+from speed_monitor import SpeedMonitor
 
 
 if typing.TYPE_CHECKING:
@@ -59,6 +60,70 @@ if typing.TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+class SFTPSizeFetcher:
+    """Helper class to fetch remote file size for SpeedMonitor."""
+    def __init__(self, config: configparser.SectionProxy):
+        self.config = config
+        self.ssh = None
+        self.sftp = None
+        self._lock = threading.Lock()
+
+    def get_size(self, remote_path: str) -> int:
+        with self._lock:
+            if self.ssh is None or self.ssh.get_transport() is None or not self.ssh.get_transport().is_active():
+                self._connect()
+
+            if self.sftp:
+                try:
+                    return self.sftp.stat(remote_path).st_size
+                except Exception:
+                    # Try reconnecting once
+                    try:
+                        self._connect()
+                        return self.sftp.stat(remote_path).st_size
+                    except Exception:
+                        return 0
+            return 0
+
+    def _connect(self):
+        try:
+            if self.sftp:
+                try: self.sftp.close()
+                except: pass
+            if self.ssh:
+                try: self.ssh.close()
+                except: pass
+
+            self.ssh = paramiko.SSHClient()
+            self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.ssh.connect(
+                self.config['host'],
+                int(self.config.get('port', 22)),
+                self.config['username'],
+                self.config['password'],
+                timeout=5,
+                allow_agent=False,
+                look_for_keys=False,
+                banner_timeout=30
+            )
+            self.sftp = self.ssh.open_sftp()
+        except Exception as e:
+            logging.debug(f"SFTPSizeFetcher connection failed: {e}")
+
+    def close(self):
+        with self._lock:
+            if self.sftp:
+                try:
+                    self.sftp.close()
+                except: pass
+            if self.ssh:
+                try:
+                    self.ssh.close()
+                except: pass
+            self.sftp = None
+            self.ssh = None
 
 
 def _is_sshpass_installed() -> bool:
@@ -868,7 +933,8 @@ def _transfer_content_rsync_upload_from_cache(
     _update_transfer_progress: typing.Callable,
     dry_run: bool = False,
     heartbeat_callback: Optional[Callable[[], None]] = None,
-    rsync_timeout: int = 600
+    rsync_timeout: int = 600,
+    update_speed_callback: Optional[Callable[[List[float]], None]] = None
 ) -> None:
     """
     Transfers content from a local path to a remote server using rsync.
@@ -916,48 +982,70 @@ def _transfer_content_rsync_upload_from_cache(
         log_transfer(torrent_hash, f"[DRY RUN] Completed rsync upload for {file_name}")
         return
 
+    # Monitor Setup
+    fetcher = SFTPSizeFetcher(dest_config)
+    def monitor_callback(delta, current, speed):
+        progress = (current / total_size) if total_size > 0 else 0
+        _update_transfer_progress(torrent_hash, progress, current, total_size)
+        if update_speed_callback and monitor:
+            try:
+                update_speed_callback(monitor.get_status()['history'])
+            except Exception:
+                pass
+
+    monitor = SpeedMonitor(
+        remote_path,
+        size_fetcher=lambda: fetcher.get_size(remote_path),
+        callback=monitor_callback
+    )
+    monitor.start_monitoring()
+
     MAX_RETRY_ATTEMPTS = 3
     adaptive_timeout = rsync_timeout
 
-    for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
-        logging.info(f"Starting rsync upload from cache for '{file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
-        logging.debug(f"Executing rsync upload: {' '.join(_create_safe_command_for_logging(rsync_cmd))}")
+    try:
+        for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+            logging.info(f"Starting rsync upload from cache for '{file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
+            logging.debug(f"Executing rsync upload: {' '.join(_create_safe_command_for_logging(rsync_cmd))}")
 
-        try:
-            # Call the isolated process runner
-            success = process_runner.execute_streaming_command(
-                rsync_cmd,
-                torrent_hash,
-                total_size,
-                log_transfer,
-                _update_transfer_progress,
-                heartbeat_callback=heartbeat_callback,
-                timeout_seconds=adaptive_timeout
-            )
+            try:
+                # Call the isolated process runner
+                success = process_runner.execute_streaming_command(
+                    rsync_cmd,
+                    torrent_hash,
+                    total_size,
+                    log_transfer,
+                    _update_transfer_progress,
+                    heartbeat_callback=heartbeat_callback,
+                    timeout_seconds=adaptive_timeout
+                )
 
-            if success:
-                logging.info(f"Rsync upload from cache completed for '{file_name}'.")
-                log_transfer(torrent_hash, f"[green]Rsync upload complete: {file_name}[/green]")
-                return
-            else:
-                raise RemoteTransferError("Rsync upload execution failed.")
+                if success:
+                    logging.info(f"Rsync upload from cache completed for '{file_name}'.")
+                    log_transfer(torrent_hash, f"[green]Rsync upload complete: {file_name}[/green]")
+                    return
+                else:
+                    raise RemoteTransferError("Rsync upload execution failed.")
 
-        except (RemoteTransferError, subprocess.TimeoutExpired) as e:
-            logging.error(f"Rsync upload failed for '{file_name}': {e}")
-            if attempt < MAX_RETRY_ATTEMPTS:
-                sleep_time = [10, 30, 60][min(attempt - 1, 2)]
-                logging.warning(f"Rsync upload stalled. Retrying in {sleep_time} seconds with extended monitoring timeout...")
-                time.sleep(sleep_time)
-                adaptive_timeout += 60
-                continue
-            raise RemoteTransferError(f"Rsync upload for '{file_name}' failed after retries") from e
+            except (RemoteTransferError, subprocess.TimeoutExpired) as e:
+                logging.error(f"Rsync upload failed for '{file_name}': {e}")
+                if attempt < MAX_RETRY_ATTEMPTS:
+                    sleep_time = [10, 30, 60][min(attempt - 1, 2)]
+                    logging.warning(f"Rsync upload stalled. Retrying in {sleep_time} seconds with extended monitoring timeout...")
+                    time.sleep(sleep_time)
+                    adaptive_timeout += 60
+                    continue
+                raise RemoteTransferError(f"Rsync upload for '{file_name}' failed after retries") from e
 
-        except Exception as e:
-            logging.error(f"An exception occurred during rsync upload for '{file_name}': {e}", exc_info=True)
-            if attempt < MAX_RETRY_ATTEMPTS:
-                time.sleep(RETRY_DELAY_SECONDS)
-                continue
-            raise RemoteTransferError(f"Rsync upload for '{file_name}' failed") from e
+            except Exception as e:
+                logging.error(f"An exception occurred during rsync upload for '{file_name}': {e}", exc_info=True)
+                if attempt < MAX_RETRY_ATTEMPTS:
+                    time.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                raise RemoteTransferError(f"Rsync upload for '{file_name}' failed") from e
+    finally:
+        monitor.stop_monitoring()
+        fetcher.close()
 
 
 def transfer_content_rsync(
@@ -972,7 +1060,8 @@ def transfer_content_rsync(
     _update_transfer_progress: typing.Callable,
     dry_run: bool = False,
     heartbeat_callback: Optional[Callable[[], None]] = None,
-    rsync_timeout: int = 600
+    rsync_timeout: int = 600,
+    update_speed_callback: Optional[Callable[[List[float]], None]] = None
 ) -> None:
     """Transfers content from a remote server to a local path using rsync.
 
@@ -1013,132 +1102,157 @@ def transfer_content_rsync(
 
     remote_spec = f"{username}@{host}:{remote_path}"
 
+    # Setup SpeedMonitor
+    def monitor_callback(delta, current, speed):
+        progress = (current / total_size) if total_size > 0 else 0
+        _update_transfer_progress(torrent_hash, progress, current, total_size)
+        if update_speed_callback and monitor:
+            try:
+                update_speed_callback(monitor.get_status()['history'])
+            except Exception:
+                pass
+
+    def safe_getsize():
+        try:
+            if os.path.isdir(local_path):
+                return sum(f.stat().st_size for f in Path(local_path).rglob('*') if f.is_file())
+            return os.path.getsize(local_path)
+        except OSError:
+            return 0
+
+    monitor = SpeedMonitor(local_path, size_fetcher=safe_getsize, callback=monitor_callback)
+    if not dry_run:
+        monitor.start_monitoring()
+
     MAX_RETRY_ATTEMPTS = 3
     adaptive_timeout = rsync_timeout
 
-    for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
-        try:
-            # Atomic Fallback: Check for corruption or stalled partial file
-            is_corrupted = file_tracker.is_corrupted(torrent_hash, remote_path)
-            is_stalled = False
-            if os.path.exists(local_path) and attempt > 1:
-                try:
-                    if os.path.getsize(local_path) < 1024:
-                        is_stalled = True
-                except OSError:
-                    pass # File might have vanished
-
-            if is_corrupted or is_stalled:
-                reason = "marked corrupted" if is_corrupted else "stalled partial file"
-                logging.warning(f"Atomic Fallback: Removing {reason} before retry: {local_path}")
-                try:
-                    if os.path.isdir(local_path):
-                        shutil.rmtree(local_path)
-                    else:
-                        os.remove(local_path)
-                except OSError as e:
-                    logging.warning(f"Failed to remove corrupted/stalled file {local_path}: {e}")
-
-            rsync_command = [*rsync_command_base, remote_spec, local_parent_dir]
-
-            if dry_run:
-                logging.info(f"[DRY_RUN] Would execute: {' '.join(rsync_command)}")
-                if total_size > 0:
-                    _update_transfer_progress(torrent_hash, 1.0, total_size, total_size)
-                log_transfer(torrent_hash, f"[DRY RUN] Completed rsync transfer for {rsync_file_name}")
-                return
-
-            logging.info(f"Starting rsync transfer for '{rsync_file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
-            logging.debug(f"Executing rsync: {' '.join(_create_safe_command_for_logging(rsync_command))}")
-
-            # Call the isolated process runner
-            success = process_runner.execute_streaming_command(
-                rsync_command,
-                torrent_hash,
-                total_size,
-                log_transfer,
-                _update_transfer_progress,
-                heartbeat_callback=heartbeat_callback,
-                timeout_seconds=adaptive_timeout
-            )
-
-            if success:
-                # Verify the transfer
-                if os.path.exists(local_path):
-                    local_size = os.path.getsize(local_path) if os.path.isfile(local_path) else \
-                                 sum(f.stat().st_size for f in Path(local_path).rglob('*') if f.is_file())
-
+    try:
+        for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+            try:
+                # Atomic Fallback: Check for corruption or stalled partial file
+                is_corrupted = file_tracker.is_corrupted(torrent_hash, remote_path)
+                is_stalled = False
+                if os.path.exists(local_path) and attempt > 1:
                     try:
-                        from ssh_manager import SSHConnectionPool, batch_get_remote_sizes
-                        temp_pool = SSHConnectionPool(
-                            host=host, port=port, username=username,
-                            password=password, max_size=1
-                        )
-                        with temp_pool.get_connection() as (_, ssh):
-                            remote_sizes = batch_get_remote_sizes(ssh, [remote_path])
-                            remote_size = remote_sizes.get(remote_path, 0)
-                        temp_pool.close_all()
+                        if os.path.getsize(local_path) < 1024:
+                            is_stalled = True
+                    except OSError:
+                        pass # File might have vanished
 
-                        size_diff = abs(local_size - remote_size)
-                        size_diff_percent = (size_diff / remote_size * 100) if remote_size > 0 else 0
-
-                        logging.info(f"Transfer verification: Local={local_size}, Remote={remote_size}, Diff={size_diff} bytes ({size_diff_percent:.2f}%)")
-
-                        if size_diff_percent < 0.1:
-                            logging.info(f"Rsync transfer completed and verified for {rsync_file_name}")
-                            log_transfer(torrent_hash, f"Rsync transfer completed and verified for {rsync_file_name}")
-                            return
+                if is_corrupted or is_stalled:
+                    reason = "marked corrupted" if is_corrupted else "stalled partial file"
+                    logging.warning(f"Atomic Fallback: Removing {reason} before retry: {local_path}")
+                    try:
+                        if os.path.isdir(local_path):
+                            shutil.rmtree(local_path)
                         else:
-                            logging.warning(f"Size mismatch after rsync: {size_diff} bytes difference ({size_diff_percent:.2f}%)")
-                            if attempt < MAX_RETRY_ATTEMPTS:
-                                logging.info("Will retry with delta sync...")
-                                continue
+                            os.remove(local_path)
+                    except OSError as e:
+                        logging.warning(f"Failed to remove corrupted/stalled file {local_path}: {e}")
+
+                rsync_command = [*rsync_command_base, remote_spec, local_parent_dir]
+
+                if dry_run:
+                    logging.info(f"[DRY_RUN] Would execute: {' '.join(rsync_command)}")
+                    if total_size > 0:
+                        _update_transfer_progress(torrent_hash, 1.0, total_size, total_size)
+                    log_transfer(torrent_hash, f"[DRY RUN] Completed rsync transfer for {rsync_file_name}")
+                    return
+
+                logging.info(f"Starting rsync transfer for '{rsync_file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
+                logging.debug(f"Executing rsync: {' '.join(_create_safe_command_for_logging(rsync_command))}")
+
+                # Call the isolated process runner
+                success = process_runner.execute_streaming_command(
+                    rsync_command,
+                    torrent_hash,
+                    total_size,
+                    log_transfer,
+                    _update_transfer_progress,
+                    heartbeat_callback=heartbeat_callback,
+                    timeout_seconds=adaptive_timeout
+                )
+
+                if success:
+                    # Verify the transfer
+                    if os.path.exists(local_path):
+                        local_size = os.path.getsize(local_path) if os.path.isfile(local_path) else \
+                                     sum(f.stat().st_size for f in Path(local_path).rglob('*') if f.is_file())
+
+                        try:
+                            from ssh_manager import SSHConnectionPool, batch_get_remote_sizes
+                            temp_pool = SSHConnectionPool(
+                                host=host, port=port, username=username,
+                                password=password, max_size=1
+                            )
+                            with temp_pool.get_connection() as (_, ssh):
+                                remote_sizes = batch_get_remote_sizes(ssh, [remote_path])
+                                remote_size = remote_sizes.get(remote_path, 0)
+                            temp_pool.close_all()
+
+                            size_diff = abs(local_size - remote_size)
+                            size_diff_percent = (size_diff / remote_size * 100) if remote_size > 0 else 0
+
+                            logging.info(f"Transfer verification: Local={local_size}, Remote={remote_size}, Diff={size_diff} bytes ({size_diff_percent:.2f}%)")
+
+                            if size_diff_percent < 0.1:
+                                logging.info(f"Rsync transfer completed and verified for {rsync_file_name}")
+                                log_transfer(torrent_hash, f"Rsync transfer completed and verified for {rsync_file_name}")
+                                return
                             else:
-                                raise Exception(f"Size verification failed after {MAX_RETRY_ATTEMPTS} attempts")
+                                logging.warning(f"Size mismatch after rsync: {size_diff} bytes difference ({size_diff_percent:.2f}%)")
+                                if attempt < MAX_RETRY_ATTEMPTS:
+                                    logging.info("Will retry with delta sync...")
+                                    continue
+                                else:
+                                    raise Exception(f"Size verification failed after {MAX_RETRY_ATTEMPTS} attempts")
 
-                    except Exception as e:
-                        logging.warning(f"Could not verify remote size: {e}. Assuming transfer is OK based on rsync exit code.")
-                        # This was missing in the original, but we should log completion
-                        log_transfer(torrent_hash, f"Rsync transfer completed (verification failed) for {rsync_file_name}")
-                        return
+                        except Exception as e:
+                            logging.warning(f"Could not verify remote size: {e}. Assuming transfer is OK based on rsync exit code.")
+                            # This was missing in the original, but we should log completion
+                            log_transfer(torrent_hash, f"Rsync transfer completed (verification failed) for {rsync_file_name}")
+                            return
+                    else:
+                        raise FileNotFoundError(f"Local file not found after rsync: {local_path}")
+
+                # If success is False, the execute_streaming_command already raised an error
+                # But as a fallback, we'll raise one.
+                raise RemoteTransferError("Rsync execution failed.")
+
+            except (subprocess.TimeoutExpired, RemoteTransferError) as e:
+                logging.error(f"Rsync process failed for '{rsync_file_name}': {e}")
+                if attempt < MAX_RETRY_ATTEMPTS:
+                    sleep_time = [10, 30, 60][min(attempt - 1, 2)]
+                    logging.warning(f"Rsync stalled. Retrying in {sleep_time} seconds with extended monitoring timeout...")
+                    time.sleep(sleep_time)
+                    adaptive_timeout += 60
+                    continue
                 else:
-                    raise FileNotFoundError(f"Local file not found after rsync: {local_path}")
+                    file_tracker.record_corruption(torrent_hash, remote_path)
+                    raise RemoteTransferError(f"Rsync timed out after {MAX_RETRY_ATTEMPTS} attempts")
 
-            # If success is False, the execute_streaming_command already raised an error
-            # But as a fallback, we'll raise one.
-            raise RemoteTransferError("Rsync execution failed.")
-
-        except (subprocess.TimeoutExpired, RemoteTransferError) as e:
-            logging.error(f"Rsync process failed for '{rsync_file_name}': {e}")
-            if attempt < MAX_RETRY_ATTEMPTS:
-                sleep_time = [10, 30, 60][min(attempt - 1, 2)]
-                logging.warning(f"Rsync stalled. Retrying in {sleep_time} seconds with extended monitoring timeout...")
-                time.sleep(sleep_time)
-                adaptive_timeout += 60
-                continue
-            else:
+            except FileNotFoundError as e:
                 file_tracker.record_corruption(torrent_hash, remote_path)
-                raise RemoteTransferError(f"Rsync timed out after {MAX_RETRY_ATTEMPTS} attempts")
+                logging.error(f"Rsync transfer failed with FileNotFoundError: {e}", exc_info=True)
+                raise
 
-        except FileNotFoundError as e:
+            except Exception as e:
+                logging.error(f"An exception occurred during rsync for '{rsync_file_name}': {e}", exc_info=True)
+                if attempt < MAX_RETRY_ATTEMPTS:
+                    logging.warning("Retrying...")
+                    time.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                else:
+                    file_tracker.record_corruption(torrent_hash, remote_path)
+                    raise e
+
+        # If we get here, all retries failed
             file_tracker.record_corruption(torrent_hash, remote_path)
-            logging.error(f"Rsync transfer failed with FileNotFoundError: {e}", exc_info=True)
-            raise
-
-        except Exception as e:
-            logging.error(f"An exception occurred during rsync for '{rsync_file_name}': {e}", exc_info=True)
-            if attempt < MAX_RETRY_ATTEMPTS:
-                logging.warning("Retrying...")
-                time.sleep(RETRY_DELAY_SECONDS)
-                continue
-            else:
-                file_tracker.record_corruption(torrent_hash, remote_path)
-                raise e
-
-    # If we get here, all retries failed
-    file_tracker.record_corruption(torrent_hash, remote_path)
-    logging.error(f"Transfer failed for '{rsync_file_name}' after {MAX_RETRY_ATTEMPTS} retries.", exc_info=True)
-    raise RemoteTransferError(f"Rsync transfer failed for {rsync_file_name} after {MAX_RETRY_ATTEMPTS} attempts")
+            logging.error(f"Transfer failed for '{rsync_file_name}' after {MAX_RETRY_ATTEMPTS} retries.", exc_info=True)
+            raise RemoteTransferError(f"Rsync transfer failed for {rsync_file_name} after {MAX_RETRY_ATTEMPTS} attempts")
+    finally:
+        monitor.stop_monitoring()
 
 
 def transfer_content_rsync_upload(
@@ -1155,7 +1269,8 @@ def transfer_content_rsync_upload(
     dry_run: bool,
     is_folder: bool,
     heartbeat_callback: Optional[Callable[[], None]] = None,
-    rsync_timeout: int = 600
+    rsync_timeout: int = 600,
+    update_speed_callback: Optional[Callable[[List[float]], None]] = None
 ) -> bool:
     """
     Transfers content from a remote source to a remote destination
@@ -1243,7 +1358,8 @@ def transfer_content_rsync_upload(
             _update_transfer_progress=download_progress_wrapper,
             dry_run=dry_run,
             heartbeat_callback=heartbeat_callback,
-            rsync_timeout=rsync_timeout
+            rsync_timeout=rsync_timeout,
+            update_speed_callback=update_speed_callback
         )
         logging.info(f"Rsync-Upload: Download to cache complete for '{file_name}'.")
 
@@ -1261,7 +1377,8 @@ def transfer_content_rsync_upload(
             _update_transfer_progress=upload_progress_wrapper,
             dry_run=dry_run,
             heartbeat_callback=heartbeat_callback,
-            rsync_timeout=rsync_timeout
+            rsync_timeout=rsync_timeout,
+            update_speed_callback=update_speed_callback
         )
         logging.info(f"Rsync-Upload: Upload from cache complete for '{file_name}'.")
 

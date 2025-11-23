@@ -16,7 +16,8 @@ class SpeedMonitor(threading.Thread):
         self,
         file_path: str,
         size_fetcher: Optional[Callable[[], int]] = None,
-        interval: float = 1.0
+        interval: float = 1.0,
+        callback: Optional[Callable[[int, int, float], None]] = None
     ):
         """
         Initialize the SpeedMonitor.
@@ -26,6 +27,7 @@ class SpeedMonitor(threading.Thread):
             size_fetcher: A callable that returns the file size in bytes.
                           Defaults to os.path.getsize(file_path).
             interval: The polling interval in seconds.
+            callback: Optional function called on each update: callback(delta_bytes, current_size, speed)
         """
         super().__init__(name="SpeedMonitorThread")
         self.file_path = file_path
@@ -36,6 +38,7 @@ class SpeedMonitor(threading.Thread):
             self.size_fetcher = lambda: os.path.getsize(self.file_path)
 
         self.interval = interval
+        self.callback = callback
 
         # State
         self._history: Deque[float] = deque(maxlen=300)
@@ -112,6 +115,12 @@ class SpeedMonitor(threading.Thread):
                 with self._lock:
                     self._history.append(speed)
                     self._smooth_window.append(speed)
+
+                if self.callback:
+                    try:
+                        self.callback(delta_size, current_size, speed)
+                    except Exception as e:
+                        logger.error(f"Error in SpeedMonitor callback: {e}")
 
                 last_size = current_size
                 last_time = current_time
