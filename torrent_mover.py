@@ -36,9 +36,10 @@ from clients.factory import get_client
 from clients.base import TorrentClient
 from transfer_manager import (
     FileTransferTracker, TransferCheckpoint, transfer_content_rsync,
-    transfer_content_with_queue, transfer_content_sftp_upload, Timeouts,
+    transfer_content_with_queue, transfer_content_sftp_upload,
     transfer_content_rsync_upload, RemoteTransferError
 )
+from utils import Timeouts
 from system_manager import (
     LockFile, setup_logging, destination_health_check, change_ownership,
     test_path_permissions, cleanup_orphaned_cache,
