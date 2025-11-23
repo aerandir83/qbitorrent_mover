@@ -4,9 +4,10 @@ This log tracks architectural changes and refactors that significantly affect ho
 
 ## Unreleased
 
-**Summary:** Refactored rsync_upload mode to 'Relay Mode'. Added local_cache_path configuration, pre-flight storage capacity checks, and weighted progress bars (50% DL / 50% UL) for smoother UI feedback.
+**Summary:** Fixed Permission Denied loops by implementing Pre-Flight Unlock (`chmod 777`) and disabling rsync metadata preservation. Refactored rsync_upload mode to 'Relay Mode'. Added local_cache_path configuration, pre-flight storage capacity checks, and weighted progress bars (50% DL / 50% UL) for smoother UI feedback.
 
 **Impact on AI:**
+*   **Permission Fixes:** The system now enforces `chmod 777` on destination before transfer and strips metadata flags from rsync.
 *   **Rsync Relay Mode:** `rsync_upload` now strictly follows a Download -> Cache -> Upload workflow.
 *   **Storage Checks:** The system now enforces storage capacity checks before starting transfers. Ensure `local_cache_path` is configured for large transfers.
 *   **Progress Reporting:** Progress for `rsync_upload` is split: 0-50% for download, 50-100% for upload.

@@ -42,11 +42,12 @@ Refactoring MUST preserve this sequence.
 2.  **Filtering:** `TorrentMover` excludes torrents based on `transfer_checkpoint.json` (already moved) AND Tracker Rules (ignored domains).
 3.  **Categorization:** `TrackerManager` applies rules to assign a category (modifying the torrent metadata in memory).
 4.  **Strategy Selection:** `TransferStrategies` selects the mode (`sftp`, `rsync`, `sftp_upload`).
-5.  **Execution:** `TransferManager` executes the strategy.
+5.  **Pre-Flight Unlock:** Invoke `system_manager.force_remote_permissions` to ensure the destination path is writable.
+6.  **Execution:** `TransferManager` executes the strategy.
     * *Locking:* `SSHManager` acquires a slot from the pool.
     * *Transfer:* Bytes move.
-6.  **Verification:** `QbittorrentManager` triggers "Force Recheck" on destination.
-7.  **Finalization:**
+7.  **Verification:** `QbittorrentManager` triggers "Force Recheck" on destination.
+8.  **Finalization:**
     * Success: `TransferManager` (via `FileTransferTracker`) writes to `transfer_checkpoint.json`. Source torrent deleted (if config enabled).
     * Failure: `ResilientQueue` updates failure count (Circuit Breaker).
 

@@ -25,6 +25,12 @@ This guide helps diagnose and resolve common issues encountered during the opera
 *   **Solution:** Verify permissions using the `--test-permissions` flag. Ensure the user has the correct ownership and mode bits set on the target paths.
 *   **Related Code:** `torrent_mover.py` (Main entry point), `SystemManager` (`test_path_permissions` check).
 
+### 4. Rsync Permission Denied / 'nobody' ownership issues
+
+*   **Symptom:** Transfers fail with "Permission denied" errors or inability to write to the destination directory.
+*   **Explanation:** This occurs when the destination files are owned by `nobody` (common in Unraid/Docker) and the local user cannot overwrite them.
+*   **Solution:** The script now automatically performs a 'Pre-Flight Unlock' (chmod 777) via SSH before transfer. Ensure `DESTINATION_SERVER` is configured with a user that has `sudo` or ownership rights (or that the files are essentially public).
+
 ## Diagnostic Decision Trees
 
 ### Tree 1: 0% Progress Stalls
