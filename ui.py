@@ -169,6 +169,58 @@ class _SpeedColumn(ProgressColumn):
 
 # --- Custom Renderable Classes ---
 
+class TextSparkline:
+    """Renders a sparkline using block characters."""
+    def __init__(self, data: List[float], width: int = 50, min_val: float = None, max_val: float = None):
+        self.data = data
+        self.width = width
+        self.min_val = min_val
+        self.max_val = max_val
+        # Block characters from empty to full
+        self.BARS = " ▂▃▄▅▆▇█"
+
+    def __rich__(self) -> Text:
+        if not self.data:
+            return Text(" " * self.width)
+
+        data_to_plot = self.data
+        if len(self.data) > self.width:
+            chunk_size = len(self.data) / self.width
+            data_to_plot = []
+            for i in range(self.width):
+                start = int(i * chunk_size)
+                end = int((i + 1) * chunk_size)
+                if start == end:
+                    end += 1
+                chunk = self.data[start:end]
+                if chunk:
+                    data_to_plot.append(max(chunk))
+                else:
+                    data_to_plot.append(0)
+
+        min_v = min(data_to_plot) if self.min_val is None else self.min_val
+        max_v = max(data_to_plot) if self.max_val is None else self.max_val
+
+        if max_v == min_v:
+             if max_v == 0:
+                 return Text(" " * len(data_to_plot), style="green")
+             else:
+                 middle_char = self.BARS[len(self.BARS)//2]
+                 return Text(middle_char * len(data_to_plot), style="green")
+
+        result = ""
+        range_v = max_v - min_v
+
+        for val in data_to_plot:
+            if val < min_v: val = min_v
+            if val > max_v: val = max_v
+
+            normalized = (val - min_v) / range_v
+            index = int(normalized * (len(self.BARS) - 1))
+            result += self.BARS[index]
+
+        return Text(result, style="green")
+
 class _StatsPanel:
     """A renderable class for the Stats and Recent Completions panels."""
     def __init__(self, ui_manager: "UIManagerV2"):
@@ -205,6 +257,11 @@ class _StatsPanel:
 
             stats_table.add_row("⚡ Speed: ", f"[green]DL:{dl_str}[/] [yellow]UL:{ul_str}[/] MB/s")
             stats_table.add_row("📈 Avg/Peak: ", f"[dim]{avg_speed_hist / (1024**2):.1f}/{stats['peak_speed'] / (1024**2):.1f} MB/s[/]")
+
+            # Sparkline
+            history = self.ui_manager._speed_history_data
+            sparkline = TextSparkline(history, width=40)
+            stats_table.add_row("Activity:", sparkline)
 
             # Detailed counts
             stats_table.add_row("🔄 Active: ", f"[white]{stats['active_transfers']}[/]")
@@ -687,6 +744,7 @@ class UIManagerV2(BaseUIManager):
         }
         self._dl_speed_history = deque(maxlen=60)
         self._ul_speed_history = deque(maxlen=60)
+        self._speed_history_data: List[float] = []
 
 
         # Create layout with better proportions
@@ -950,6 +1008,10 @@ class UIManagerV2(BaseUIManager):
                     self._update_torrent_progress_table()
 
     # ===== Public API (keeping existing methods) =====
+
+    def update_speed_history(self, history: List[float]):
+        with self._lock:
+            self._speed_history_data = history
 
     def set_transfer_mode(self, mode: str):
         """Sets and displays the current transfer mode in the UI header."""
