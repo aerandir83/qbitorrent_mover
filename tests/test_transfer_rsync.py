@@ -115,6 +115,12 @@ def test_rsync_delta_transfer_logic(
     # Assert it includes the progress flag (for our process runner)
     assert "--info=progress2" in called_command
 
+    # Assert data-only flags (Directive: No Metadata)
+    assert "--no-times" in called_command
+    assert "--no-perms" in called_command
+    assert "--no-owner" in called_command
+    assert "--no-group" in called_command
+
     # Assert it includes the user's options
     assert "-avh" in called_command
     assert "--partial" in called_command
@@ -745,6 +751,12 @@ class TestRsyncUploadWorkflow:
         assert "rsync" in called_command
         assert "--info=progress2" in called_command
         assert "--custom-flag" in called_command # User option
+
+        # Assert data-only flags
+        assert "--no-times" in called_command
+        assert "--no-perms" in called_command
+        assert "--no-owner" in called_command
+        assert "--no-group" in called_command
 
         # Assert --timeout is NOT present
         assert "--timeout" not in " ".join(called_command)

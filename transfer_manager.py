@@ -897,10 +897,16 @@ def _transfer_content_rsync_upload_from_cache(
     remote_spec = f"{username}@{host}:{cleaned_remote_parent_dir}"
 
     ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
+    # Add data-only flags to prevent permission errors
+    rsync_flags = list(rsync_options)
+    for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group"]:
+        if flag not in rsync_flags:
+            rsync_flags.append(flag)
+
     rsync_cmd = [
         "stdbuf", "-o0", "sshpass", "-p", password,
         "rsync",
-        *rsync_options,
+        *rsync_flags,
         "--info=progress2",
         "-e", ssh_opts,
         local_path, # Source is local
@@ -999,6 +1005,11 @@ def transfer_content_rsync(
     if "--info=progress2" not in rsync_options_with_checksum:
         rsync_options_with_checksum.append("--info=progress2")
 
+    # Add data-only flags to prevent permission errors
+    for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group"]:
+        if flag not in rsync_options_with_checksum:
+            rsync_options_with_checksum.append(flag)
+
     ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
     rsync_command_base = [
         "stdbuf", "-o0", "sshpass", "-p", password,
@@ -1028,7 +1039,10 @@ def transfer_content_rsync(
                 reason = "marked corrupted" if is_corrupted else "stalled partial file"
                 logging.warning(f"Atomic Fallback: Removing {reason} before retry: {local_path}")
                 try:
-                    os.remove(local_path)
+                    if os.path.isdir(local_path):
+                        shutil.rmtree(local_path)
+                    else:
+                        os.remove(local_path)
                 except OSError as e:
                     logging.warning(f"Failed to remove corrupted/stalled file {local_path}: {e}")
 
