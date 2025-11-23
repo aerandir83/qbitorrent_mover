@@ -350,11 +350,13 @@ def _post_transfer_actions(
         logging.info(f"Waiting for destination re-check to complete for {torrent.name}...")
         recheck_stuck_timeout = config.getint('SETTINGS', 'recheck_stuck_timeout', fallback=60)
         recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=15)
+        recheck_grace_period = config.getint('SETTINGS', 'recheck_grace_period', fallback=60)
         recheck_status = destination_client.wait_for_recheck(
             torrent_hash=torrent.hash,
             ui_manager=ui,
             stuck_timeout=recheck_stuck_timeout,
             stopped_timeout=recheck_stopped_timeout,
+            grace_period=recheck_grace_period,
             dry_run=dry_run
         )
 
@@ -433,12 +435,14 @@ def _post_transfer_actions(
             # Read new config values for the *second* recheck
             recheck_stuck_timeout = config.getint('SETTINGS', 'recheck_stuck_timeout', fallback=60)
             recheck_stopped_timeout = config.getint('SETTINGS', 'recheck_stopped_timeout', fallback=15)
+            recheck_grace_period = config.getint('SETTINGS', 'recheck_grace_period', fallback=60)
 
             final_recheck_status = destination_client.wait_for_recheck(
                 torrent_hash=torrent.hash,
                 ui_manager=ui,
                 stuck_timeout=recheck_stuck_timeout,
                 stopped_timeout=recheck_stopped_timeout,
+                grace_period=recheck_grace_period,
                 dry_run=dry_run
             )
 
