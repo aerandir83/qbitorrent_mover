@@ -80,9 +80,14 @@ def execute_streaming_command(
         )
 
         # Set stdout to non-blocking
-        fd = process.stdout.fileno()
-        fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-        fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        fd_out = process.stdout.fileno()
+        fl_out = fcntl.fcntl(fd_out, fcntl.F_GETFL)
+        fcntl.fcntl(fd_out, fcntl.F_SETFL, fl_out | os.O_NONBLOCK)
+
+        # Set stderr to non-blocking
+        fd_err = process.stderr.fileno()
+        fl_err = fcntl.fcntl(fd_err, fcntl.F_GETFL)
+        fcntl.fcntl(fd_err, fcntl.F_SETFL, fl_err | os.O_NONBLOCK)
 
         # This regex is used to parse rsync's progress output
         # AI-CONTEXT: Rsync Progress Parsing
@@ -96,79 +101,114 @@ def execute_streaming_command(
         last_activity_time = time.time()
 
         read_buffer = bytearray()
+        stderr_buffer = bytearray()
+
+        stdout_open = True
+        stderr_open = True
 
         try:
-            while True:
+            while stdout_open or stderr_open:
                 # Check if process is still alive
                 return_code = process.poll()
 
+                check_list = []
+                if stdout_open:
+                    check_list.append(process.stdout)
+                if stderr_open:
+                    check_list.append(process.stderr)
+
+                if not check_list:
+                    break
+
                 # We use select to wait for data
                 # select timeout 1.0s to allow checking for process exit and timeouts regularly
-                rlist, _, _ = select.select([process.stdout], [], [], 1.0)
+                rlist, _, _ = select.select(check_list, [], [], 1.0)
 
                 if rlist:
-                    # Data is available
-                    try:
-                        chunk = os.read(fd, 4096)
-                    except BlockingIOError:
-                        chunk = b""
+                    # STDOUT Handling
+                    if process.stdout in rlist:
+                        try:
+                            chunk = os.read(fd_out, 4096)
+                        except BlockingIOError:
+                            chunk = b""
 
-                    if chunk:
-                        last_activity_time = time.time()
-                        if heartbeat_callback:
-                            heartbeat_callback()
-                        read_buffer.extend(chunk)
+                        if chunk:
+                            last_activity_time = time.time()
+                            if heartbeat_callback:
+                                heartbeat_callback()
 
-                        # Process buffer for lines
-                        while True:
-                            # Look for delimiters \n or \r
-                            idx_n = read_buffer.find(b'\n')
-                            idx_r = read_buffer.find(b'\r')
+                            # Log raw chunk
+                            logger.debug(f"({torrent_hash[:10]}) [RSYNC_RAW_STDOUT] {chunk!r}")
 
-                            split_idx = -1
-                            if idx_n != -1 and idx_r != -1:
-                                split_idx = min(idx_n, idx_r)
-                            elif idx_n != -1:
-                                split_idx = idx_n
-                            elif idx_r != -1:
-                                split_idx = idx_r
+                            read_buffer.extend(chunk)
 
-                            if split_idx != -1:
-                                line_bytes = read_buffer[:split_idx+1]
-                                del read_buffer[:split_idx+1]
-                            else:
-                                break
+                            # Process buffer for lines
+                            while True:
+                                # Look for delimiters \n or \r
+                                idx_n = read_buffer.find(b'\n')
+                                idx_r = read_buffer.find(b'\r')
 
-                            line = line_bytes.decode('utf-8', errors='replace').strip()
-                            if not line:
-                                continue
+                                split_idx = -1
+                                if idx_n != -1 and idx_r != -1:
+                                    split_idx = min(idx_n, idx_r)
+                                elif idx_n != -1:
+                                    split_idx = idx_n
+                                elif idx_r != -1:
+                                    split_idx = idx_r
 
-                            logger.debug(f"({torrent_hash[:10]}) [RSYNC_PROGRESS] {line}")
+                                if split_idx != -1:
+                                    line_bytes = read_buffer[:split_idx+1]
+                                    del read_buffer[:split_idx+1]
+                                else:
+                                    break
 
-                            match = progress_regex.match(line)
-                            if match:
-                                human_readable_bytes_str = match.group(1)
-                                current_transferred_bytes = _parse_human_readable_bytes(human_readable_bytes_str)
-                                log_transfer(torrent_hash, f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
+                                line = line_bytes.decode('utf-8', errors='replace').strip()
+                                if not line:
+                                    continue
 
-                                transferred_delta = current_transferred_bytes - last_transferred_bytes
-                                if transferred_delta > 0:
-                                    elapsed_time = time.time() - last_update_time
-                                    if elapsed_time > 0:
-                                        speed = transferred_delta / elapsed_time
-                                        last_update_time = time.time()
+                                logger.debug(f"({torrent_hash[:10]}) [RSYNC_PROGRESS] {line}")
 
-                                last_transferred_bytes = current_transferred_bytes
-                                progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
-                                _update_transfer_progress(
-                                    torrent_hash,
-                                    progress,
-                                    current_transferred_bytes,
-                                    total_size
-                                )
-                    else:
-                        # select says ready but read returns empty -> EOF
-                        break
+                                match = progress_regex.match(line)
+                                if match:
+                                    human_readable_bytes_str = match.group(1)
+                                    current_transferred_bytes = _parse_human_readable_bytes(human_readable_bytes_str)
+                                    log_transfer(torrent_hash, f"[DEBUG] Parsed bytes: {current_transferred_bytes}")
+
+                                    transferred_delta = current_transferred_bytes - last_transferred_bytes
+                                    if transferred_delta > 0:
+                                        elapsed_time = time.time() - last_update_time
+                                        if elapsed_time > 0:
+                                            speed = transferred_delta / elapsed_time
+                                            last_update_time = time.time()
+
+                                    last_transferred_bytes = current_transferred_bytes
+                                    progress = (current_transferred_bytes / total_size) if total_size > 0 else 0
+                                    _update_transfer_progress(
+                                        torrent_hash,
+                                        progress,
+                                        current_transferred_bytes,
+                                        total_size
+                                    )
+                        else:
+                            # EOF stdout
+                            stdout_open = False
+
+                    # STDERR Handling
+                    if process.stderr in rlist:
+                        try:
+                            chunk_err = os.read(fd_err, 4096)
+                        except BlockingIOError:
+                            chunk_err = b""
+
+                        if chunk_err:
+                            last_activity_time = time.time()
+                            decoded_err = chunk_err.decode('utf-8', errors='replace')
+                            logger.debug(f"({torrent_hash[:10]}) [RSYNC_ERR] {decoded_err}")
+                            stderr_buffer.extend(chunk_err)
+                        else:
+                            # EOF stderr
+                            stderr_open = False
+
                 else:
                     # No data (select timeout)
                     if return_code is not None:
@@ -192,8 +232,8 @@ def execute_streaming_command(
                     process.kill()
 
         process.wait()
-        stderr_output_bytes = process.stderr.read() if process.stderr else b""
-        stderr_output = stderr_output_bytes.decode('utf-8', errors='replace')
+        # Use accumulated stderr
+        stderr_output = stderr_buffer.decode('utf-8', errors='replace')
 
         if process.returncode == 0 or process.returncode == 24: # 0=success, 24=vanished files
             # Ensure UI completes to 100%
