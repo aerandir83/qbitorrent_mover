@@ -224,7 +224,7 @@ class QBittorrentClient(TorrentClient):
         # States considered "active checking"
         checking_states = ['checkingUP', 'checkingDL', 'queuedUP', 'queuedDL']
         # States considered "stopped/error"
-        stopped_states = ['error', 'missingFiles', 'stopped', 'pausedUP', 'pausedDL']
+        stopped_states = ['error', 'missingFiles', 'stopped', 'pausedUP', 'pausedDL', 'stoppedUP', 'stoppedDL']
 
         while True:
             # Ensure watchdog is pet
