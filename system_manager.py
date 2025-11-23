@@ -18,7 +18,7 @@ import ssh_manager
 import sys
 
 from ssh_manager import SSHConnectionPool
-from transfer_manager import Timeouts
+from utils import Timeouts
 from rich.logging import RichHandler
 from rich.console import Console
 from clients.base import TorrentClient
@@ -401,6 +401,46 @@ def change_ownership(path_to_change: str, user: str, group: str, remote_config: 
         except Exception as e:
             logging.error(f"An exception occurred during local chown: {e}", exc_info=True)
             return False
+
+def force_remote_permissions(path_to_change: str, ssh_pool: SSHConnectionPool) -> bool:
+    """
+    Forcibly sets permissions on a remote path to 777 to ensure transfer access.
+
+    Args:
+        path_to_change: The remote path to modify.
+        ssh_pool: The SSH connection pool to use.
+
+    Returns:
+        True if successful or if the path does not exist (first run), False on failure.
+    """
+    # Normalize path (replace backslashes, strip quotes)
+    path_to_change = path_to_change.replace('\\', '/').strip("'\"")
+
+    logging.info(f"Forcing remote permissions (chmod -R 777) on: {path_to_change}")
+
+    try:
+        with ssh_pool.get_connection() as (sftp, ssh):
+            # Using shlex.quote to prevent command injection
+            remote_command = f"chmod -R 777 {shlex.quote(path_to_change)}"
+
+            stdin, stdout, stderr = ssh.exec_command(remote_command, timeout=Timeouts.SSH_EXEC)
+            exit_status = stdout.channel.recv_exit_status()
+
+            if exit_status == 0:
+                logging.debug(f"Successfully set permissions on {path_to_change}")
+                return True
+            else:
+                stderr_output = stderr.read().decode('utf-8').strip()
+                # If "No such file" (first run), treat as success (return True)
+                if "no such file" in stderr_output.lower():
+                    logging.debug(f"Path {path_to_change} not found (likely first run), skipping chmod.")
+                    return True
+
+                logging.warning(f"Failed to force permissions on {path_to_change}. Exit code: {exit_status}, Stderr: {stderr_output}")
+                return False
+    except Exception as e:
+        logging.error(f"Exception during force_remote_permissions for {path_to_change}: {e}")
+        return False
 
 def setup_logging(script_dir: Path, dry_run: bool, test_run: bool, debug: bool) -> None:
     """Configures the root logger for file-based logging.

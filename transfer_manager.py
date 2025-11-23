@@ -51,7 +51,7 @@ from resilient_queue import ResilientTransferQueue
 from ssh_manager import SSHConnectionPool, sftp_mkdir_p, _get_ssh_command
 from transfer_strategies import TransferFile
 from ui import UIManagerV2 as UIManager
-from utils import RemoteTransferError, retry, _create_safe_command_for_logging
+from utils import RemoteTransferError, retry, _create_safe_command_for_logging, Timeouts
 
 
 if typing.TYPE_CHECKING:
@@ -413,13 +413,6 @@ class FileTransferTracker:
 MAX_RETRY_ATTEMPTS = 2
 RETRY_DELAY_SECONDS = 5
 GB_BYTES = 1024**3
-
-class Timeouts:
-    SSH_CONNECT = int(os.getenv('TM_SSH_CONNECT_TIMEOUT', '10'))
-    SSH_EXEC = int(os.getenv('TM_SSH_EXEC_TIMEOUT', '60'))
-    SFTP_TRANSFER = int(os.getenv('TM_SFTP_TIMEOUT', '300'))
-    RECHECK = int(os.getenv('TM_RECHECK_TIMEOUT', '900'))
-    POOL_WAIT = int(os.getenv('TM_POOL_WAIT_TIMEOUT', '120'))
 
 @retry(tries=MAX_RETRY_ATTEMPTS, delay=RETRY_DELAY_SECONDS)
 def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: str, local_cache_path: Path, torrent_hash: str, ui: UIManager, file_tracker: FileTransferTracker, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
