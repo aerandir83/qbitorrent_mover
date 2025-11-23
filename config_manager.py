@@ -117,11 +117,28 @@ class ConfigManager:
             sys.exit(1)
 
     def get_watchdog_timeout(self) -> int:
-        """Reads watchdog_timeout from the config, defaulting to 1500."""
+        """Reads watchdog_timeout from the config, defaulting to 300."""
+        default_timeout = 300
+        timeout = default_timeout
+
         try:
-            return self.config.getint('General', 'watchdog_timeout', fallback=1500)
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
-            return 1500
+            # Try parsing from SETTINGS as per instructions
+            if self.config.has_section('SETTINGS') and self.config.has_option('SETTINGS', 'watchdog_timeout'):
+                timeout = self.config.getint('SETTINGS', 'watchdog_timeout')
+            # Fallback to General (standard location)
+            elif self.config.has_section('General') and self.config.has_option('General', 'watchdog_timeout'):
+                timeout = self.config.getint('General', 'watchdog_timeout')
+            else:
+                logging.warning(f"Config: watchdog_timeout not found. Defaulting to {default_timeout} seconds.")
+                return default_timeout
+        except ValueError:
+            logging.warning(f"Config: Invalid watchdog_timeout value. Defaulting to {default_timeout} seconds.")
+            return default_timeout
+
+        if timeout > 3600:
+            logging.warning(f"Config: watchdog_timeout ({timeout}s) is very high (> 1 hour). Verify this is intended.")
+
+        return timeout
 
 class ConfigValidator:
     """Validates the structure and values of the configuration file.
