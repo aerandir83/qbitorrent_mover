@@ -161,9 +161,14 @@ def _pre_transfer_setup(
         logging.info(f"[DRY RUN] Would check for existing content at: {dest_content_path}")
     else:
         try:
-            if is_remote_dest:
-                # Remote check for 'sftp_upload'
-                dest_server_section = 'DESTINATION_SERVER' # Hardcode to the correct section name
+            # Check if we should use remote check:
+            # 1. Explicit remote transfer mode (sftp_upload, rsync_upload)
+            # 2. OR DESTINATION_SERVER section exists (implies we can check remotely even for rsync)
+            should_use_remote_check = is_remote_dest or config.has_section('DESTINATION_SERVER')
+
+            if should_use_remote_check:
+                # Remote check
+                dest_server_section = 'DESTINATION_SERVER'
                 dest_pool = ssh_connection_pools.get(dest_server_section)
                 if not dest_pool:
                     return "failed", f"SSH pool '{dest_server_section}' not found.", None, None, None
@@ -527,7 +532,8 @@ def _post_transfer_actions(
 
             # 4. Delete Source (AFTER everything else is confirmed)
             if not dry_run and not test_run:
-                if config.getboolean('SOURCE_CLIENT', 'delete_after_transfer', fallback=True):
+                source_section = config['SETTINGS'].get('source_client_section', 'SOURCE_CLIENT')
+                if config.getboolean(source_section, 'delete_after_transfer', fallback=True):
                     try:
                         logging.info(f"Deleting torrent and data from source: {torrent.name}")
                         source_client.delete_torrent(torrent_hash=torrent.hash, delete_files=True)
