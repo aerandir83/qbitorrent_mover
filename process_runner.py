@@ -45,6 +45,11 @@ def execute_streaming_command(
     That logic has been removed in favor of direct file size monitoring via SpeedMonitor.
     It now serves purely as a robust process runner that handles buffering and timeouts.
     """
+    # Regex to capture rsync progress:
+    # Captures: 1=Bytes, 2=Percentage, 3=Speed, 4=ETA
+    # Example:  41,943,040   3%   39.08MB/s    0:00:20
+    progress_pattern = re.compile(r'\s*([\d,]+)\s+(\d+)%\s+([0-9.]+[kMGTP]?B/s)\s+([0-9:]+)')
+
     process = None
     try:
         process = subprocess.Popen(
@@ -131,6 +136,22 @@ def execute_streaming_command(
                                 line = line_bytes.decode('utf-8', errors='replace').strip()
                                 if not line:
                                     continue
+
+                                # Parse progress
+                                match = progress_pattern.search(line)
+                                if match:
+                                    try:
+                                        current_bytes_str = match.group(1).replace(',', '')
+                                        current_bytes = int(current_bytes_str)
+                                        percentage_str = match.group(2)
+                                        percentage = int(percentage_str)
+
+                                        # Update progress (0.0 to 1.0)
+                                        progress_float = min(float(percentage) / 100.0, 1.0)
+
+                                        _update_transfer_progress(torrent_hash, progress_float, current_bytes, total_size)
+                                    except ValueError:
+                                        pass # Failed to parse numbers, ignore
 
                                 # Log trace at high verbosity
                                 # We still need to read stdout to prevent deadlock

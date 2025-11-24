@@ -986,8 +986,7 @@ def _transfer_content_rsync_upload_from_cache(
     # Monitor Setup
     fetcher = SFTPSizeFetcher(dest_config)
     def monitor_callback(delta, current, speed):
-        progress = (current / total_size) if total_size > 0 else 0
-        _update_transfer_progress(torrent_hash, progress, current, total_size)
+        # Progress is now handled by rsync output parsing in process_runner
         if monitor:
             status = monitor.get_status()
             history_data = status['history']
@@ -1119,8 +1118,7 @@ def transfer_content_rsync(
 
     # Setup SpeedMonitor
     def monitor_callback(delta, current, speed):
-        progress = (current / total_size) if total_size > 0 else 0
-        _update_transfer_progress(torrent_hash, progress, current, total_size)
+        # Progress is now handled by rsync output parsing in process_runner
         if monitor:
             status = monitor.get_status()
             history_data = status['history']
