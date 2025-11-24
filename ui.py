@@ -256,7 +256,8 @@ class _StatsPanel:
                 ul_str = "--"
 
             stats_table.add_row("⚡ Speed: ", f"[green]DL:{dl_str}[/] [yellow]UL:{ul_str}[/] MB/s")
-            stats_table.add_row("📈 Avg/Peak: ", f"[dim]{avg_speed_hist / (1024**2):.1f}/{stats['peak_speed'] / (1024**2):.1f} MB/s[/]")
+            stats_table.add_row("📉 Avg Speed: ", f"[dim]{avg_speed_hist / (1024**2):.1f} MB/s[/]")
+            stats_table.add_row("🏆 Peak Speed: ", f"[bold yellow]{stats['peak_speed'] / (1024**2):.1f} MB/s[/]")
 
             # Detailed counts
             stats_table.add_row("🔄 Active: ", f"[white]{stats['active_transfers']}[/]")
@@ -314,6 +315,7 @@ class _ActivityPanel:
             title="[bold cyan]Network Activity (5m)[/]",
             border_style="dim",
             style="none", # Transparent
+            height=10,
         )
 
 class _ActiveTorrentsPanel:
@@ -1002,7 +1004,7 @@ class UIManagerV2(BaseUIManager):
 
                 # FIX 5: Update peak speed only if we have current activity
                 current_total_speed = current_dl_speed + current_ul_speed
-                if current_total_speed > self._stats["peak_speed"]:
+                if current_total_speed > self._stats.get("peak_speed", 0.0):
                     self._stats["peak_speed"] = current_total_speed
 
                 # --- Update Averages ---
