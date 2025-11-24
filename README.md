@@ -10,11 +10,16 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.12.0**. To check your version, run: `python3 torrent_mover.py --version`.
+The current version is **2.13.1**. To check your version, run: `python3 torrent_mover.py --version`.
 
 ## Changelog
 
-### Version 2.12.0 (Latest)
+### Version 2.13.1 (Latest)
+* **fix(progress):** Refactored rsync progress parsing to directly handle `--info=progress2` output, resolving UI vs Log discrepancies.
+* **fix(ui):** Corrected "Peak Speed" calculation logic in the dashboard.
+* **style(ui):** Improved the layout of the Statistics panel and increased Network Graph visibility.
+
+### Version 2.12.0
 * **feat(startup):** Refactored startup sequence with explicit "Pre-flight Checks" for connectivity and disk space before UI launch.
 * **feat(filtering):** Implemented strict exclusion for torrents matching "Ignore" tracker rules.
 * **feat(resilience):** Added distinction for "Provisioning Errors" vs general transfer failures.

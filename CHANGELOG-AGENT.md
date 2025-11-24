@@ -2,6 +2,15 @@
 
 This log tracks architectural changes and refactors that significantly affect how an AI agent should understand and modify the codebase.
 
+## 2.13.1 - Progress Parsing and UI Fixes
+
+**Summary:** Refactored `process_runner.py` to directly parse `rsync --info=progress2` output for more accurate progress tracking. Corrected Peak Speed calculation logic in `UIManagerV2` and improved Statistics panel layout.
+
+**Impact on AI:**
+*   **Progress Parsing:** The system now handles `rsync` progress output more robustly, resolving discrepancies between the UI progress bar and the actual transfer status.
+*   **UI Logic:** Peak Speed calculation is now accurate.
+*   **Layout:** Statistics panel and Network Graph visibility have been improved.
+
 ## Unreleased
 
 **Summary:** Fixed Permission Denied loops by implementing Pre-Flight Unlock (`chmod 777`) and disabling rsync metadata preservation. Refactored rsync_upload mode to 'Relay Mode'. Added local_cache_path configuration, pre-flight storage capacity checks, and weighted progress bars (50% DL / 50% UL) for smoother UI feedback.
