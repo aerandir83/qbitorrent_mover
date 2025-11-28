@@ -73,7 +73,8 @@ class TestProcessRunnerSmart(unittest.TestCase):
         mock_select.side_effect = select_side_effect
 
         # Read sequence (bytes)
-        rsync_line = b"   10.5M  10%  2.1MB/s    0:00:40\n"
+        # Simulate real rsync output: 10,500,000 bytes, 10%, 2.1MB/s, 0:00:40
+        rsync_line = b"   10,500,000  10%  2.1MB/s    0:00:40\n"
         mock_read.return_value = rsync_line
         mock_fcntl.return_value = 0
 
@@ -90,8 +91,9 @@ class TestProcessRunnerSmart(unittest.TestCase):
         self.assertTrue(success)
         # Check heartbeat called
         self.assertTrue(self.heartbeat.called)
-        # Check parsing happened (Removed: We no longer parse stdout for progress)
-        # self.update_progress.assert_called()
+
+        # Check parsing happened
+        self.update_progress.assert_called()
         # Check process wasn't killed
         process.kill.assert_not_called()
         process.terminate.assert_not_called()
