@@ -234,6 +234,7 @@ class _StatsPanel:
             elapsed = time.time() - stats["start_time"]
 
             current_dl_speed = stats.get("current_dl_speed", 0.0)
+            smoothed_dl_speed = stats.get("smoothed_dl_speed", 0.0)
             current_ul_speed = stats.get("current_ul_speed", 0.0)
             avg_speed_hist = (sum(self.ui_manager._dl_speed_history) + sum(self.ui_manager._ul_speed_history)) / \
                             (len(self.ui_manager._dl_speed_history) + len(self.ui_manager._ul_speed_history)) if \
@@ -248,7 +249,7 @@ class _StatsPanel:
             remaining_gb = max(0, total_gb - transferred_gb)
 
             stats_table.add_row("📊 Progress: ", f"[white]{transferred_gb:.2f}/{total_gb:.2f} GB ({remaining_gb:.2f} GB rem.)[/]")
-            dl_str = f"{current_dl_speed / (1024**2):.1f}"
+            dl_str = f"{smoothed_dl_speed / (1024**2):.1f}"
             ul_str = f"{current_ul_speed / (1024**2):.1f}"
 
             # Conditionally show '--' for UL speed on non-uploading modes
@@ -303,10 +304,10 @@ class _ActivityPanel:
 
     def __rich_console__(self, console, options):
         with self.ui_manager._lock:
-            # Retrieve history from Task 2's implementation
-            history = getattr(self.ui_manager, "_speed_history_data", [])
+            # Retrieve history from internal speed history
+            history = list(self.ui_manager._dl_speed_history)
 
-            # Use the TextSparkline class from Task 2
+            # Use the TextSparkline class
             # options.max_width helps size it dynamically
             sparkline = TextSparkline(history, width=options.max_width - 4)
 
@@ -1008,16 +1009,21 @@ class UIManagerV2(BaseUIManager):
                     self._stats["peak_speed"] = current_total_speed
 
                 # --- Update Averages ---
-                if len(self._dl_speed_history) > 10:
-                    self._dl_speed_history.pop(0)
-                if len(self._ul_speed_history) > 10:
-                    self._ul_speed_history.pop(0)
+                # We do not pop manually here; deque(maxlen=60) handles it.
 
                 avg_dl_speed = sum(self._dl_speed_history) / len(self._dl_speed_history) if self._dl_speed_history else 0.0
                 avg_ul_speed = sum(self._ul_speed_history) / len(self._ul_speed_history) if self._ul_speed_history else 0.0
 
                 self._stats["avg_dl_speed"] = avg_dl_speed
                 self._stats["avg_ul_speed"] = avg_ul_speed
+
+                # --- Calculate Smoothed Speed (last 30) ---
+                recent_history = list(self._dl_speed_history)[-30:]
+                if recent_history:
+                    smoothed_dl_speed = sum(recent_history) / len(recent_history)
+                else:
+                    smoothed_dl_speed = 0.0
+                self._stats["smoothed_dl_speed"] = smoothed_dl_speed
 
                 # --- Update UI Elements ---
                 if self._stats_table:
