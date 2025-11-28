@@ -96,7 +96,8 @@ def test_rsync_delta_transfer_logic(
         total_size=total_size,
         log_transfer=mock_callbacks[0],
         _update_transfer_progress=mock_callbacks[1],
-        dry_run=False
+        dry_run=False,
+        force_integrity_check=True
     )
 
     # --- Assert ---
@@ -184,7 +185,8 @@ class TestRsyncCommandConstruction:
             total_size=total_size,
             log_transfer=mock_callbacks[0],
             _update_transfer_progress=mock_callbacks[1],
-            dry_run=False
+            dry_run=False,
+            force_integrity_check=True
         )
 
         # --- Assert ---
@@ -266,7 +268,7 @@ class TestRsyncCommandConstruction:
 
         # 2. Assert that our mocked ssh command is the value for -e
         e_index = called_command.index("-e")
-        assert called_command[e_index + 1] == "ssh -p 2222 -o CustomOption"
+        assert called_command[e_index + 1] == "ssh -p 2222 -o CustomOption -c aes128-gcm@openssh.com,aes128-ctr"
 
         # 3. Assert that _get_ssh_command was called with the correct port
         mock_get_ssh_cmd.assert_called_once_with(2222)

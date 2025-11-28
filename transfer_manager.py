@@ -935,7 +935,8 @@ def _transfer_content_rsync_upload_from_cache(
     heartbeat_callback: Optional[Callable[[], None]] = None,
     rsync_timeout: int = 600,
     update_speed_callback: Optional[Callable[[List[float]], None]] = None,
-    ui: Optional[UIManager] = None
+    ui: Optional[UIManager] = None,
+    force_integrity_check: bool = False
 ) -> None:
     """
     Transfers content from a local path to a remote server using rsync.
@@ -957,11 +958,17 @@ def _transfer_content_rsync_upload_from_cache(
     remote_spec = f"{username}@{host}:{cleaned_remote_parent_dir}"
 
     ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
+    ssh_opts += " -c aes128-gcm@openssh.com,aes128-ctr"
+
     # Add data-only flags to prevent permission errors
     rsync_flags = list(rsync_options)
     for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group"]:
         if flag not in rsync_flags:
             rsync_flags.append(flag)
+
+    if force_integrity_check:
+        if '--checksum' not in rsync_flags and '-c' not in rsync_flags:
+            rsync_flags.append('--checksum')
 
     rsync_cmd = [
         "stdbuf", "-o0", "sshpass", "-p", password,
@@ -998,13 +1005,7 @@ def _transfer_content_rsync_upload_from_cache(
                 except Exception:
                     pass
 
-            # 1. Update Sparkline History (Bridge established in Task 2)
-            if ui and hasattr(ui, 'update_speed_history'):
-                 ui.update_speed_history(history_data)
-
-            # 2. FORCE update the UI speed text (The Fix for 0.00)
-            if ui and isinstance(ui, UIManager): # Check type to be safe
-                ui.update_current_speed(download_speed=0.0, upload_speed=current_speed_val)
+            pass
 
     monitor = SpeedMonitor(
         remote_path,
@@ -1075,7 +1076,8 @@ def transfer_content_rsync(
     heartbeat_callback: Optional[Callable[[], None]] = None,
     rsync_timeout: int = 600,
     update_speed_callback: Optional[Callable[[List[float]], None]] = None,
-    ui: Optional[UIManager] = None
+    ui: Optional[UIManager] = None,
+    force_integrity_check: bool = False
 ) -> None:
     """Transfers content from a remote server to a local path using rsync.
 
@@ -1096,8 +1098,11 @@ def transfer_content_rsync(
     Path(local_parent_dir).mkdir(parents=True, exist_ok=True)
 
     rsync_options_with_checksum = list(rsync_options)
-    if '--checksum' not in rsync_options_with_checksum and '-c' not in rsync_options_with_checksum:
-        rsync_options_with_checksum.append('--checksum')
+
+    if force_integrity_check:
+        if '--checksum' not in rsync_options_with_checksum and '-c' not in rsync_options_with_checksum:
+            rsync_options_with_checksum.append('--checksum')
+
     if "--info=progress2" not in rsync_options_with_checksum:
         rsync_options_with_checksum.append("--info=progress2")
 
@@ -1107,6 +1112,7 @@ def transfer_content_rsync(
             rsync_options_with_checksum.append(flag)
 
     ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
+    ssh_opts += " -c aes128-gcm@openssh.com,aes128-ctr"
     rsync_command_base = [
         "stdbuf", "-o0", "sshpass", "-p", password,
         "rsync",
@@ -1130,13 +1136,7 @@ def transfer_content_rsync(
                 except Exception:
                     pass
 
-            # 1. Update Sparkline History (Bridge established in Task 2)
-            if ui and hasattr(ui, 'update_speed_history'):
-                 ui.update_speed_history(history_data)
-
-            # 2. FORCE update the UI speed text (The Fix for 0.00)
-            if ui and isinstance(ui, UIManager): # Check type to be safe
-                ui.update_current_speed(download_speed=current_speed_val)
+            pass
 
     def safe_getsize():
         try:
@@ -1228,6 +1228,17 @@ def transfer_content_rsync(
                                 return
                             else:
                                 logging.warning(f"Size mismatch after rsync: {size_diff} bytes difference ({size_diff_percent:.2f}%)")
+
+                                if not force_integrity_check:
+                                    logging.warning("Verification failed. triggering Smart Retry with integrity check...")
+                                    return transfer_content_rsync(
+                                        sftp_config, remote_path, local_path, torrent_hash,
+                                        rsync_options, file_tracker, total_size, log_transfer,
+                                        _update_transfer_progress, dry_run, heartbeat_callback,
+                                        rsync_timeout, update_speed_callback, ui,
+                                        force_integrity_check=True
+                                    )
+
                                 if attempt < MAX_RETRY_ATTEMPTS:
                                     logging.info("Will retry with delta sync...")
                                     continue
