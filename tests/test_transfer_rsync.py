@@ -96,7 +96,8 @@ def test_rsync_delta_transfer_logic(
         total_size=total_size,
         log_transfer=mock_callbacks[0],
         _update_transfer_progress=mock_callbacks[1],
-        dry_run=False
+        dry_run=False,
+        force_integrity_check=True
     )
 
     # --- Assert ---
@@ -184,7 +185,8 @@ class TestRsyncCommandConstruction:
             total_size=total_size,
             log_transfer=mock_callbacks[0],
             _update_transfer_progress=mock_callbacks[1],
-            dry_run=False
+            dry_run=False,
+            force_integrity_check=True
         )
 
         # --- Assert ---
