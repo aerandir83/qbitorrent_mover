@@ -935,7 +935,8 @@ def _transfer_content_rsync_upload_from_cache(
     heartbeat_callback: Optional[Callable[[], None]] = None,
     rsync_timeout: int = 600,
     update_speed_callback: Optional[Callable[[List[float]], None]] = None,
-    ui: Optional[UIManager] = None
+    ui: Optional[UIManager] = None,
+    force_integrity_check: bool = False
 ) -> None:
     """
     Transfers content from a local path to a remote server using rsync.
@@ -959,6 +960,11 @@ def _transfer_content_rsync_upload_from_cache(
     ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
     # Add data-only flags to prevent permission errors
     rsync_flags = list(rsync_options)
+
+    if force_integrity_check:
+        if '--checksum' not in rsync_flags and '-c' not in rsync_flags:
+            rsync_flags.append('--checksum')
+
     for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group"]:
         if flag not in rsync_flags:
             rsync_flags.append(flag)
@@ -1075,7 +1081,8 @@ def transfer_content_rsync(
     heartbeat_callback: Optional[Callable[[], None]] = None,
     rsync_timeout: int = 600,
     update_speed_callback: Optional[Callable[[List[float]], None]] = None,
-    ui: Optional[UIManager] = None
+    ui: Optional[UIManager] = None,
+    force_integrity_check: bool = False
 ) -> None:
     """Transfers content from a remote server to a local path using rsync.
 
@@ -1096,8 +1103,10 @@ def transfer_content_rsync(
     Path(local_parent_dir).mkdir(parents=True, exist_ok=True)
 
     rsync_options_with_checksum = list(rsync_options)
-    if '--checksum' not in rsync_options_with_checksum and '-c' not in rsync_options_with_checksum:
-        rsync_options_with_checksum.append('--checksum')
+    if force_integrity_check:
+        if '--checksum' not in rsync_options_with_checksum and '-c' not in rsync_options_with_checksum:
+            rsync_options_with_checksum.append('--checksum')
+
     if "--info=progress2" not in rsync_options_with_checksum:
         rsync_options_with_checksum.append("--info=progress2")
 
@@ -1297,7 +1306,8 @@ def transfer_content_rsync_upload(
     heartbeat_callback: Optional[Callable[[], None]] = None,
     rsync_timeout: int = 600,
     update_speed_callback: Optional[Callable[[List[float]], None]] = None,
-    ui: Optional[UIManager] = None
+    ui: Optional[UIManager] = None,
+    force_integrity_check: bool = False
 ) -> bool:
     """
     Transfers content from a remote source to a remote destination
@@ -1387,7 +1397,8 @@ def transfer_content_rsync_upload(
             heartbeat_callback=heartbeat_callback,
             rsync_timeout=rsync_timeout,
             update_speed_callback=update_speed_callback,
-            ui=ui
+            ui=ui,
+            force_integrity_check=force_integrity_check
         )
         logging.info(f"Rsync-Upload: Download to cache complete for '{file_name}'.")
 
@@ -1407,7 +1418,8 @@ def transfer_content_rsync_upload(
             heartbeat_callback=heartbeat_callback,
             rsync_timeout=rsync_timeout,
             update_speed_callback=update_speed_callback,
-            ui=ui
+            ui=ui,
+            force_integrity_check=force_integrity_check
         )
         logging.info(f"Rsync-Upload: Upload from cache complete for '{file_name}'.")
 

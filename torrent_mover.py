@@ -418,7 +418,8 @@ def _post_transfer_actions(
             repair_success = _execute_transfer(
                 transfer_mode, all_files, torrent, sum(f.size for f in all_files), config,
                 ui, file_tracker, ssh_connection_pools, dry_run,
-                log_transfer, _update_transfer_progress
+                log_transfer, _update_transfer_progress,
+                force_integrity_check=True
             )
 
             if not repair_success:
@@ -568,7 +569,8 @@ def _execute_transfer(
     dry_run: bool,
     # --- New Callbacks ---
     log_transfer: Callable,
-    _update_transfer_progress: Callable
+    _update_transfer_progress: Callable,
+    force_integrity_check: bool = False
 ) -> bool:
     """
     Executes the file transfer for a given list of files using the specified strategy.
@@ -588,12 +590,17 @@ def _execute_transfer(
         dry_run: If True, simulate transfer without moving data.
         log_transfer: Callback for logging transfer events.
         _update_transfer_progress: Callback for updating UI progress.
+        force_integrity_check: If True, force checksum/integrity verification.
 
     Returns:
         bool: True if the transfer was successful, False otherwise.
     """
     hash_ = torrent.hash
     sftp_chunk_size = config['SETTINGS'].getint('sftp_chunk_size_kb', 64) * 1024
+
+    # Warn if integrity check is requested for SFTP modes
+    if force_integrity_check and transfer_mode.startswith('sftp'):
+        logging.warning("Integrity check forced but SFTP mode does not support delta-checksums. Ignoring.")
 
     # --- PRE-FLIGHT PERMISSION UNLOCK ---
     # Attempt to fix permissions on the parent folder before starting.
@@ -673,7 +680,8 @@ def _execute_transfer(
                 heartbeat_callback=heartbeat_callback,
                 rsync_timeout=rsync_timeout,
                 update_speed_callback=ui.update_speed_history if isinstance(ui, UIManagerV2) else None,
-                ui=ui if isinstance(ui, UIManagerV2) else None
+                ui=ui if isinstance(ui, UIManagerV2) else None,
+                force_integrity_check=force_integrity_check
             )
         elif transfer_mode == 'rsync_upload':
             heartbeat_callback = ui.pet_watchdog
@@ -708,7 +716,8 @@ def _execute_transfer(
                 heartbeat_callback=heartbeat_callback,
                 rsync_timeout=rsync_timeout,
                 update_speed_callback=ui.update_speed_history if isinstance(ui, UIManagerV2) else None,
-                ui=ui if isinstance(ui, UIManagerV2) else None
+                ui=ui if isinstance(ui, UIManagerV2) else None,
+                force_integrity_check=force_integrity_check
             )
 
         return True # Transfer success
@@ -728,7 +737,8 @@ def _execute_transfer_placeholder(
     dry_run: bool,
     # --- Callbacks ---
     log_transfer: Callable,
-    _update_transfer_progress: Callable
+    _update_transfer_progress: Callable,
+    force_integrity_check: bool = False
 ) -> bool:
     """
     This is a temporary placeholder for the recheck logic until the main
@@ -737,7 +747,8 @@ def _execute_transfer_placeholder(
     return _execute_transfer(
         transfer_mode, files, torrent, total_size_calc, config, ui,
         file_tracker, ssh_connection_pools, dry_run,
-        log_transfer, _update_transfer_progress
+        log_transfer, _update_transfer_progress,
+        force_integrity_check
     )
 
 
@@ -854,7 +865,8 @@ def transfer_torrent(
             transfer_success = _execute_transfer(
                 transfer_mode, files, torrent, total_size_calc, config,
                 ui, file_tracker, ssh_connection_pools, dry_run,
-                log_transfer, _update_transfer_progress
+                log_transfer, _update_transfer_progress,
+                force_integrity_check=False
             )
 
             if not transfer_success:

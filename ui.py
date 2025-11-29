@@ -367,6 +367,8 @@ class _ActiveTorrentsPanel:
                     progress = min(progress, 100.0) # AI-INVARIANT
                     # --- END ADDITION ---
 
+                    is_repair = torrent.get("is_repair", False)
+
                     # Build file list
                     file_renderables: List[Text] = [] # Changed from file_lines
                     files = self.ui_manager._file_status.get(hash_, {})
@@ -403,6 +405,10 @@ class _ActiveTorrentsPanel:
                             "completed": f" [dim]✓ {file_name}[/dim]",
                             "queued": f" [dim]· {file_name}[/dim]"
                         }
+
+                        if is_repair and status == "downloading":
+                             style_map["downloading"] = f" [bold magenta]🔍 {file_name}[/bold magenta]"
+
                         file_text = Text.from_markup(style_map.get(status, f" [dim]· {file_name}[/dim]"))
                         file_text.append(progress_display)
                         file_renderables.append(file_text)
@@ -429,11 +435,15 @@ class _ActiveTorrentsPanel:
 
                     # Main torrent entry with adaptive progress display
                     progress_display = self._render_progress_bar(progress) if config["show_progress_bars"] else f"{progress:>3.0f}%"
+
+                    name_style = "bold magenta" if is_repair else "bold cyan"
+                    repair_label = " (🔍 Repairing...)" if is_repair else ""
+
                     table.add_row(
                         progress_display,
                         Group(
                             # --- UPDATE THIS LINE ---
-                            Text.from_markup(f"[bold cyan]{display_name}[/bold cyan] [dim]{files_display_str}[/dim]"),
+                            Text.from_markup(f"[{name_style}]{display_name}[/{name_style}]{repair_label} [dim]{files_display_str}[/dim]"),
                             # --- END UPDATE ---
                             files_panel_content
                         )
@@ -543,7 +553,7 @@ class BaseUIManager(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1):
+    def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1, is_repair: bool = False):
         pass
 
     @abc.abstractmethod
@@ -641,9 +651,12 @@ class SimpleUIManager(BaseUIManager):
         self._stats["total_bytes"] = total_bytes
         logging.info(f"Transfer: Total size: {total_bytes / (1024**3):.2f} GB")
 
-    def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1):
+    def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1, is_repair: bool = False):
         """Logs the start of a new torrent transfer."""
-        logging.info(f"Starting Transfer: {torrent_name}")
+        if is_repair:
+            logging.info(f"Starting REPAIR transfer: {torrent_name}")
+        else:
+            logging.info(f"Starting Transfer: {torrent_name}")
 
     def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str):
         """A no-op to avoid overly verbose logging."""
@@ -1074,7 +1087,7 @@ class UIManagerV2(BaseUIManager):
             self._stats["total_bytes"] = total_bytes
             self.main_progress.update(self.overall_task, total=total_bytes, visible=True)
 
-    def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1):
+    def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1, is_repair: bool = False):
         """Adds a new torrent to the UI, making it visible in the 'Active Torrents' panel."""
         with self._lock:
             total_files = len(all_files)
@@ -1087,6 +1100,7 @@ class UIManagerV2(BaseUIManager):
                 "status": "transferring",
                 "start_time": time.time(),
                 "bytes_for_delta_calc": 0, # <-- ADD THIS LINE
+                "is_repair": is_repair,
             }
             self._file_lists[torrent_hash] = all_files
             self._file_status[torrent_hash] = {file_name: "queued" for file_name in all_files}
