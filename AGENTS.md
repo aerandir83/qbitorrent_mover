@@ -80,3 +80,17 @@ Persistent state is tracked across dedicated files:
 
 * **Placement:** Ensure any new logic is placed in the **appropriate Manager**.  
 * **Avoid Bloat:** Do not bloat **TorrentMover** with low-level execution details.
+
+## Syntactic Paradigms & AI Instructions
+
+**Scope Disclaimer:** These rules apply specifically to **new modules and helper functions**, and should not force a refactor of the existing OOP TorrentMover core defined in `ARCHITECTURE.md`.
+
+### Paradigm Preference
+*   **Plain Objects:** IF generating new code/modules, prioritize "Plain Objects" (Data classes/Dicts) over complex Classes.
+*   **Functional Operators:** Prioritize "Functional Operators" (e.g., `.map`, `.filter`, list comprehensions) over imperative loops.
+
+### Immutability
+*   State updates should follow one-way data flow patterns where possible.
+
+### Type Safety
+*   Prohibit the usage of generic `any` types. Require `unknown` or strict typing.
