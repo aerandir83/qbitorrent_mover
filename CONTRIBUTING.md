@@ -73,14 +73,32 @@ If you have an idea for a new feature or an improvement to an existing one, plea
 5.  **Update the documentation** if you've added or changed any features.
 6.  **Submit your pull request** with a clear description of the changes you've made.
 
-## Development Guidelines
+## Coding Style & Formatting
 
-### Coding Style
+### Flag Naming
+*   CLI flags must use hyphens (e.g., `--dry-run`) instead of underscores (e.g., `--dry_run`).
 
+### Comment Policy
+*   **High Value Only:** Comments should explain *why* the code is doing something, not *what* it is doing.
+*   Avoid conversational or redundant comments. The code should be self-documenting where possible.
+
+### Style Guide
+*   We adhere to the [Google Developer Documentation Style](https://developers.google.com/style) for all documentation and comments.
 *   This project follows the **PEP 8** style guide for Python code.
 *   Use type hints for function signatures.
-*   Write clear and concise comments where necessary to explain complex logic.
 *   Keep functions small and focused on a single task.
+
+## Automation & Bot Interaction
+
+### Automated Triage
+*   The project uses automated tooling to help manage issues and pull requests.
+*   The intent is to ensure timely responses and proper categorization, even if some steps are currently manual.
+
+### Automatic Labeling
+*   Issues and pull requests may be automatically labeled based on their content (e.g., keywords in the title or body).
+*   Please ensure your descriptions are clear to facilitate accurate labeling.
+
+## Development Guidelines
 
 ### Project Structure
 
