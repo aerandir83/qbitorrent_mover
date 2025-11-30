@@ -95,6 +95,12 @@ It's highly recommended to run this script in a Python virtual environment.
 
 ## Contributing
 
+### Governance & Policies
+
+*   [Security Policy](SECURITY.md)
+*   [Release Confidence & QA](RELEASE_CONFIDENCE.md)
+*   **[AI Agents & Contributors](AGENTS.md)**: Essential guidance for AI agents and human contributors.
+
 Please read [ARCHITECTURE.md](ARCHITECTURE.md) for an overview of the system architecture and guidelines for making changes.
 
 ### 1. Get the Code and Prepare the Environment
