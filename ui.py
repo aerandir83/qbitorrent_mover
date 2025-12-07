@@ -352,9 +352,19 @@ class _ActivityPanel:
                      ul_hist = [0.0] * (max_len - len(ul_hist)) + ul_hist
                      history = [d + u for d, u in zip(dl_hist, ul_hist)]
 
+            # Stabilize Y-axis: Use session peak (min 1 MB/s) as max_val
+            peak = self.ui_manager._stats.get("peak_speed", 0.0)
+            graph_max = max(peak, 1024 * 1024) # Minimum 1 MB/s scale
+
             # Use the TextSparkline class from Task 2
             # options.max_width helps size it dynamically
-            sparkline = TextSparkline(history, width=options.max_width - 4, height=8)
+            sparkline = TextSparkline(
+                history,
+                width=options.max_width - 4,
+                height=8,
+                min_val=0,
+                max_val=graph_max
+            )
 
         yield Panel(
             sparkline,
