@@ -1144,8 +1144,9 @@ def transfer_content_rsync(
                  ui.update_speed_history(history_data)
 
             # 2. FORCE update the UI speed text (The Fix for 0.00)
-            if ui and isinstance(ui, UIManager): # Check type to be safe
-                ui.update_current_speed(download_speed=current_speed_val)
+            if ui and hasattr(ui, 'update_current_speed'):
+                 # Ensure we pass named arguments as expected by UIManagerV2
+                 ui.update_current_speed(download_speed=current_speed_val)
 
     def safe_getsize():
         try:

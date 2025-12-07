@@ -1072,6 +1072,11 @@ class UIManagerV2(BaseUIManager):
             self._dl_speed_history.append(download_speed)
             if upload_speed > 0:
                 self._ul_speed_history.append(upload_speed)
+            
+            # Ensure peak speed is updated when using external monitors
+            total_speed = download_speed + upload_speed
+            if total_speed > self._stats.get("peak_speed", 0.0):
+                self._stats["peak_speed"] = total_speed
 
     def update_speed_history(self, history: List[float]):
         with self._lock:
