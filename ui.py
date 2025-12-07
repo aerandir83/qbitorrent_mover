@@ -171,88 +171,110 @@ class _SpeedColumn(ProgressColumn):
 
 class TextSparkline:
     """Renders a sparkline using block characters."""
-    def __init__(self, data: List[float], width: int = 50, height: int = 1, min_val: float = None, max_val: float = None):
+    def __init__(self, data: List[float], width: int = 50, height: int = 1, min_val: float = None, max_val: float = None, show_labels: bool = False):
         self.data = data
         self.width = width
         self.height = height
         self.min_val = min_val
         self.max_val = max_val
+        self.show_labels = show_labels
         # Block characters from empty to full
         self.BARS = "\u2581▂▃▄▅▆▇█"
 
+    def _fmt(self, val: float) -> str:
+        if val >= 1024 * 1024 * 1024:
+             return f"{val/(1024**3):.1f} GB/s"
+        elif val >= 1024 * 1024:
+             return f"{val/(1024**2):.1f} MB/s"
+        elif val >= 1024:
+             return f"{val/1024:.0f} KB/s"
+        else:
+             return f"{val:.0f} B/s"
+
     def __rich__(self) -> Text:
+        label_width = 0
+        if self.show_labels:
+            label_width = 12 # width for " 123.4 MB/s"
+
+        plot_width = max(1, self.width - label_width)
+        
+        # --- Prepare Data ---
         if not self.data:
-            return Text("\n".join([" " * self.width] * self.height))
-
-        data_to_plot = self.data
-        if len(self.data) > self.width:
-            chunk_size = len(self.data) / self.width
-            data_to_plot = []
-            for i in range(self.width):
-                start = int(i * chunk_size)
-                end = int((i + 1) * chunk_size)
-                if start == end:
-                    end += 1
-                chunk = self.data[start:end]
-                # Use max for peaks, could use avg for smoother
-                if chunk:
-                    data_to_plot.append(max(chunk))
-                else:
-                    data_to_plot.append(0)
-
+            data_to_plot = [0.0] * plot_width
+        else:
+            data_to_plot = self.data
+            if len(self.data) > plot_width:
+                chunk_size = len(self.data) / plot_width
+                data_to_plot = []
+                for i in range(plot_width):
+                    start = int(i * chunk_size)
+                    end = int((i + 1) * chunk_size)
+                    if start == end: end += 1
+                    chunk = self.data[start:end]
+                    data_to_plot.append(max(chunk) if chunk else 0)
+        
+        # --- Determine Range ---
         min_v = min(data_to_plot) if self.min_val is None else self.min_val
         max_v = max(data_to_plot) if self.max_val is None else self.max_val
 
-        # Fix flat line cases
-        if max_v == min_v:
-             # If zero, show baseline at bottom
-             if max_v == 0:
-                 rows = [" " * len(data_to_plot)] * (self.height - 1)
-                 rows.append(self.BARS[0] * len(data_to_plot)) # Bottom row baseline
-                 return Text("\n".join(rows), style="green")
-             else:
-                 # Middle line? For simplicity, treat as full.
-                 pass
+        if max_v < min_v: max_v = min_v # Safety
 
         result_rows = [""] * self.height
         range_v = max_v - min_v
         if range_v <= 0: range_v = 1.0
 
-        for val in data_to_plot:
-            val = max(min_v, min(val, max_v))
-            normalized = (val - min_v) / range_v
-            
-            # Map normalized (0.0-1.0) to total available eighth-blocks
-            # Total steps = height * 8.
-            # We want strict scaling.
-            # Example: height=2. steps=16. 
-            # 1.0 -> 16 (full). 0.0 -> 0 (empty).
-            
-            total_levels = int(normalized * (self.height * 8 - 1))
-            
-            for r in range(self.height):
-                # r=0 is TOP row, r=height-1 is BOTTOM row (common expectation in list building? No, let's be explicit)
-                # Let's index 0 as BOTTOM row for calculation, then reverse for display.
+        # --- Plotting ---
+        # Special case: all zeros or flat at min
+        if max_v == min_v and max_v == 0:
+             # Just draw baseline
+             baseline = self.BARS[0] * len(data_to_plot)
+             empty = " " * len(data_to_plot)
+             for r in range(self.height):
+                 if r == 0: result_rows[r] = baseline
+                 else: result_rows[r] = empty
+        else:
+            for val in data_to_plot:
+                val = max(min_v, min(val, max_v))
+                normalized = (val - min_v) / range_v
                 
-                # This row represents levels from (r * 8) to ((r + 1) * 8)
-                row_floor = r * 8
-                row_ceil = (r + 1) * 8
+                total_levels = int(normalized * (self.height * 8 - 1))
                 
-                level_in_row = total_levels - row_floor
+                for r in range(self.height):
+                    # r=0 is BOTTOM, r=height-1 is TOP
+                    row_floor = r * 8
+                    level_in_row = total_levels - row_floor
+                    
+                    char = " "
+                    if level_in_row <= 0:
+                        char = " "
+                        if r == 0 and total_levels == 0: char = self.BARS[0]
+                    elif level_in_row >= 8:
+                        char = "█"
+                    else:
+                        char = self.BARS[level_in_row]
+                    
+                    result_rows[r] += char
+
+        # --- Add Labels ---
+        final_lines = []
+        reversed_rows = list(reversed(result_rows)) # Index 0 is now TOP row
+
+        if self.show_labels:
+            top_lbl = self._fmt(max_v).rjust(label_width-1) + " "
+            mid_lbl = self._fmt((max_v + min_v) / 2).rjust(label_width-1) + " "
+            bot_lbl = self._fmt(min_v).rjust(label_width-1) + " "
+
+            for i, row in enumerate(reversed_rows):
+                lbl = " " * label_width
+                if i == 0: lbl = top_lbl
+                elif i == self.height - 1: lbl = bot_lbl
+                elif i == self.height // 2: lbl = mid_lbl
                 
-                char = " "
-                if level_in_row <= 0:
-                    char = " " # Empty (or baseline logic if needed, but handled by 0 check usually)
-                    if r == 0 and total_levels == 0: char = self.BARS[0] # Ensure explicitly 0 values have baseline
-                elif level_in_row >= 8:
-                    char = "█"
-                else:
-                    char = self.BARS[level_in_row]
-                
-                result_rows[r] += char
-        
-        # Reverse rows so index 0 (bottom) is last in the list
-        return Text("\n".join(reversed(result_rows)), style="green")
+                final_lines.append(lbl + row)
+        else:
+            final_lines = reversed_rows
+
+        return Text("\n".join(final_lines), style="green")
 
 class _StatsPanel:
     """A renderable class for the Stats and Recent Completions panels."""
@@ -363,7 +385,8 @@ class _ActivityPanel:
                 width=options.max_width - 4,
                 height=8,
                 min_val=0,
-                max_val=graph_max
+                max_val=graph_max,
+                show_labels=True
             )
 
         yield Panel(
