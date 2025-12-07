@@ -171,17 +171,18 @@ class _SpeedColumn(ProgressColumn):
 
 class TextSparkline:
     """Renders a sparkline using block characters."""
-    def __init__(self, data: List[float], width: int = 50, min_val: float = None, max_val: float = None):
+    def __init__(self, data: List[float], width: int = 50, height: int = 1, min_val: float = None, max_val: float = None):
         self.data = data
         self.width = width
+        self.height = height
         self.min_val = min_val
         self.max_val = max_val
         # Block characters from empty to full
-        self.BARS = " ▂▃▄▅▆▇█"
+        self.BARS = "\u2581▂▃▄▅▆▇█"
 
     def __rich__(self) -> Text:
         if not self.data:
-            return Text(" " * self.width)
+            return Text("\n".join([" " * self.width] * self.height))
 
         data_to_plot = self.data
         if len(self.data) > self.width:
@@ -193,6 +194,7 @@ class TextSparkline:
                 if start == end:
                     end += 1
                 chunk = self.data[start:end]
+                # Use max for peaks, could use avg for smoother
                 if chunk:
                     data_to_plot.append(max(chunk))
                 else:
@@ -201,25 +203,56 @@ class TextSparkline:
         min_v = min(data_to_plot) if self.min_val is None else self.min_val
         max_v = max(data_to_plot) if self.max_val is None else self.max_val
 
+        # Fix flat line cases
         if max_v == min_v:
+             # If zero, show baseline at bottom
              if max_v == 0:
-                 return Text(" " * len(data_to_plot), style="green")
+                 rows = [" " * len(data_to_plot)] * (self.height - 1)
+                 rows.append(self.BARS[0] * len(data_to_plot)) # Bottom row baseline
+                 return Text("\n".join(rows), style="green")
              else:
-                 middle_char = self.BARS[len(self.BARS)//2]
-                 return Text(middle_char * len(data_to_plot), style="green")
+                 # Middle line? For simplicity, treat as full.
+                 pass
 
-        result = ""
+        result_rows = [""] * self.height
         range_v = max_v - min_v
+        if range_v <= 0: range_v = 1.0
 
         for val in data_to_plot:
-            if val < min_v: val = min_v
-            if val > max_v: val = max_v
-
+            val = max(min_v, min(val, max_v))
             normalized = (val - min_v) / range_v
-            index = int(normalized * (len(self.BARS) - 1))
-            result += self.BARS[index]
-
-        return Text(result, style="green")
+            
+            # Map normalized (0.0-1.0) to total available eighth-blocks
+            # Total steps = height * 8.
+            # We want strict scaling.
+            # Example: height=2. steps=16. 
+            # 1.0 -> 16 (full). 0.0 -> 0 (empty).
+            
+            total_levels = int(normalized * (self.height * 8 - 1))
+            
+            for r in range(self.height):
+                # r=0 is TOP row, r=height-1 is BOTTOM row (common expectation in list building? No, let's be explicit)
+                # Let's index 0 as BOTTOM row for calculation, then reverse for display.
+                
+                # This row represents levels from (r * 8) to ((r + 1) * 8)
+                row_floor = r * 8
+                row_ceil = (r + 1) * 8
+                
+                level_in_row = total_levels - row_floor
+                
+                char = " "
+                if level_in_row <= 0:
+                    char = " " # Empty (or baseline logic if needed, but handled by 0 check usually)
+                    if r == 0 and total_levels == 0: char = self.BARS[0] # Ensure explicitly 0 values have baseline
+                elif level_in_row >= 8:
+                    char = "█"
+                else:
+                    char = self.BARS[level_in_row]
+                
+                result_rows[r] += char
+        
+        # Reverse rows so index 0 (bottom) is last in the list
+        return Text("\n".join(reversed(result_rows)), style="green")
 
 class _StatsPanel:
     """A renderable class for the Stats and Recent Completions panels."""
@@ -321,7 +354,7 @@ class _ActivityPanel:
 
             # Use the TextSparkline class from Task 2
             # options.max_width helps size it dynamically
-            sparkline = TextSparkline(history, width=options.max_width - 4)
+            sparkline = TextSparkline(history, width=options.max_width - 4, height=8)
 
         yield Panel(
             sparkline,
