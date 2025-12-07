@@ -504,7 +504,7 @@ class TestRsyncUploadWorkflow:
         dest_path = "/remote/dest/my_file"
 
         # Determine expected cache path from mock_configs
-        expected_cache_root = source_config.parser['SETTINGS']['local_cache_path']
+        expected_cache_root = str(Path(source_config.parser['SETTINGS']['local_cache_path']))
 
         # --- Execute ---
         transfer_content_rsync_upload(

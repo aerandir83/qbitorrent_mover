@@ -4,7 +4,10 @@ import re
 import time
 import select
 import os
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 from typing import List, Callable, Any, Optional, Generator, IO
 from utils import RemoteTransferError, _create_safe_command_for_logging
 
