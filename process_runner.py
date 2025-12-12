@@ -141,7 +141,7 @@ def execute_streaming_command(
                                     continue
                                 
                                 # DEBUG: Log the line we are trying to parse
-                                # logging.info(f"DEBUG_PARSE: '{line}'")
+                                logging.info(f"DEBUG_PARSE: '{line}'")
 
                                 # Parse progress
                                 match = progress_pattern.search(line)
