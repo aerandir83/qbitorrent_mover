@@ -1093,7 +1093,6 @@ class UIManagerV2(BaseUIManager):
             self._stats["total_bytes"] = total_bytes
             self.main_progress.update(self.overall_task, total=total_bytes, visible=True)
 
-    # --- Speed Calculation Logic ---
     def _stats_updater(self):
         """Background thread to update stats and speed."""
         logging.info("--- STARTING STATS UPDATE THREAD ---")
@@ -1102,39 +1101,39 @@ class UIManagerV2(BaseUIManager):
         # Sliding windows: Deque of (timestamp, total_bytes)
         window_duration = 3.0
         
+        # Ensure dict exists
+        if not hasattr(self, '_external_speed_sources'):
+            self._external_speed_sources = {}
+
         while not self._stats_thread_stop.wait(0.5):
-            if time.time() - last_layout_check > 5.0:
+            try:
+                # logging.info("Stats thread heartbeat") # Removed debug log
+                if time.time() - last_layout_check > 5.0:
+                    with self._lock: # Acquire lock for layout check as well
+                        self._check_and_update_layout()
+                    last_layout_check = time.time()
+
                 with self._lock:
-                    self._check_and_update_layout()
-                last_layout_check = time.time()
+                    now = time.time()
 
-            with self._lock:
-                now = time.time()
-
-                # --- 1. External Speed Aggregation (Priority) ---
-                external_dl_speed = 0.0
-                has_external_data = False
-                
-                logging.info("Stats thread heartbeat")
-
-                if hasattr(self, '_external_speed_sources'):
+                    # --- 1. External Speed Aggregation (Priority) ---
+                    external_dl_speed = 0.0
+                    has_external_data = False
+                    
                     active_sources = {}
                     for sid, (spd, ts) in self._external_speed_sources.items():
-                        logging.info(f"Checking source {sid}: age={now-ts}")
+                        # logging.info(f"Checking source {sid}: age={now-ts}") # Removed debug log
                         if now - ts < 5.0: # Keep source alive for 5s
                              external_dl_speed += spd
                              active_sources[sid] = (spd, ts)
                              has_external_data = True
-                    
-                    if has_external_data:
-                        # pass
-                        logging.info(f"UI Aggregated Speed: {external_dl_speed} from {len(active_sources)} sources")
-                    
+                        
                     self._external_speed_sources = active_sources
-
                 # --- 2. Internal Bye-Delta Calculation (Fallback) ---
-                current_dl = self._stats.get("transferred_dl_bytes", 0)
-                current_ul = self._stats.get("transferred_ul_bytes", 0)
+                # We need to grab these values while locked or just accept slight race
+                with self._lock:
+                     current_dl = self._stats.get("transferred_dl_bytes", 0)
+                     current_ul = self._stats.get("transferred_ul_bytes", 0)
                 
                 self._dl_samples.append((now, current_dl))
                 self._ul_samples.append((now, current_ul))
@@ -1180,10 +1179,11 @@ class UIManagerV2(BaseUIManager):
                     self._stats["peak_speed"] = total_speed
                     
                 # 8. Update UI Components
-                if self._stats_table:
-                    self._update_stats_table()
                 if self._torrent_progress_table:
                     self._update_torrent_progress_table()
+            
+            except Exception:
+                pass # Suppress ephemeral errors in thread loops
 
     def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1, is_repair: bool = False):
         """Adds a new torrent to the UI, making it visible in the 'Active Torrents' panel."""
