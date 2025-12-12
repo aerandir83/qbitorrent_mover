@@ -38,19 +38,15 @@ def execute_streaming_command(
     log_transfer: Callable[..., Any],
     _update_transfer_progress: Callable[..., Any],
     heartbeat_callback: Optional[Callable[[], None]] = None,
-    timeout_seconds: int = 60
+    timeout_seconds: int = 60,
+    speed_callback: Optional[Callable[[float], None]] = None
 ) -> bool:
-    logging.info(f"DEBUG: execute_streaming_command called. Heartbeat Callback is: {'PRESENT' if heartbeat_callback else 'MISSING'}")
+    logging.info(f"DEBUG: execute_streaming_command called. Heartbeat: {'YES' if heartbeat_callback else 'NO'}, SpeedCB: {'YES' if speed_callback else 'NO'}")
     """
     Executes a command (like rsync) and keeps it alive.
-
-    Legacy Note: This function used to parse rsync output for progress updates.
-    That logic has been removed in favor of direct file size monitoring via SpeedMonitor.
-    It now serves purely as a robust process runner that handles buffering and timeouts.
     """
     # Regex to capture rsync progress:
     # Captures: 1=Bytes, 2=Percentage, 3=Speed, 4=ETA
-    # Example:  41,943,040   3%   39.08MB/s    0:00:20
     progress_pattern = re.compile(r'\s*([\d,]+)\s+(\d+)%\s+([0-9.]+[kMGTP]?B/s)\s+([0-9:]+)')
 
     process = None
@@ -151,13 +147,31 @@ def execute_streaming_command(
 
                                         # Update progress (0.0 to 1.0)
                                         progress_float = min(float(percentage) / 100.0, 1.0)
-
                                         _update_transfer_progress(torrent_hash, progress_float, current_bytes, total_size)
+
+                                        # AI-FIX: Parse Speed directly from Rsync
+                                        if speed_callback:
+                                            speed_str = match.group(3) # e.g. "39.08MB/s"
+                                            speed_val = 0.0
+                                            unit_multipliers = {
+                                                'kB/s': 1024, 'MB/s': 1024**2, 'GB/s': 1024**3, 'TB/s': 1024**4, 'B/s': 1
+                                            }
+                                            # Simple parsing
+                                            for unit, mult in unit_multipliers.items():
+                                                if unit in speed_str:
+                                                    try:
+                                                        val_part = speed_str.replace(unit, '')
+                                                        speed_val = float(val_part) * mult
+                                                        break
+                                                    except ValueError:
+                                                        pass
+                                            if speed_val > 0:
+                                                speed_callback(speed_val)
+
                                     except ValueError:
                                         pass # Failed to parse numbers, ignore
 
                                 # Log trace at high verbosity
-                                # We still need to read stdout to prevent deadlock
                                 logger.log(logging.NOTSET, f"({torrent_hash[:10]}) [RSYNC_STDOUT] {line}")
 
                         else:
@@ -189,7 +203,6 @@ def execute_streaming_command(
                     # Check timeout
                     if time.time() - last_activity_time > timeout_seconds:
                         logger.error(f"Process timed out after {timeout_seconds}s of silence.")
-                        # Sanitize command before raising exception to hide passwords in traceback
                         safe_cmd = _create_safe_command_for_logging(command)
                         raise subprocess.TimeoutExpired(safe_cmd, timeout_seconds)
 
