@@ -139,6 +139,9 @@ def execute_streaming_command(
                                 line = line_bytes.decode('utf-8', errors='replace').strip()
                                 if not line:
                                     continue
+                                
+                                # DEBUG: Log the line we are trying to parse
+                                # logging.info(f"DEBUG_PARSE: '{line}'")
 
                                 # Parse progress
                                 match = progress_pattern.search(line)
