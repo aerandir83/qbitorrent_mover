@@ -1051,115 +1051,7 @@ class UIManagerV2(BaseUIManager):
             # Update log buffer size, preserving recent logs
             self._log_buffer = deque(list(self._log_buffer), maxlen=new_config["log_lines"])
 
-    def _stats_updater(self):
-        """Background thread to update stats and progress bars."""
-        last_layout_check = time.time()
-
-        while not self._stats_thread_stop.wait(0.5): # Increase frequency to 0.5s
-            if time.time() - last_layout_check > 5.0:
-                with self._lock:
-                    self._check_and_update_layout()
-                last_layout_check = time.time()
-
-            with self._lock:
-                now = time.time()
-                
-                # --- Sliding Window Speed Calculation ---
-                def calculate_smooth_speed(samples: Deque[Tuple[float, float]], current_total_bytes: float) -> float:
-                    # Add current sample
-                    samples.append((now, current_total_bytes))
-                    
-                    # 1. Prune samples older than window size (e.g., 5 seconds)
-                    window_size = 3.0
-                    while samples and (now - samples[0][0] > window_size):
-                        samples.popleft()
-                        
-                    if len(samples) < 2:
-                        return 0.0
-                        
-                    # 2. Calculate speed over the actual window we have
-                    oldest_time, oldest_bytes = samples[0]
-                    # Use the latest stats (which might be slightly newer than sample[0] if we just popped)
-                    # But samples[-1] is effectively (now, current_total_bytes)
-                    
-                    time_delta = now - oldest_time
-                    bytes_delta = current_total_bytes - oldest_bytes
-                    
-                    if time_delta <= 0:
-                        return 0.0
-                        
-                    return bytes_delta / time_delta
-
-                current_dl_speed = calculate_smooth_speed(self._dl_samples, self._stats.get("transferred_dl_bytes", 0))
-                current_ul_speed = calculate_smooth_speed(self._ul_samples, self._stats.get("transferred_ul_bytes", 0))
-
-                self._stats["current_dl_speed"] = current_dl_speed
-                self._stats["current_ul_speed"] = current_ul_speed
-                
-                self._dl_speed_history.append(current_dl_speed)
-                self._ul_speed_history.append(current_ul_speed)
-
-                # FIX 5: Update peak speed only if we have current activity
-                current_total_speed = current_dl_speed + current_ul_speed
-                if current_total_speed > self._stats.get("peak_speed", 0.0):
-                    self._stats["peak_speed"] = current_total_speed
-
-                # --- Update Averages ---
-                # --- Update Averages ---
-                # REMOVED: Manual popping to allow history to grow to maxlen=300 for the graph.
-
-                avg_dl_speed = sum(self._dl_speed_history) / len(self._dl_speed_history) if self._dl_speed_history else 0.0
-                avg_ul_speed = sum(self._ul_speed_history) / len(self._ul_speed_history) if self._ul_speed_history else 0.0
-
-                self._stats["avg_dl_speed"] = avg_dl_speed
-                self._stats["avg_ul_speed"] = avg_ul_speed
-
-                # --- Update UI Elements ---
-                if self._stats_table:
-                    self._update_stats_table()
-
-                if self._torrent_progress_table:
-                    self._update_torrent_progress_table()
-
-    # ===== Public API (keeping existing methods) =====
-
-    def update_external_speed(self, source_id: str, speed: float):
-        """Registers a speed reading from an external source (e.g. an rsync thread)."""
-        with self._lock:
-            # Store speed with timestamp for stale pruning
-            if not hasattr(self, '_external_speed_sources'):
-                self._external_speed_sources = {}
-            self._external_speed_sources[source_id] = (speed, time.time())
-            
-            # Immediately update current speed by summing all active sources
-            # Prune stale sources > 3 seconds old
-            now = time.time()
-            total_dl = 0.0
-            active_sources = {}
-            
-            for sid, (spd, ts) in self._external_speed_sources.items():
-                if now - ts < 3.0:
-                    total_dl += spd
-                    active_sources[sid] = (spd, ts)
-            
-            self._external_speed_sources = active_sources
-            
-            # Override internal calculation
-            self._stats["current_dl_speed"] = total_dl
-            self._dl_speed_history.append(total_dl)
-            
-            # Update peak
-            if total_dl > self._stats.get("peak_speed", 0.0):
-                self._stats["peak_speed"] = total_dl
-
-    def update_current_speed(self, download_speed: float, upload_speed: float = 0.0):
-        """Legacy method: Overrides internal speed calculation with external monitor data."""
-        # Map to single source for backward compatibility
-        self.update_external_speed("legacy_single_source", download_speed)
-
-    def update_speed_history(self, history: List[float]):
-        with self._lock:
-            self._speed_history_data = history
+    # ===== Public API =====
 
     def set_transfer_mode(self, mode: str):
         """Sets and displays the current transfer mode in the UI header."""
@@ -1191,6 +1083,74 @@ class UIManagerV2(BaseUIManager):
         with self._lock:
             self._stats["total_bytes"] = total_bytes
             self.main_progress.update(self.overall_task, total=total_bytes, visible=True)
+
+    # --- Speed Calculation Logic ---
+    def _stats_updater(self):
+        """Background thread to update stats and speed based on byte deltas."""
+        last_layout_check = time.time()
+        
+        # Sliding windows: Deque of (timestamp, total_bytes)
+        # Window size: 3 seconds for smoothing
+        window_duration = 3.0
+        
+        while not self._stats_thread_stop.wait(0.5): # Poll every 0.5s
+            if time.time() - last_layout_check > 5.0:
+                with self._lock:
+                    self._check_and_update_layout()
+                last_layout_check = time.time()
+
+            with self._lock:
+                now = time.time()
+
+                # 1. Capture current state
+                current_dl = self._stats.get("transferred_dl_bytes", 0)
+                current_ul = self._stats.get("transferred_ul_bytes", 0)
+                
+                # 2. Update Samples
+                self._dl_samples.append((now, current_dl))
+                self._ul_samples.append((now, current_ul))
+                
+                # 3. Prune old samples
+                while self._dl_samples and (now - self._dl_samples[0][0] > window_duration):
+                    self._dl_samples.popleft()
+                while self._ul_samples and (now - self._ul_samples[0][0] > window_duration):
+                    self._ul_samples.popleft()
+
+                # 4. Calculate Speed (Delta / Time)
+                def calc_speed(samples):
+                    if len(samples) < 2: return 0.0
+                    
+                    # Use oldest sample in window vs current
+                    t_start, b_start = samples[0]
+                    t_end, b_end = samples[-1]
+                    
+                    bg_delta = b_end - b_start
+                    time_delta = t_end - t_start
+                    
+                    if time_delta <= 0.001: return 0.0
+                    return bg_delta / time_delta
+
+                new_dl_speed = calc_speed(self._dl_samples)
+                new_ul_speed = calc_speed(self._ul_samples)
+                
+                # 5. Update Stats
+                self._stats["current_dl_speed"] = new_dl_speed
+                self._stats["current_ul_speed"] = new_ul_speed
+                
+                # 6. Update History (Sparklines)
+                self._dl_speed_history.append(new_dl_speed)
+                self._ul_speed_history.append(new_ul_speed)
+                
+                # 7. Update Peak
+                total_speed = new_dl_speed + new_ul_speed
+                if total_speed > self._stats.get("peak_speed", 0.0):
+                    self._stats["peak_speed"] = total_speed
+                    
+                # 8. Update UI Components
+                if self._stats_table:
+                    self._update_stats_table()
+                if self._torrent_progress_table:
+                    self._update_torrent_progress_table()
 
     def start_torrent_transfer(self, torrent_hash: str, torrent_name: str, total_size: float, all_files: List[str], transfer_multiplier: int = 1, is_repair: bool = False):
         """Adds a new torrent to the UI, making it visible in the 'Active Torrents' panel."""
