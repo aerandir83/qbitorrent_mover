@@ -1096,6 +1096,7 @@ class UIManagerV2(BaseUIManager):
     # --- Speed Calculation Logic ---
     def _stats_updater(self):
         """Background thread to update stats and speed."""
+        logging.info("--- STARTING STATS UPDATE THREAD ---")
         last_layout_check = time.time()
         
         # Sliding windows: Deque of (timestamp, total_bytes)
