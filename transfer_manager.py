@@ -1127,9 +1127,14 @@ def transfer_content_rsync(
 
     # Setup SpeedMonitor
     def monitor_callback(delta, current, speed):
-        # AI-FIX: Reverted "fluctuation state" behavior but added AGGREGATION.
-        # SpeedMonitor reports speed to UI, which now sums it up across threads.
-        
+        # AI-FIX: Use SpeedMonitor (Local File Size) for Progress accuracy.
+        if _update_transfer_progress and total_size > 0:
+             progress = min(float(current) / float(total_size), 1.0)
+             try:
+                 _update_transfer_progress(torrent_hash, progress, current, total_size)
+             except Exception:
+                 pass
+
         if monitor:
              status = monitor.get_status()
              history_data = status['history']
@@ -1141,26 +1146,21 @@ def transfer_content_rsync(
                  except Exception:
                      pass
             
-             if ui and hasattr(ui, 'update_external_speed'):
-                 # Use remote_path as a unique Source ID for this thread
-                 ui.update_external_speed(remote_path, current_speed_val)
-
-        # We also attempt to drive the central progress updater if needed, 
-        # but process_runner is doing that too. Double updates are idempotent-ish 
-        # (calculated by delta) but cleaner to let process_runner handle it if it works.
-        # We'll leave this commented out unless process_runner fails again.
-
-        # if _update_transfer_progress and total_size > 0:
-        #    progress = min(float(current) / float(total_size), 1.0)
-        #    try:
-        #        _update_transfer_progress(torrent_hash, progress, current, total_size)
-        #    except Exception:
-        #        pass
+             # AI-NOTE: We rely on rsync output for speed (via process_runner), 
+             # so we DO NOT update ui speed here anymore.
+             # if ui and hasattr(ui, 'update_external_speed'):
+             #    ui.update_external_speed(remote_path, current_speed_val)
 
     def safe_getsize():
         try:
             if os.path.isdir(local_path):
                 return sum(f.stat().st_size for f in Path(local_path).rglob('*') if f.is_file())
+            # For partial downloads, rsync uses a temp file .file.X or just the file itself.
+            # We track the target path.
+            if not os.path.exists(local_path):
+                 # Try finding hidden temp files if main file doesn't exist? 
+                 # Rsync usually creates the file.
+                 return 0
             return os.path.getsize(local_path)
         except OSError:
             return 0
@@ -1208,8 +1208,8 @@ def transfer_content_rsync(
                 logging.info(f"Starting rsync transfer for '{rsync_file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
                 logging.debug(f"Executing rsync: {' '.join(_create_safe_command_for_logging(rsync_command))}")
 
-                # AI-FIX: Use Rsync's reported speed for the UI graph.
-                # This is more accurate than local file monitoring, especially with temp files/caching.
+                # AI-FIX: Use Rsync's reported speed for the UI graph, but disable its progress updates
+                # (preventing conflict with SpeedMonitor).
                 def rsync_speed_cb(speed_val: float):
                     if ui and hasattr(ui, 'update_external_speed'):
                         ui.update_external_speed(remote_path, speed_val)
@@ -1220,10 +1220,10 @@ def transfer_content_rsync(
                     torrent_hash,
                     total_size,
                     log_transfer,
-                    _update_transfer_progress,
+                    lambda *args: None, # <--- DISABLE process_runner progress (SpeedMonitor handles it)
                     heartbeat_callback=heartbeat_callback,
                     timeout_seconds=adaptive_timeout,
-                    speed_callback=rsync_speed_cb # <--- Wired up
+                    speed_callback=rsync_speed_cb
                 )
 
                 if success:
