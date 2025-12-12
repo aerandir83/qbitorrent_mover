@@ -1055,6 +1055,7 @@ class UIManagerV2(BaseUIManager):
 
     def update_external_speed(self, source_id: str, speed: float):
         """Registers a speed reading from an external source (e.g. an rsync thread)."""
+        logging.info(f"UI received speed for {source_id}: {speed}")
         with self._lock:
             # Lazy init
             if not hasattr(self, '_external_speed_sources'):
@@ -1120,6 +1121,7 @@ class UIManagerV2(BaseUIManager):
                             external_dl_speed += spd
                             active_sources[sid] = (spd, ts)
                             has_external_data = True
+                    logging.info(f"UI Aggregated Speed: {external_dl_speed} from {len(active_sources)} sources")
                     self._external_speed_sources = active_sources
 
                 # --- 2. Internal Bye-Delta Calculation (Fallback) ---
