@@ -1123,21 +1123,39 @@ class UIManagerV2(BaseUIManager):
 
     # ===== Public API (keeping existing methods) =====
 
-    def update_current_speed(self, download_speed: float, upload_speed: float = 0.0):
-        """Overrides internal speed calculation with external monitor data."""
+    def update_external_speed(self, source_id: str, speed: float):
+        """Registers a speed reading from an external source (e.g. an rsync thread)."""
         with self._lock:
-            self._stats["current_dl_speed"] = download_speed
-            self._stats["current_ul_speed"] = upload_speed
-            # Important: Update the history queues used by the internal logic
-            # so Avg/Peak stats remain consistent if they use these queues.
-            self._dl_speed_history.append(download_speed)
-            if upload_speed > 0:
-                self._ul_speed_history.append(upload_speed)
+            # Store speed with timestamp for stale pruning
+            if not hasattr(self, '_external_speed_sources'):
+                self._external_speed_sources = {}
+            self._external_speed_sources[source_id] = (speed, time.time())
             
-            # Ensure peak speed is updated when using external monitors
-            total_speed = download_speed + upload_speed
-            if total_speed > self._stats.get("peak_speed", 0.0):
-                self._stats["peak_speed"] = total_speed
+            # Immediately update current speed by summing all active sources
+            # Prune stale sources > 3 seconds old
+            now = time.time()
+            total_dl = 0.0
+            active_sources = {}
+            
+            for sid, (spd, ts) in self._external_speed_sources.items():
+                if now - ts < 3.0:
+                    total_dl += spd
+                    active_sources[sid] = (spd, ts)
+            
+            self._external_speed_sources = active_sources
+            
+            # Override internal calculation
+            self._stats["current_dl_speed"] = total_dl
+            self._dl_speed_history.append(total_dl)
+            
+            # Update peak
+            if total_dl > self._stats.get("peak_speed", 0.0):
+                self._stats["peak_speed"] = total_dl
+
+    def update_current_speed(self, download_speed: float, upload_speed: float = 0.0):
+        """Legacy method: Overrides internal speed calculation with external monitor data."""
+        # Map to single source for backward compatibility
+        self.update_external_speed("legacy_single_source", download_speed)
 
     def update_speed_history(self, history: List[float]):
         with self._lock:

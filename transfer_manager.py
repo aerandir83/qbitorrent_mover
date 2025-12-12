@@ -1127,29 +1127,35 @@ def transfer_content_rsync(
 
     # Setup SpeedMonitor
     def monitor_callback(delta, current, speed):
-        # AI-FIX: Use SpeedMonitor as the primary driver for progress updates.
-        # This fixes the "0 speed" issue (because process_runner regex might fail)
-        # and the "fluctuation" issue (by using correct delta aggregation).
+        # AI-FIX: Reverted "fluctuation state" behavior but added AGGREGATION.
+        # SpeedMonitor reports speed to UI, which now sums it up across threads.
         
-        # Calculate progress ratio
-        progress = 0.0
-        if total_size > 0:
-            progress = min(float(current) / float(total_size), 1.0)
-            
-        # Drive the central progress updater
-        # This will calculate the delta per-torrent and update global stats
-        if _update_transfer_progress:
-            try:
-                _update_transfer_progress(torrent_hash, progress, current, total_size)
-            except Exception:
-                pass
-
         if monitor:
-             # Just update the sparkline history if needed, but DO NOT set current_speed directly
              status = monitor.get_status()
              history_data = status['history']
-             if ui and hasattr(ui, 'update_speed_history'):
-                  ui.update_speed_history(history_data)
+             current_speed_val = status['current_speed']
+
+             if update_speed_callback:
+                 try:
+                     update_speed_callback(history_data)
+                 except Exception:
+                     pass
+            
+             if ui and hasattr(ui, 'update_external_speed'):
+                 # Use remote_path as a unique Source ID for this thread
+                 ui.update_external_speed(remote_path, current_speed_val)
+
+        # We also attempt to drive the central progress updater if needed, 
+        # but process_runner is doing that too. Double updates are idempotent-ish 
+        # (calculated by delta) but cleaner to let process_runner handle it if it works.
+        # We'll leave this commented out unless process_runner fails again.
+
+        # if _update_transfer_progress and total_size > 0:
+        #    progress = min(float(current) / float(total_size), 1.0)
+        #    try:
+        #        _update_transfer_progress(torrent_hash, progress, current, total_size)
+        #    except Exception:
+        #        pass
 
     def safe_getsize():
         try:
@@ -1203,14 +1209,14 @@ def transfer_content_rsync(
                 logging.debug(f"Executing rsync: {' '.join(_create_safe_command_for_logging(rsync_command))}")
 
                 # Call the isolated process runner
-                # AI-NOTE: We pass lambda *a: None for progress to disable regex-based updates
-                # because we are now fully relying on SpeedMonitor (monitor_callback) for accurate sizing.
+                # AI-NOTE: Reverted back to using process runner for progress updates as backup/primary
+                # AND using SpeedMonitor to drive the visual speed graph via aggregation.
                 success = process_runner.execute_streaming_command(
                     rsync_command,
                     torrent_hash,
                     total_size,
                     log_transfer,
-                    lambda *args: None, # <--- DISABLE process_runner progress
+                    _update_transfer_progress, # <--- RESTORED
                     heartbeat_callback=heartbeat_callback,
                     timeout_seconds=adaptive_timeout
                 )
