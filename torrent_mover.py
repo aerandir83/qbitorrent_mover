@@ -324,7 +324,8 @@ def _post_transfer_actions(
                         torrent_files=torrent_file_content,
                         save_path=destination_save_path_str,
                         is_paused=True,
-                        category=torrent.category
+                        category=torrent.category,
+                        use_auto_tmm=True
                     )
                     time.sleep(5) # Give client time to add it
                 except Exception as e:

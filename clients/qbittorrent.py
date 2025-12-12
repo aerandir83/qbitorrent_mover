@@ -145,7 +145,7 @@ class QBittorrentClient(TorrentClient):
         if self.client:
             self.client.torrents_set_category(torrent_hashes=torrent_hash, category=category)
 
-    def add_torrent(self, torrent_files: bytes, save_path: str, category: str, is_paused: bool = False) -> None:
+    def add_torrent(self, torrent_files: bytes, save_path: str, category: str, is_paused: bool = False, use_auto_tmm: bool = False) -> None:
         """
         Adds a torrent to the client.
         Maps 'add' to 'torrents_add'.
@@ -155,7 +155,8 @@ class QBittorrentClient(TorrentClient):
                 torrent_files=torrent_files,
                 save_path=save_path,
                 category=category,
-                is_paused=is_paused
+                is_paused=is_paused,
+                use_auto_tmm=use_auto_tmm
             )
 
     def export_torrent(self, torrent_hash: str) -> bytes:

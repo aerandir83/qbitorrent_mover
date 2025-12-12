@@ -37,7 +37,7 @@ class TorrentClient(ABC):
         pass
 
     @abstractmethod
-    def add_torrent(self, torrent_files: bytes, save_path: str, category: str, is_paused: bool = False) -> None:
+    def add_torrent(self, torrent_files: bytes, save_path: str, category: str, is_paused: bool = False, use_auto_tmm: bool = False) -> None:
         pass
 
     @abstractmethod

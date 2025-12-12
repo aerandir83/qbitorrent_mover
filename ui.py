@@ -352,50 +352,69 @@ class _StatsPanel:
                 yield Panel(stats_table, title="[bold cyan]📊 Statistics", border_style="dim", style="none")
 
 class _ActivityPanel:
-    """Renders the Sparkline in a dedicated panel."""
+    """Renders the Network Activity in a dedicated panel with separate DL/UL graphs."""
     def __init__(self, ui_manager):
         self.ui_manager = ui_manager
 
     def __rich_console__(self, console, options):
         with self.ui_manager._lock:
-            # Retrieve history from Task 2's implementation
-            # Retrieve history from Task 2's implementation
-            history = getattr(self.ui_manager, "_speed_history_data", [])
+            # 1. Retrieve Data
+            dl_hist = list(self.ui_manager._dl_speed_history)
+            ul_hist = list(self.ui_manager._ul_speed_history)
 
-            # Fallback to internal history if external history is not provided
-            if not history:
-                 dl_hist = list(self.ui_manager._dl_speed_history)
-                 ul_hist = list(self.ui_manager._ul_speed_history)
-                 # Make them equal length
-                 max_len = max(len(dl_hist), len(ul_hist)) if dl_hist or ul_hist else 0
-                 if max_len > 0:
-                     # Pad with zeros at the beginning
-                     dl_hist = [0.0] * (max_len - len(dl_hist)) + dl_hist
-                     ul_hist = [0.0] * (max_len - len(ul_hist)) + ul_hist
-                     history = [d + u for d, u in zip(dl_hist, ul_hist)]
+            # verify lengths and pad if necessary
+            target_len = max(len(dl_hist), len(ul_hist), 1)
+            if len(dl_hist) < target_len:
+                dl_hist = [0.0] * (target_len - len(dl_hist)) + dl_hist
+            if len(ul_hist) < target_len:
+                ul_hist = [0.0] * (target_len - len(ul_hist)) + ul_hist
 
-            # Stabilize Y-axis: Use session peak (min 1 MB/s) as max_val
-            peak = self.ui_manager._stats.get("peak_speed", 0.0)
-            graph_max = max(peak, 1024 * 1024) # Minimum 1 MB/s scale
+            # 2. Determine Scale (Auto-Scaling with Min Floor)
+            # We want the scale to adapt to the *current* window, not session peak.
+            # But we set a floor of 1 MB/s to avoid noise looking like massive spikes.
+            max_dl = max(dl_hist) if dl_hist else 0
+            max_ul = max(ul_hist) if ul_hist else 0
+            
+            # Floor of 1 MB/s (1024*1024 bytes)
+            graph_max_dl = max(max_dl, 1024 * 1024)
+            graph_max_ul = max(max_ul, 1024 * 1024)
 
-            # Use the TextSparkline class from Task 2
-            # options.max_width helps size it dynamically
-            sparkline = TextSparkline(
-                history,
-                width=options.max_width - 4,
-                height=8,
+            # 3. Create Sparklines
+            width = options.max_width - 4
+            height = 5  # Split the height (approx 10 total)
+
+            dl_sparkline = TextSparkline(
+                dl_hist,
+                width=width,
+                height=height,
                 min_val=0,
-                max_val=graph_max,
+                max_val=graph_max_dl,
+                show_labels=True
+            )
+            
+            ul_sparkline = TextSparkline(
+                ul_hist,
+                width=width,
+                height=height,
+                min_val=0,
+                max_val=graph_max_ul,
                 show_labels=True
             )
 
-        yield Panel(
-            sparkline,
-            title="[bold cyan]Network Activity (5m)[/]",
-            border_style="dim",
-            style="none", # Transparent
-            height=10,
-        )
+            # 4. Render
+            # We use a Group to stack them
+            yield Panel(
+                Group(
+                    Text("Download", style="bold green"),
+                    dl_sparkline,
+                    Text("Upload", style="bold blue"),
+                    ul_sparkline
+                ),
+                title="[bold cyan]Network Activity[/]",
+                border_style="dim",
+                style="none",
+                height=15 # Increased height to accommodate both
+            )
 
 class _ActiveTorrentsPanel:
     """A renderable class for the Active Torrents list."""
