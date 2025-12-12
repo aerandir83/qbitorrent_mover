@@ -1055,7 +1055,7 @@ class UIManagerV2(BaseUIManager):
 
     def update_external_speed(self, source_id: str, speed: float):
         """Registers a speed reading from an external source (e.g. an rsync thread)."""
-        logging.info(f"UI received speed for {source_id}: {speed}")
+        # logging.info(f"UI received speed for {source_id}: {speed}")
         with self._lock:
             # Lazy init
             if not hasattr(self, '_external_speed_sources'):
@@ -1156,25 +1156,44 @@ class UIManagerV2(BaseUIManager):
                 internal_ul_speed = calc_internal_speed(self._ul_samples)
 
                 # --- 3. Decision: External vs Internal ---
-                # If we have valid external sources (e.g. rsync), use them for DL speed.
-                # Otherwise use internally calculated speed (SFTP, etc).
-                
                 final_dl_speed = external_dl_speed if has_external_data else internal_dl_speed
-                final_ul_speed = internal_ul_speed # Upload usually internal (sftp) or rsync (needs similar external logic if ul implemented)
+                final_ul_speed = internal_ul_speed 
                 
-                # Special case: If total bytes aren't changing, force zero?
-                # No, standard logic handles it.
+                # --- 4. Smoothing & Capping ---
+                # Cap extremely high speeds (artifacts from resume/check) to 1.5 GB/s (~12Gbps) to preserve graph scale
+                # Typical SSH transfers won't exceed this.
+                MAX_REALISTIC_SPEED = 1.5 * (1024**3) 
+                if final_dl_speed > MAX_REALISTIC_SPEED:
+                    final_dl_speed = MAX_REALISTIC_SPEED
+
+                # Exponential Moving Average (EMA) for smoother UI
+                # New value weight = 0.3 -> sluggish but smooth. 1.0 -> raw.
+                smoothing_alpha = 0.3
+                
+                prev_dl = self._stats.get("current_dl_speed", 0.0)
+                prev_ul = self._stats.get("current_ul_speed", 0.0)
+                
+                # Reset smoothing if speed drops to near zero (stop lagging tail)
+                if final_dl_speed < 1024: 
+                    smoothed_dl = final_dl_speed
+                else:
+                    smoothed_dl = (smoothing_alpha * final_dl_speed) + ((1 - smoothing_alpha) * prev_dl)
+                    
+                if final_ul_speed < 1024:
+                    smoothed_ul = final_ul_speed
+                else:
+                    smoothed_ul = (smoothing_alpha * final_ul_speed) + ((1 - smoothing_alpha) * prev_ul)
 
                 # 5. Update Stats
-                self._stats["current_dl_speed"] = final_dl_speed
-                self._stats["current_ul_speed"] = final_ul_speed
+                self._stats["current_dl_speed"] = smoothed_dl
+                self._stats["current_ul_speed"] = smoothed_ul
                 
                 # 6. Update History (Sparklines)
-                self._dl_speed_history.append(final_dl_speed)
-                self._ul_speed_history.append(final_ul_speed)
+                self._dl_speed_history.append(smoothed_dl)
+                self._ul_speed_history.append(smoothed_ul)
                 
-                # 7. Update Peak
-                total_speed = final_dl_speed + final_ul_speed
+                # 7. Update Peak (Track raw peak or smoothed? Smoothed is better for UI)
+                total_speed = smoothed_dl + smoothed_ul
                 if total_speed > self._stats.get("peak_speed", 0.0):
                     self._stats["peak_speed"] = total_speed
                     

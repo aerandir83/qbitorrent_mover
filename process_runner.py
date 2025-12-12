@@ -193,7 +193,7 @@ def execute_streaming_command(
                                                     except ValueError:
                                                         pass
                                             if speed_val > 0:
-                                                logging.info(f"Reported Speed: {speed_val}")
+                                                # logging.info(f"Reported Speed: {speed_val}")
                                                 speed_callback(speed_val)
 
                                     except ValueError:
