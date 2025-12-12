@@ -1114,14 +1114,21 @@ class UIManagerV2(BaseUIManager):
                 external_dl_speed = 0.0
                 has_external_data = False
                 
+                logging.info("Stats thread heartbeat")
+
                 if hasattr(self, '_external_speed_sources'):
                     active_sources = {}
                     for sid, (spd, ts) in self._external_speed_sources.items():
+                        logging.info(f"Checking source {sid}: age={now-ts}")
                         if now - ts < 5.0: # Keep source alive for 5s
-                            external_dl_speed += spd
-                            active_sources[sid] = (spd, ts)
-                            has_external_data = True
-                    logging.info(f"UI Aggregated Speed: {external_dl_speed} from {len(active_sources)} sources")
+                             external_dl_speed += spd
+                             active_sources[sid] = (spd, ts)
+                             has_external_data = True
+                    
+                    if has_external_data:
+                        # pass
+                        logging.info(f"UI Aggregated Speed: {external_dl_speed} from {len(active_sources)} sources")
+                    
                     self._external_speed_sources = active_sources
 
                 # --- 2. Internal Bye-Delta Calculation (Fallback) ---
