@@ -97,7 +97,7 @@ def execute_streaming_command(
                     # STDOUT Handling
                     if process.stdout in rlist:
                         try:
-                            chunk = os.read(fd_out, 4096)
+                            chunk = os.read(fd_out, 32768)
                         except BlockingIOError:
                             chunk = b""
 
@@ -151,8 +151,9 @@ def execute_streaming_command(
                                     except ValueError:
                                         pass # Failed to parse numbers, ignore
 
-                                # Log trace at high verbosity
-                                logger.log(logging.NOTSET, f"({torrent_hash[:10]}) [RSYNC_STDOUT] {line}")
+                                # Log trace at high verbosity ONLY if needed (disabled to prevent IO bottleneck)
+                                # logger.log(logging.NOTSET, f"({torrent_hash[:10]}) [RSYNC_STDOUT] {line}")
+                                pass
 
                         else:
                             # EOF stdout
@@ -161,7 +162,8 @@ def execute_streaming_command(
                     # STDERR Handling
                     if process.stderr in rlist:
                         try:
-                            chunk_err = os.read(fd_err, 4096)
+                            # Increase chunk size to 32KB
+                            chunk_err = os.read(fd_err, 32768)
                         except BlockingIOError:
                             chunk_err = b""
 
