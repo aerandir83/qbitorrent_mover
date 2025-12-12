@@ -1127,29 +1127,29 @@ def transfer_content_rsync(
 
     # Setup SpeedMonitor
     def monitor_callback(delta, current, speed):
-        # Progress is now handled by rsync output parsing in process_runner
-        if monitor:
-            status = monitor.get_status()
-            history_data = status['history']
-            current_speed_val = status['current_speed']
-
-            if update_speed_callback:
-                try:
-                    update_speed_callback(history_data)
-                except Exception:
-                    pass
-
-            # AI-CONTEXT: Fix for "Fluctuating Speed" / Concurrent Rsync
-            # We previously forced UI updates here, but this causes race conditions
-            # where individual threads overwrite the global UI speed with their local speed.
-            # We now rely on the UI's internal aggregator (UIManagerV2._stats_updater)
-            # which calculates total throughput based on cumulative transferred_bytes.
+        # AI-FIX: Use SpeedMonitor as the primary driver for progress updates.
+        # This fixes the "0 speed" issue (because process_runner regex might fail)
+        # and the "fluctuation" issue (by using correct delta aggregation).
+        
+        # Calculate progress ratio
+        progress = 0.0
+        if total_size > 0:
+            progress = min(float(current) / float(total_size), 1.0)
             
-            # if ui and hasattr(ui, 'update_speed_history'):
-            #      ui.update_speed_history(history_data)
+        # Drive the central progress updater
+        # This will calculate the delta per-torrent and update global stats
+        if _update_transfer_progress:
+            try:
+                _update_transfer_progress(torrent_hash, progress, current, total_size)
+            except Exception:
+                pass
 
-            # if ui and hasattr(ui, 'update_current_speed'):
-            #      ui.update_current_speed(download_speed=current_speed_val)
+        if monitor:
+             # Just update the sparkline history if needed, but DO NOT set current_speed directly
+             status = monitor.get_status()
+             history_data = status['history']
+             if ui and hasattr(ui, 'update_speed_history'):
+                  ui.update_speed_history(history_data)
 
     def safe_getsize():
         try:
@@ -1203,12 +1203,14 @@ def transfer_content_rsync(
                 logging.debug(f"Executing rsync: {' '.join(_create_safe_command_for_logging(rsync_command))}")
 
                 # Call the isolated process runner
+                # AI-NOTE: We pass lambda *a: None for progress to disable regex-based updates
+                # because we are now fully relying on SpeedMonitor (monitor_callback) for accurate sizing.
                 success = process_runner.execute_streaming_command(
                     rsync_command,
                     torrent_hash,
                     total_size,
                     log_transfer,
-                    _update_transfer_progress,
+                    lambda *args: None, # <--- DISABLE process_runner progress
                     heartbeat_callback=heartbeat_callback,
                     timeout_seconds=adaptive_timeout
                 )
