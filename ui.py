@@ -3,7 +3,7 @@ import time
 from rich.console import Console, Group, RenderResult
 from rich.live import Live
 from rich.panel import Panel
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional, Deque, Tuple, Callable
 from watchdog import TransferWatchdog
 
 

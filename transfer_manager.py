@@ -1139,14 +1139,17 @@ def transfer_content_rsync(
                 except Exception:
                     pass
 
-            # 1. Update Sparkline History (Bridge established in Task 2)
-            if ui and hasattr(ui, 'update_speed_history'):
-                 ui.update_speed_history(history_data)
+            # AI-CONTEXT: Fix for "Fluctuating Speed" / Concurrent Rsync
+            # We previously forced UI updates here, but this causes race conditions
+            # where individual threads overwrite the global UI speed with their local speed.
+            # We now rely on the UI's internal aggregator (UIManagerV2._stats_updater)
+            # which calculates total throughput based on cumulative transferred_bytes.
+            
+            # if ui and hasattr(ui, 'update_speed_history'):
+            #      ui.update_speed_history(history_data)
 
-            # 2. FORCE update the UI speed text (The Fix for 0.00)
-            if ui and hasattr(ui, 'update_current_speed'):
-                 # Ensure we pass named arguments as expected by UIManagerV2
-                 ui.update_current_speed(download_speed=current_speed_val)
+            # if ui and hasattr(ui, 'update_current_speed'):
+            #      ui.update_current_speed(download_speed=current_speed_val)
 
     def safe_getsize():
         try:
