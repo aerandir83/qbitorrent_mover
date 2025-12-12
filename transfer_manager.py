@@ -1208,17 +1208,23 @@ def transfer_content_rsync(
                 logging.info(f"Starting rsync transfer for '{rsync_file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
                 logging.debug(f"Executing rsync: {' '.join(_create_safe_command_for_logging(rsync_command))}")
 
+                # AI-FIX: Hybrid Model restore. 
+                # Progress (Bytes) -> SpeedMonitor (File Size)
+                # Speed (Graph) -> Rsync Output (Regex)
+                def rsync_speed_cb(speed_val: float):
+                    if ui and hasattr(ui, 'update_external_speed'):
+                        ui.update_external_speed(remote_path, speed_val)
+
                 # Call the isolated process runner
-                # AI-NOTE: Speed calculation is now handled purely by UI aggregation of file size changes.
-                # No callbacks needed here other than heartbeat.
                 success = process_runner.execute_streaming_command(
                     rsync_command,
                     torrent_hash,
                     total_size,
                     log_transfer,
-                    lambda *args: None, # Disable process runner progress (SpeedMonitor handles it)
+                    lambda *args: None, # Disable process runner progress (SpeedMonitor handles bytes)
                     heartbeat_callback=heartbeat_callback,
-                    timeout_seconds=adaptive_timeout
+                    timeout_seconds=adaptive_timeout,
+                    speed_callback=rsync_speed_cb # Wired up!
                 )
 
                 if success:

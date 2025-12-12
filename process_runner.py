@@ -38,7 +38,8 @@ def execute_streaming_command(
     log_transfer: Callable[..., Any],
     _update_transfer_progress: Callable[..., Any],
     heartbeat_callback: Optional[Callable[[], None]] = None,
-    timeout_seconds: int = 60
+    timeout_seconds: int = 60,
+    speed_callback: Optional[Callable[[float], None]] = None
 ) -> bool:
     logging.info(f"DEBUG: execute_streaming_command called. Heartbeat: {'YES' if heartbeat_callback else 'NO'}")
     """
@@ -147,6 +148,26 @@ def execute_streaming_command(
                                         # Update progress (0.0 to 1.0)
                                         progress_float = min(float(percentage) / 100.0, 1.0)
                                         _update_transfer_progress(torrent_hash, progress_float, current_bytes, total_size)
+                                        
+                                        # AI-FIX: Parse Speed directly from Rsync
+                                        # e.g. "39.08MB/s"
+                                        if speed_callback:
+                                            speed_str = match.group(3) 
+                                            speed_val = 0.0
+                                            unit_multipliers = {
+                                                'kB/s': 1024, 'MB/s': 1024**2, 'GB/s': 1024**3, 'TB/s': 1024**4, 'B/s': 1
+                                            }
+                                            # Simple parsing
+                                            for unit, mult in unit_multipliers.items():
+                                                if unit in speed_str:
+                                                    try:
+                                                        val_part = speed_str.replace(unit, '')
+                                                        speed_val = float(val_part) * mult
+                                                        break
+                                                    except ValueError:
+                                                        pass
+                                            if speed_val > 0:
+                                                speed_callback(speed_val)
 
                                     except ValueError:
                                         pass # Failed to parse numbers, ignore

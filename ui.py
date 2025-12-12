@@ -1053,6 +1053,14 @@ class UIManagerV2(BaseUIManager):
 
     # ===== Public API =====
 
+    def update_external_speed(self, source_id: str, speed: float):
+        """Registers a speed reading from an external source (e.g. an rsync thread)."""
+        with self._lock:
+            # Lazy init
+            if not hasattr(self, '_external_speed_sources'):
+                self._external_speed_sources = {}
+            self._external_speed_sources[source_id] = (speed, time.time())
+
     def set_transfer_mode(self, mode: str):
         """Sets and displays the current transfer mode in the UI header."""
         with self._lock:
@@ -1086,14 +1094,13 @@ class UIManagerV2(BaseUIManager):
 
     # --- Speed Calculation Logic ---
     def _stats_updater(self):
-        """Background thread to update stats and speed based on byte deltas."""
+        """Background thread to update stats and speed."""
         last_layout_check = time.time()
         
         # Sliding windows: Deque of (timestamp, total_bytes)
-        # Window size: 3 seconds for smoothing
         window_duration = 3.0
         
-        while not self._stats_thread_stop.wait(0.5): # Poll every 0.5s
+        while not self._stats_thread_stop.wait(0.5):
             if time.time() - last_layout_check > 5.0:
                 with self._lock:
                     self._check_and_update_layout()
@@ -1102,47 +1109,63 @@ class UIManagerV2(BaseUIManager):
             with self._lock:
                 now = time.time()
 
-                # 1. Capture current state
+                # --- 1. External Speed Aggregation (Priority) ---
+                external_dl_speed = 0.0
+                has_external_data = False
+                
+                if hasattr(self, '_external_speed_sources'):
+                    active_sources = {}
+                    for sid, (spd, ts) in self._external_speed_sources.items():
+                        if now - ts < 5.0: # Keep source alive for 5s
+                            external_dl_speed += spd
+                            active_sources[sid] = (spd, ts)
+                            has_external_data = True
+                    self._external_speed_sources = active_sources
+
+                # --- 2. Internal Bye-Delta Calculation (Fallback) ---
                 current_dl = self._stats.get("transferred_dl_bytes", 0)
                 current_ul = self._stats.get("transferred_ul_bytes", 0)
                 
-                # 2. Update Samples
                 self._dl_samples.append((now, current_dl))
                 self._ul_samples.append((now, current_ul))
                 
-                # 3. Prune old samples
                 while self._dl_samples and (now - self._dl_samples[0][0] > window_duration):
                     self._dl_samples.popleft()
                 while self._ul_samples and (now - self._ul_samples[0][0] > window_duration):
                     self._ul_samples.popleft()
 
-                # 4. Calculate Speed (Delta / Time)
-                def calc_speed(samples):
+                def calc_internal_speed(samples):
                     if len(samples) < 2: return 0.0
-                    
-                    # Use oldest sample in window vs current
                     t_start, b_start = samples[0]
                     t_end, b_end = samples[-1]
-                    
                     bg_delta = b_end - b_start
                     time_delta = t_end - t_start
-                    
                     if time_delta <= 0.001: return 0.0
                     return bg_delta / time_delta
 
-                new_dl_speed = calc_speed(self._dl_samples)
-                new_ul_speed = calc_speed(self._ul_samples)
+                internal_dl_speed = calc_internal_speed(self._dl_samples)
+                internal_ul_speed = calc_internal_speed(self._ul_samples)
+
+                # --- 3. Decision: External vs Internal ---
+                # If we have valid external sources (e.g. rsync), use them for DL speed.
+                # Otherwise use internally calculated speed (SFTP, etc).
                 
+                final_dl_speed = external_dl_speed if has_external_data else internal_dl_speed
+                final_ul_speed = internal_ul_speed # Upload usually internal (sftp) or rsync (needs similar external logic if ul implemented)
+                
+                # Special case: If total bytes aren't changing, force zero?
+                # No, standard logic handles it.
+
                 # 5. Update Stats
-                self._stats["current_dl_speed"] = new_dl_speed
-                self._stats["current_ul_speed"] = new_ul_speed
+                self._stats["current_dl_speed"] = final_dl_speed
+                self._stats["current_ul_speed"] = final_ul_speed
                 
                 # 6. Update History (Sparklines)
-                self._dl_speed_history.append(new_dl_speed)
-                self._ul_speed_history.append(new_ul_speed)
+                self._dl_speed_history.append(final_dl_speed)
+                self._ul_speed_history.append(final_ul_speed)
                 
                 # 7. Update Peak
-                total_speed = new_dl_speed + new_ul_speed
+                total_speed = final_dl_speed + final_ul_speed
                 if total_speed > self._stats.get("peak_speed", 0.0):
                     self._stats["peak_speed"] = total_speed
                     
