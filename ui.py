@@ -403,13 +403,21 @@ class _ActivityPanel:
 
             # 4. Render
             # We use a Group to stack them
-            yield Panel(
-                Group(
-                    Text("Download", style="bold green"),
-                    dl_sparkline,
+            renderables = [
+                Text("Download", style="bold green"),
+                dl_sparkline
+            ]
+            
+            # Conditionally show Upload graph
+            mode = self.ui_manager.transfer_mode.lower()
+            if mode not in ['sftp', 'rsync']:
+                renderables.extend([
                     Text("Upload", style="bold blue"),
                     ul_sparkline
-                ),
+                ])
+
+            yield Panel(
+                Group(*renderables),
                 title="[bold cyan]Network Activity[/]",
                 border_style="dim",
                 style="none",
@@ -875,6 +883,10 @@ class UIManagerV2(BaseUIManager):
         self._ul_speed_history = deque(maxlen=300)
         self._speed_history_data: List[float] = []
 
+        # Sliding window samples for smooth speed calc (timestamp, total_bytes)
+        self._dl_samples: Deque[Tuple[float, float]] = deque(maxlen=20) # Approx 10s history at 0.5s interval
+        self._ul_samples: Deque[Tuple[float, float]] = deque(maxlen=20)
+
 
         # Create layout with better proportions
         self.layout = Layout()
@@ -1043,42 +1055,49 @@ class UIManagerV2(BaseUIManager):
         """Background thread to update stats and progress bars."""
         last_layout_check = time.time()
 
-        while not self._stats_thread_stop.wait(1.0):
+        while not self._stats_thread_stop.wait(0.5): # Increase frequency to 0.5s
             if time.time() - last_layout_check > 5.0:
                 with self._lock:
                     self._check_and_update_layout()
                 last_layout_check = time.time()
 
             with self._lock:
-                # --- Calculate Speeds ---
-                current_dl_speed = 0.0
-                current_ul_speed = 0.0
-                time_since_last_dl = time.time() - self._stats["last_dl_speed_check"]
-                time_since_last_ul = time.time() - self._stats["last_ul_speed_check"]
+                now = time.time()
+                
+                # --- Sliding Window Speed Calculation ---
+                def calculate_smooth_speed(samples: Deque[Tuple[float, float]], current_total_bytes: float) -> float:
+                    # Add current sample
+                    samples.append((now, current_total_bytes))
+                    
+                    # 1. Prune samples older than window size (e.g., 5 seconds)
+                    window_size = 3.0
+                    while samples and (now - samples[0][0] > window_size):
+                        samples.popleft()
+                        
+                    if len(samples) < 2:
+                        return 0.0
+                        
+                    # 2. Calculate speed over the actual window we have
+                    oldest_time, oldest_bytes = samples[0]
+                    # Use the latest stats (which might be slightly newer than sample[0] if we just popped)
+                    # But samples[-1] is effectively (now, current_total_bytes)
+                    
+                    time_delta = now - oldest_time
+                    bytes_delta = current_total_bytes - oldest_bytes
+                    
+                    if time_delta <= 0:
+                        return 0.0
+                        
+                    return bytes_delta / time_delta
 
-                if time_since_last_dl >= 1.0:
-                    bytes_since_last = max(0, self._stats["transferred_dl_bytes"] - self._stats["last_dl_bytes"])
-                    current_dl_speed = bytes_since_last / time_since_last_dl
-                    
-                    self._stats["current_dl_speed"] = current_dl_speed
-                    self._dl_speed_history.append(current_dl_speed)
-                    
-                    self._stats["last_dl_bytes"] = self._stats["transferred_dl_bytes"]
-                    self._stats["last_dl_speed_check"] = time.time()
-                else:
-                    current_dl_speed = self._stats.get("current_dl_speed", 0.0)
+                current_dl_speed = calculate_smooth_speed(self._dl_samples, self._stats.get("transferred_dl_bytes", 0))
+                current_ul_speed = calculate_smooth_speed(self._ul_samples, self._stats.get("transferred_ul_bytes", 0))
 
-                if time_since_last_ul >= 1.0:
-                    bytes_since_last = max(0, self._stats["transferred_ul_bytes"] - self._stats["last_ul_bytes"])
-                    current_ul_speed = bytes_since_last / time_since_last_ul
-                    
-                    self._stats["current_ul_speed"] = current_ul_speed
-                    self._ul_speed_history.append(current_ul_speed)
-                    
-                    self._stats["last_ul_bytes"] = self._stats["transferred_ul_bytes"]
-                    self._stats["last_ul_speed_check"] = time.time()
-                else:
-                    current_ul_speed = self._stats.get("current_ul_speed", 0.0)
+                self._stats["current_dl_speed"] = current_dl_speed
+                self._stats["current_ul_speed"] = current_ul_speed
+                
+                self._dl_speed_history.append(current_dl_speed)
+                self._ul_speed_history.append(current_ul_speed)
 
                 # FIX 5: Update peak speed only if we have current activity
                 current_total_speed = current_dl_speed + current_ul_speed
