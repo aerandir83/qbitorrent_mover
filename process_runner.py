@@ -47,7 +47,8 @@ def execute_streaming_command(
     """
     # Regex to capture rsync progress:
     # Captures: 1=Bytes, 2=Percentage, 3=Speed, 4=ETA
-    progress_pattern = re.compile(r'\s*([\d,]+)\s+(\d+)%\s+([0-9.]+[kMGTP]?B/s)\s+([0-9:]+)')
+    # Updated to handle human-readable bytes (e.g. 577.83M)
+    progress_pattern = re.compile(r'\s*([0-9.,]+[a-zA-Z]?)\s+(\d+)%\s+([0-9.]+[kMGTP]?B/s)\s+([0-9:]+)')
 
     process = None
     try:
@@ -101,7 +102,7 @@ def execute_streaming_command(
                             chunk = os.read(fd_out, 32768)
                         except BlockingIOError:
                             chunk = b""
-
+                        
                         if chunk:
                             last_activity_time = time.time()
                             if heartbeat_callback:
@@ -112,11 +113,14 @@ def execute_streaming_command(
 
                             read_buffer.extend(chunk)
 
-                            # Process buffer for lines
+                            # Process lines from buffer
                             while True:
-                                # Look for delimiters \n or \r
-                                idx_n = read_buffer.find(b'\n')
-                                idx_r = read_buffer.find(b'\r')
+                                try:
+                                    # Look for delimiters \n or \r
+                                    idx_n = read_buffer.find(b'\n')
+                                    idx_r = read_buffer.find(b'\r')
+                                except Exception:
+                                    break
 
                                 split_idx = -1
                                 if idx_n != -1 and idx_r != -1:
@@ -140,8 +144,26 @@ def execute_streaming_command(
                                 match = progress_pattern.search(line)
                                 if match:
                                     try:
-                                        current_bytes_str = match.group(1).replace(',', '')
-                                        current_bytes = int(current_bytes_str)
+                                        # Parse Bytes (Group 1) which might be human readable (577.83M)
+                                        bytes_str = match.group(1).replace(',', '')
+                                        current_bytes = 0
+                                        
+                                        # Parse multipliers for bytes
+                                        byte_mults = {'k': 1024, 'M': 1024**2, 'G': 1024**3, 'T': 1024**4, 'P': 1024**5}
+                                        # Check for suffix
+                                        matched_mult = 1
+                                        val_part_bytes = bytes_str
+                                        for suffix, mult in byte_mults.items():
+                                            if bytes_str.endswith(suffix):
+                                                matched_mult = mult
+                                                val_part_bytes = bytes_str[:-1] # Remove suffix
+                                                break
+                                        
+                                        try:
+                                             current_bytes = int(float(val_part_bytes) * matched_mult)
+                                        except ValueError:
+                                             pass
+
                                         percentage_str = match.group(2)
                                         percentage = int(percentage_str)
 
