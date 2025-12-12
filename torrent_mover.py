@@ -680,7 +680,6 @@ def _execute_transfer(
                 dry_run=dry_run,
                 heartbeat_callback=heartbeat_callback,
                 rsync_timeout=rsync_timeout,
-                update_speed_callback=ui.update_speed_history if isinstance(ui, UIManagerV2) else None,
                 ui=ui if isinstance(ui, UIManagerV2) else None,
                 force_integrity_check=force_integrity_check
             )
