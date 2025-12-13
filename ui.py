@@ -422,7 +422,9 @@ class _ActivityPanel:
                 title="[bold cyan]Network Activity[/]",
                 border_style="dim",
                 style="none",
-                height=15 # Increased height to accommodate both
+                # height=15  <-- REMOVED to allow auto-sizing.
+                # In SFTP mode (only DL graph), this saves ~7 lines of vertical space, 
+                # resolving the "disappearing speed bar" issue caused by clipping.
             )
 
 class _ActiveTorrentsPanel:
@@ -510,6 +512,11 @@ class _ActiveTorrentsPanel:
 
                     sorted_files = sorted(files.items(), key=sort_key)
                     max_files = min(7, config.get("terminal_height", 100) // 10)
+                    
+                    # Reduce clutter in SFTP mode (as requested by user)
+                    if self.ui_manager.transfer_mode == 'sftp':
+                         max_files = 2
+
 
                     for file_path, status in sorted_files[:max_files]:
                         file_name = smart_truncate(file_path.split('/')[-1], config["file_name_width"])
