@@ -572,7 +572,10 @@ def _execute_transfer(
     # --- New Callbacks ---
     log_transfer: Callable,
     _update_transfer_progress: Callable,
-    force_integrity_check: bool = False
+    log_transfer: Callable,
+    _update_transfer_progress: Callable,
+    force_integrity_check: bool = False,
+    max_concurrent_downloads_override: Optional[int] = None
 ) -> bool:
     """
     Executes the file transfer for a given list of files using the specified strategy.
@@ -632,6 +635,8 @@ def _execute_transfer(
             if not source_pool: raise ValueError("Source SSH pool not found.")
             download_limit_bytes = int(config['SETTINGS'].getfloat('sftp_download_limit_mbps', 0) * 1024 * 1024 / 8)
             max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)
+            if max_concurrent_downloads_override:
+                max_concurrent_downloads = max_concurrent_downloads_override
             transfer_content_with_queue(
                 source_pool, files, hash_, ui, file_tracker,
                 max_concurrent_downloads, dry_run,
@@ -643,6 +648,8 @@ def _execute_transfer(
             dest_pool = ssh_connection_pools.get('DESTINATION_SERVER')
             if not dest_pool: raise ValueError("Destination SSH pool not found.")
             max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)
+            if max_concurrent_downloads_override:
+                max_concurrent_downloads = max_concurrent_downloads_override
             max_concurrent_uploads = config['SETTINGS'].getint('max_concurrent_uploads', 4)
             sftp_download_limit_mbps = config['SETTINGS'].getfloat('sftp_download_limit_mbps', 0)
             sftp_upload_limit_mbps = config['SETTINGS'].getfloat('sftp_upload_limit_mbps', 0)
@@ -749,7 +756,9 @@ def _execute_transfer_placeholder(
         transfer_mode, files, torrent, total_size_calc, config, ui,
         file_tracker, ssh_connection_pools, dry_run,
         log_transfer, _update_transfer_progress,
-        force_integrity_check
+        force_integrity_check,
+        # Pass None or similar for override if needed, but this is a placeholder function
+        max_concurrent_downloads_override=None
     )
 
 
@@ -767,7 +776,8 @@ def transfer_torrent(
     args: argparse.Namespace, # Added args
     # --- New Callbacks ---
     log_transfer: Callable,
-    _update_transfer_progress: Callable
+    _update_transfer_progress: Callable,
+    max_concurrent_downloads_override: Optional[int] = None
 ) -> Tuple[str, str]:
     """Orchestrates the entire transfer process for a single torrent.
 
@@ -859,7 +869,8 @@ def transfer_torrent(
                 transfer_mode, files, torrent, total_size_calc, config,
                 ui, file_tracker, ssh_connection_pools, dry_run,
                 log_transfer, _update_transfer_progress,
-                force_integrity_check=False
+                force_integrity_check=False,
+                max_concurrent_downloads_override=max_concurrent_downloads_override
             )
 
             if not transfer_success:
@@ -1316,7 +1327,7 @@ class TorrentMover:
             logging.info(f"({torrent_hash[:10]}...) {message}")
 
 
-    def _transfer_worker(self, torrent: "qbittorrentapi.TorrentDictionary", total_size: int, is_auto_move: bool = False):
+    def _transfer_worker(self, torrent: "qbittorrentapi.TorrentDictionary", total_size: int, is_auto_move: bool = False, concurrency_limit: Optional[int] = None):
         """
         Worker function to be run in the thread pool for a single torrent.
         """
@@ -1342,7 +1353,8 @@ class TorrentMover:
                 args=self.args,
                 # --- Pass the new callbacks from this class instance ---
                 log_transfer=self._handle_transfer_log,
-                _update_transfer_progress=self._update_transfer_progress
+                _update_transfer_progress=self._update_transfer_progress,
+                max_concurrent_downloads_override=concurrency_limit
             )
 
             log_name = torrent.name[:50] + "..." if len(torrent.name) > 53 else torrent.name
@@ -1402,12 +1414,34 @@ class TorrentMover:
             logging.info("STATE: Starting transfer phase...")
             ui.log(f"Transferring {len(analyzed_torrents)} torrents... [green]Running[/]")
             ui.log("Executing transfers...")
+            
+            # --- Dynamic Concurrency Calculation ---
+            source_section = self.config['SETTINGS'].get('source_server_section', 'SOURCE_SERVER')
+            source_pool = self.ssh_connection_pools.get(source_section)
+            pool_size = source_pool.max_size if source_pool else 10
+            
+            active_jobs = min(len(analyzed_torrents), self.args.parallel_jobs)
+            active_jobs = max(1, active_jobs)
+            
+            # Smart limit: Floor division to distribute pool slots evenly among jobs
+            smart_limit = pool_size // active_jobs
+            config_limit = self.config['SETTINGS'].getint('max_concurrent_downloads', 4)
+            
+            # Use the smaller of smart_limit or config_limit, but at least 1
+            final_concurrency_limit = max(1, min(smart_limit, config_limit))
+            
+            if final_concurrency_limit < config_limit:
+                 logging.info(f"Dynamic Concurrency: Reducing per-torrent download threads to {final_concurrency_limit} "
+                              f"(Pool Size: {pool_size}, Parallel Jobs: {active_jobs}, Config Limit: {config_limit}) "
+                              f"to prevent connection pool exhaustion.")
+                 ui.log(f"[yellow]Auto-tuning: Using {final_concurrency_limit} threads per torrent to match connection pool.[/yellow]")
+
             try:
                 if self.args.parallel_jobs > 1:
                     with ThreadPoolExecutor(max_workers=self.args.parallel_jobs, thread_name_prefix='Transfer') as executor:
                         transfer_futures = {
                             executor.submit(
-                                self._transfer_worker, t, size, is_auto_move=False # Assuming manual run
+                                self._transfer_worker, t, size, is_auto_move=False, concurrency_limit=final_concurrency_limit
                             ): (t, size) for t, size in analyzed_torrents
                         }
                         for future in as_completed(transfer_futures):
@@ -1420,7 +1454,7 @@ class TorrentMover:
                 else:
                     for torrent, size in analyzed_torrents:
                         try:
-                            self._transfer_worker(torrent, size, is_auto_move=False)
+                            self._transfer_worker(torrent, size, is_auto_move=False, concurrency_limit=final_concurrency_limit)
                         except Exception as e:
                             logging.error(f"An exception was thrown for torrent '{torrent.name}': {e}", exc_info=True)
                             ui.complete_torrent_transfer(torrent.hash, success=False)
