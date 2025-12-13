@@ -41,7 +41,7 @@ def execute_streaming_command(
     timeout_seconds: int = 60,
     speed_callback: Optional[Callable[[float], None]] = None
 ) -> bool:
-    logging.info(f"DEBUG: execute_streaming_command called. Heartbeat: {'YES' if heartbeat_callback else 'NO'}")
+    logging.debug(f"DEBUG: execute_streaming_command called. Heartbeat: {'YES' if heartbeat_callback else 'NO'}")
     """
     Executes a command (like rsync) and keeps it alive.
     """
