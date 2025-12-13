@@ -1258,9 +1258,9 @@ class TorrentMover:
                     delta = transferred_bytes - last_known_bytes
 
                     # 3. Update the UI's global stats with the delta
+                    transfer_mode = self.config['SETTINGS'].get('transfer_mode', 'sftp').lower()
                     if delta > 0:
                         # FIX #1: Determine transfer type based on transfer mode
-                        transfer_mode = self.config['SETTINGS'].get('transfer_mode', 'sftp').lower()
                         
                         if transfer_mode in ['rsync', 'rsync_upload']:
                             # For rsync modes, we need to determine if this is DL or UL phase
