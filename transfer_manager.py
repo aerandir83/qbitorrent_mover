@@ -1297,6 +1297,21 @@ def transfer_content_rsync(
                 # But as a fallback, we'll raise one.
                 raise RemoteTransferError("Rsync execution failed.")
 
+            except KeyboardInterrupt:
+                logging.warning(f"Rsync transfer for '{rsync_file_name}' interrupted by user.")
+                # Rollback/Truncate logic to force integrity check on next run
+                if os.path.exists(local_path) and not dry_run:
+                    try:
+                        current_size = os.path.getsize(local_path)
+                        if current_size > 0:
+                            # Truncate by 4KB to force rsync to detect size mismatch and checksum the end
+                            new_size = max(0, current_size - 4096)
+                            os.truncate(local_path, new_size)
+                            logging.warning(f"Truncated local file '{local_path}' from {current_size} to {new_size} bytes to enforce integrity check on resume.")
+                    except OSError as e:
+                        logging.warning(f"Failed to truncate file after interruption: {e}")
+                raise
+
             except (subprocess.TimeoutExpired, RemoteTransferError) as e:
                 logging.error(f"Rsync process failed for '{rsync_file_name}': {e}")
                 if attempt < MAX_RETRY_ATTEMPTS:

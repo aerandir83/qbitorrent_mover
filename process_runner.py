@@ -255,13 +255,27 @@ def execute_streaming_command(
             log_transfer(torrent_hash, f"[bold red]Rsync FAILED (code {process.returncode})[/bold red]")
             raise RemoteTransferError(f"Rsync failed (exit {process.returncode}): {stderr_output}")
 
+    except KeyboardInterrupt:
+        logger.warning(f"Process interrupted by user. Killing rsync process for torrent {torrent_hash}")
+        if process:
+            try:
+                process.kill()
+            except OSError:
+                pass
+        raise
     except subprocess.TimeoutExpired:
         logger.error(f"Rsync process timed out for torrent {torrent_hash}")
         if process:
-            process.kill()
+            try:
+                process.kill()
+            except OSError:
+                pass
         raise RemoteTransferError(f"Rsync timed out for torrent {torrent_hash}")
     except Exception as e:
         logger.error(f"An exception occurred during rsync for torrent {torrent_hash}: {e}", exc_info=True)
         if process:
-            process.kill()
+            try:
+                process.kill()
+            except OSError:
+                pass
         raise RemoteTransferError(f"Rsync exception: {e}")
