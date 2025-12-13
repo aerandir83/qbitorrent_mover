@@ -1235,7 +1235,7 @@ class TorrentMover:
 
         return analyzed_torrents, total_transfer_size, total_count
 
-    def _update_transfer_progress(self, torrent_hash: str, progress: float, transferred_bytes: int, total_size: int):
+    def _update_transfer_progress(self, torrent_hash: str, progress: float, transferred_bytes: int, total_size: int, speed: float = 0.0, status_text: str = None):
         """Callback to update torrent progress.
 
         # AI-GOTCHA: Transfer progress clamping
@@ -1297,6 +1297,10 @@ class TorrentMover:
 
                     # 4. Update the individual torrent's progress bar with the new TOTAL
                     self.ui._torrents[torrent_hash]["transferred"] = transferred_bytes
+                    if speed > 0:
+                        self.ui._torrents[torrent_hash]["speed"] = speed
+                    if status_text:
+                        self.ui._torrents[torrent_hash]["status_text"] = status_text
 
                     # 5. Store the new "last known bytes" value back in the state
                     self.ui._torrents[torrent_hash]["bytes_for_delta_calc"] = transferred_bytes
