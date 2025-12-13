@@ -1230,6 +1230,8 @@ class UIManagerV2(BaseUIManager):
                 "status": "transferring",
                 "status_text": "Transferring", # <-- ADD THIS
                 "speed": 0.0, # <-- ADD THIS
+                "status_text": "Transferring", # <-- ADD THIS
+                "speed": 0.0, # <-- ADD THIS
                 "start_time": time.time(),
                 "bytes_for_delta_calc": 0, # <-- ADD THIS LINE
                 "is_repair": is_repair,
