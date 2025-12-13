@@ -469,6 +469,19 @@ class _ActiveTorrentsPanel:
                     display_name = smart_truncate(name, config["torrent_name_width"])
                     progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
 
+                    # NEW: Get Status and Speed
+                    status_text = torrent.get("status_text", "Transferring")
+                    current_speed = torrent.get("speed", 0.0)
+                    speed_str = f"{current_speed / (1024**2):.1f} MB/s" if current_speed > 0 else ""
+                    
+                    # AI-FIX: Allow explicit progress from backend (rsync) to override calculation
+                    # This helps when 'checking' involves reading files but not 'transferring' new bytes (UI mismatch)
+                    if "progress" in torrent:
+                        progress = torrent["progress"] * 100.0
+                    else:
+                        progress = torrent["transferred"] / torrent["size"] * 100 if torrent["size"] > 0 else 0
+
+
                     # --- ADD THIS LINE (Fix for 106%) ---
                     progress = min(progress, 100.0) # AI-INVARIANT
                     # --- END ADDITION ---
@@ -549,7 +562,7 @@ class _ActiveTorrentsPanel:
                         progress_display,
                         Group(
                             # --- UPDATE THIS LINE ---
-                            Text.from_markup(f"[{name_style}]{display_name}[/{name_style}]{repair_label} [dim]{files_display_str}[/dim]"),
+                            Text.from_markup(f"[{name_style}]{display_name}[/{name_style}]{repair_label} [dim]{files_display_str}[/dim] [bold yellow]{status_text} {progress:.1f}% {speed_str}[/bold yellow]"),
                             # --- END UPDATE ---
                             files_panel_content
                         )
@@ -663,7 +676,7 @@ class BaseUIManager(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str):
+    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str, speed: float = 0.0, status_text: str = None, progress: float = None):
         pass
 
     @abc.abstractmethod
@@ -764,7 +777,7 @@ class SimpleUIManager(BaseUIManager):
         else:
             logging.info(f"Starting Transfer: {torrent_name}")
 
-    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str):
+    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str, speed: float = 0.0, status_text: str = None, progress: float = None):
         """A no-op to avoid overly verbose logging."""
         # We don't log every progress update in simple mode, too noisy.
         pass
@@ -1215,6 +1228,8 @@ class UIManagerV2(BaseUIManager):
                 "completed_files": 0,
                 "transferred": 0,
                 "status": "transferring",
+                "status_text": "Transferring", # <-- ADD THIS
+                "speed": 0.0, # <-- ADD THIS
                 "start_time": time.time(),
                 "bytes_for_delta_calc": 0, # <-- ADD THIS LINE
                 "is_repair": is_repair,
@@ -1224,7 +1239,7 @@ class UIManagerV2(BaseUIManager):
             self._active_torrents.append(torrent_hash)
             self._stats["active_transfers"] += 1
 
-    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str):
+    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str, speed: float = 0.0, status_text: str = None, progress: float = None):
         """Updates the progress for a torrent and the overall progress bar.
 
         # AI-CONTEXT: Delta Calculation
@@ -1234,10 +1249,20 @@ class UIManagerV2(BaseUIManager):
             torrent_hash: The hash of the torrent to update.
             bytes_transferred: The number of bytes to add to the progress.
             transfer_type: Either "download" or "upload", for stat tracking.
+            speed: Current speed in bytes/sec (optional).
+            status_text: Current status text (e.g. "Checking") (optional).
+            progress: Explicit progress fraction (0.0-1.0) (optional).
         """
         with self._lock:
             if torrent_hash in self._torrents:
                 self._torrents[torrent_hash]["transferred"] += bytes_transferred
+                if speed > 0:
+                    self._torrents[torrent_hash]["speed"] = speed
+                if status_text:
+                    self._torrents[torrent_hash]["status_text"] = status_text
+                if progress is not None:
+                    self._torrents[torrent_hash]["progress"] = progress
+
                 if transfer_type == "download":
                     self._stats["transferred_dl_bytes"] = self._stats.get("transferred_dl_bytes", 0) + bytes_transferred
                 elif transfer_type == "upload":

@@ -167,34 +167,36 @@ def execute_streaming_command(
                                         except ValueError:
                                              pass
 
+                                        # AI-FIX: Parse Speed directly from Rsync
+                                        speed_val = 0.0
+                                        try:
+                                            speed_str = match.group(3)
+                                            unit_multipliers = {
+                                                'kB/s': 1024, 'MB/s': 1024**2, 'GB/s': 1024**3, 'TB/s': 1024**4, 'B/s': 1
+                                            }
+                                            for unit, mult in unit_multipliers.items():
+                                                if unit in speed_str:
+                                                    val_part = speed_str.replace(unit, '')
+                                                    speed_val = float(val_part) * mult
+                                                    break
+                                            
+                                            # Update callback if present
+                                            if speed_callback and speed_val > 0:
+                                                speed_callback(speed_val)
+
+                                        except (ValueError, IndexError):
+                                            pass
+
                                         percentage_str = match.group(2)
                                         percentage = int(percentage_str)
 
                                         # Update progress (0.0 to 1.0)
                                         progress_float = min(float(percentage) / 100.0, 1.0)
-                                        _update_transfer_progress(torrent_hash, progress_float, current_bytes, total_size)
                                         
-                                        # AI-FIX: Parse Speed directly from Rsync
-                                        # e.g. "39.08MB/s"
-                                        if speed_callback:
-
-                                            speed_str = match.group(3) 
-                                            speed_val = 0.0
-                                            unit_multipliers = {
-                                                'kB/s': 1024, 'MB/s': 1024**2, 'GB/s': 1024**3, 'TB/s': 1024**4, 'B/s': 1
-                                            }
-                                            # Simple parsing
-                                            for unit, mult in unit_multipliers.items():
-                                                if unit in speed_str:
-                                                    try:
-                                                        val_part = speed_str.replace(unit, '')
-                                                        speed_val = float(val_part) * mult
-                                                        break
-                                                    except ValueError:
-                                                        pass
-                                            if speed_val > 0:
-                                                # logging.info(f"Reported Speed: {speed_val}")
-                                                speed_callback(speed_val)
+                                        # Pass parsed speed and status to update callback
+                                        # Note: We assume "Transferring" if we carry specific speed info. 
+                                        # If it was checking, speed would likely be read-speed or nil.
+                                        _update_transfer_progress(torrent_hash, progress_float, current_bytes, total_size, speed=speed_val, status_text="Transferring")
 
                                     except ValueError:
                                         pass # Failed to parse numbers, ignore

@@ -997,7 +997,7 @@ def _transfer_content_rsync_upload_from_cache(
         logging.info(f"[DRY RUN] Would execute rsync upload for: {file_name}")
         logging.debug(f"[DRY RUN] Command: {' '.join(safe_rsync_cmd)}")
         if total_size > 0:
-            _update_transfer_progress(torrent_hash, 1.0, total_size, total_size)
+            _update_transfer_progress(torrent_hash, 1.0, total_size, total_size, status_text="Dry Run")
         log_transfer(torrent_hash, f"[DRY RUN] Completed rsync upload for {file_name}")
         return
 
@@ -1037,6 +1037,7 @@ def _transfer_content_rsync_upload_from_cache(
     try:
         for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
             logging.info(f"Starting rsync upload from cache for '{file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
+            _update_transfer_progress(torrent_hash, 0, 0, total_size, status_text="Checking/Resuming")
             logging.debug(f"Executing rsync upload: {' '.join(_create_safe_command_for_logging(rsync_cmd))}")
 
             try:
@@ -1155,7 +1156,8 @@ def transfer_content_rsync(
         if _update_transfer_progress and total_size > 0:
              progress = min(float(current) / float(total_size), 1.0)
              try:
-                 _update_transfer_progress(torrent_hash, progress, current, total_size)
+                 # Pass speed from monitor
+                 _update_transfer_progress(torrent_hash, progress, current, total_size, speed=current_speed_val, status_text="Transferring")
              except Exception:
                  pass
 
@@ -1225,11 +1227,13 @@ def transfer_content_rsync(
                 if dry_run:
                     logging.info(f"[DRY_RUN] Would execute: {' '.join(rsync_command)}")
                     if total_size > 0:
-                        _update_transfer_progress(torrent_hash, 1.0, total_size, total_size)
+                        _update_transfer_progress(torrent_hash, 1.0, total_size, total_size, status_text="Dry Run")
                     log_transfer(torrent_hash, f"[DRY RUN] Completed rsync transfer for {rsync_file_name}")
                     return
 
                 logging.info(f"Starting rsync transfer for '{rsync_file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
+                # AI-FEATURE: Set status to Checking before Rsync starts (it will switch to Transferring on first progress)
+                _update_transfer_progress(torrent_hash, 0, 0, total_size, status_text="Checking/Resuming")
                 logging.debug(f"Executing rsync: {' '.join(_create_safe_command_for_logging(rsync_command))}")
 
                 # AI-FIX: Hybrid Model restore. 
@@ -1245,7 +1249,7 @@ def transfer_content_rsync(
                     torrent_hash,
                     total_size,
                     log_transfer,
-                    lambda *args: None, # Disable process runner progress (SpeedMonitor handles bytes)
+                    lambda *args, **kwargs: None, # Disable process runner progress (SpeedMonitor handles bytes)
                     heartbeat_callback=heartbeat_callback,
                     timeout_seconds=adaptive_timeout,
                     speed_callback=rsync_speed_cb # Wired up!
@@ -1418,23 +1422,23 @@ def transfer_content_rsync_upload(
 
     doubled_total_size = total_size * 2
 
-    def download_progress_wrapper(hash, progress, transferred, total):
+    def download_progress_wrapper(hash, progress, transferred, total, speed=0.0, status_text=None):
         # progress comes from rsync (0.0 -> 1.0)
         # transferred is real bytes transferred (0 -> total_size)
         # We map this to 0 -> 50% of doubled_total_size
         weighted_progress = progress * 0.5
         # _update_transfer_progress expects cumulative bytes for its stats logic
         # For DL phase, cumulative bytes = transferred (real bytes)
-        _update_transfer_progress(hash, weighted_progress, transferred, doubled_total_size)
+        _update_transfer_progress(hash, weighted_progress, transferred, doubled_total_size, speed=speed, status_text=status_text)
 
-    def upload_progress_wrapper(hash, progress, transferred, total):
+    def upload_progress_wrapper(hash, progress, transferred, total, speed=0.0, status_text=None):
         # progress comes from rsync (0.0 -> 1.0)
         # transferred is real bytes transferred in THIS phase (0 -> total_size)
         # We map this to 50% -> 100% of doubled_total_size
         weighted_progress = 0.5 + (progress * 0.5)
         # For UL phase, cumulative bytes = total_size (from DL) + transferred (from UL)
         cumulative_bytes = total_size + transferred
-        _update_transfer_progress(hash, weighted_progress, cumulative_bytes, doubled_total_size)
+        _update_transfer_progress(hash, weighted_progress, cumulative_bytes, doubled_total_size, speed=speed, status_text=status_text)
 
     try:
         # --- 1. Download from Source to Cache ---
