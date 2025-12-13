@@ -518,23 +518,23 @@ class _ActiveTorrentsPanel:
 
                         # Append progress to the correct style of text
                         style_map = {
-                            "downloading": f" [blue]⇩ {file_name}[/blue]",
-                            "uploading": f" [yellow]⇧ {file_name}[/yellow]",
-                            "failed": f" [bold red]✖ {file_name}[/bold red]",
-                            "completed": f" [dim]✓ {file_name}[/dim]",
-                            "queued": f" [dim]· {file_name}[/dim]"
+                            "downloading": f"  [blue]⇩ {file_name}[/blue]",
+                            "uploading": f"  [yellow]⇧ {file_name}[/yellow]",
+                            "failed": f"  [bold red]✖ {file_name}[/bold red]",
+                            "completed": f"  [dim]✓ {file_name}[/dim]",
+                            "queued": f"  [dim]· {file_name}[/dim]"
                         }
 
                         if is_repair and status == "downloading":
-                             style_map["downloading"] = f" [bold magenta]🔍 {file_name}[/bold magenta]"
+                             style_map["downloading"] = f"  [bold magenta]🔍 {file_name}[/bold magenta]"
 
-                        file_text = Text.from_markup(style_map.get(status, f" [dim]· {file_name}[/dim]"))
+                        file_text = Text.from_markup(style_map.get(status, f"  [dim]· {file_name}[/dim]"))
                         file_text.append(progress_display)
                         file_renderables.append(file_text)
 
 
                     if len(files) > max_files:
-                        file_renderables.append(Text.from_markup(f" [dim]... and {len(files) - max_files} more.[/dim]"))
+                        file_renderables.append(Text.from_markup(f"  [dim]... and {len(files) - max_files} more.[/dim]"))
 
                     files_panel_content = Text("\n").join(file_renderables)
                     completed_files = torrent.get('completed_files', 0)
@@ -561,9 +561,8 @@ class _ActiveTorrentsPanel:
                     table.add_row(
                         progress_display,
                         Group(
-                            # --- UPDATE THIS LINE ---
-                            Text.from_markup(f"[{name_style}]{display_name}[/{name_style}]{repair_label} [dim]{files_display_str}[/dim] [bold yellow]{status_text} {speed_str}[/bold yellow]"),
-                            # --- END UPDATE ---
+                            Text.from_markup(f"[{name_style}]{display_name}[/{name_style}]{repair_label}"),
+                            Text.from_markup(f"[bold yellow]{status_text} {speed_str}[/bold yellow]  [dim]{files_display_str}[/dim]"),
                             files_panel_content
                         )
                     )
