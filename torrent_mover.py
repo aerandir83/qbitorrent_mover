@@ -1059,10 +1059,12 @@ class TorrentMover:
 
     def _initialize_ssh_pools(self):
         """Initializes SSH connection pools based on config."""
-        pool_wait_timeout_seconds = self.config['SETTINGS'].getint('pool_wait_timeout', 300)
+        # Increase default wait timeout to 1 hour to prevent failures when threads are queued behind large file transfers.
+        pool_wait_timeout_seconds = self.config['SETTINGS'].getint('pool_wait_timeout', 3600)
         server_sections = [s for s in self.config.sections() if s.endswith('_SERVER')]
         for section_name in server_sections:
-            max_sessions = self.config[section_name].getint('max_concurrent_ssh_sessions', 8)
+            # Increase default max sessions to 10 to better match parallel_jobs * max_concurrent_downloads
+            max_sessions = self.config[section_name].getint('max_concurrent_ssh_sessions', 10)
             self.ssh_connection_pools[section_name] = SSHConnectionPool(
                 host=self.config[section_name]['host'],
                 port=self.config[section_name].getint('port'),

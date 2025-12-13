@@ -184,7 +184,7 @@ class SSHConnectionPool:
     """
 
     def __init__(self, host: str, port: int, username: str, password: str,
-                 max_size: int = DEFAULT_SSH_POOL_SIZE, connect_timeout: int = 10, pool_wait_timeout: int = 120):
+                 max_size: int = DEFAULT_SSH_POOL_SIZE, connect_timeout: int = 10, pool_wait_timeout: int = 1200):
         """Initializes the SSHConnectionPool.
 
         Args:
