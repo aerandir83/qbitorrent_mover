@@ -1236,6 +1236,7 @@ class TorrentMover:
         return analyzed_torrents, total_transfer_size, total_count
 
     def _update_transfer_progress(self, torrent_hash: str, progress: float, transferred_bytes: int, total_size: int, speed: float = 0.0, status_text: str = None):
+    def _update_transfer_progress(self, torrent_hash: str, progress: float, transferred_bytes: int, total_size: int, speed: float = 0.0, status_text: str = None):
         """Callback to update torrent progress.
 
         # AI-GOTCHA: Transfer progress clamping
