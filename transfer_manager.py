@@ -1214,8 +1214,6 @@ def transfer_content_rsync(
                 def rsync_speed_cb(speed_val: float):
                     if ui and hasattr(ui, 'update_external_speed'):
                         ui.update_external_speed(remote_path, speed_val)
-                    else:
-                        logging.warning(f"UI NOT READY for speed update: {speed_val} (UI={ui})")
 
                 # Call the isolated process runner
                 success = process_runner.execute_streaming_command(

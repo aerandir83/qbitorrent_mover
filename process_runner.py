@@ -177,7 +177,7 @@ def execute_streaming_command(
                                         # AI-FIX: Parse Speed directly from Rsync
                                         # e.g. "39.08MB/s"
                                         if speed_callback:
-                                            logging.info("CALLING SPEED CALLBACK")
+
                                             speed_str = match.group(3) 
                                             speed_val = 0.0
                                             unit_multipliers = {
