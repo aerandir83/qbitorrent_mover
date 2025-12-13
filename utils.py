@@ -65,3 +65,37 @@ def _create_safe_command_for_logging(command: List[str]) -> List[str]:
         # 'sshpass' not in command, nothing to redact
         pass
     return safe_command
+
+class ThrottledProgressUpdater:
+    """Delays updates to the UI to avoid lock contention on high-frequency loops."""
+    def __init__(self, ui, torrent_hash, update_interval=0.5):
+        self.ui = ui
+        self.torrent_hash = torrent_hash
+        self.update_interval = update_interval
+        self.last_update_time = time.time()
+        self.accumulated_bytes = 0
+        self.transfer_type = 'download'
+        self.active_file_path = None
+        
+    def start(self, file_path, status):
+        # Don't throttle the starting 'start' call, we want immediate feedback
+        self.ui.start_file_transfer(self.torrent_hash, file_path, status)
+        self.active_file_path = file_path
+
+    def update(self, bytes_transferred, transfer_type='download'):
+        self.accumulated_bytes += bytes_transferred
+        self.transfer_type = transfer_type
+        
+        now = time.time()
+        if now - self.last_update_time >= self.update_interval:
+            self.flush()
+
+    def flush(self):
+        if self.accumulated_bytes > 0:
+            self.ui.update_torrent_progress(
+                self.torrent_hash, 
+                self.accumulated_bytes, 
+                transfer_type=self.transfer_type
+            )
+            self.accumulated_bytes = 0
+            self.last_update_time = time.time()

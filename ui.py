@@ -319,8 +319,9 @@ class _StatsPanel:
             stats_table.add_row("✅ Completed: ", f"[green]{stats['completed_transfers']}[/]")
             stats_table.add_row("❌ Failed: ", f"[red]{stats['failed_transfers']}[/]")
 
-            total_files = sum(t.get('total_files', 0) for t in self.ui_manager._torrents.values())
-            completed_files = sum(t.get('completed_files', 0) for t in self.ui_manager._torrents.values())
+            # Optimized: Use pre-calculated global stats
+            total_files = stats.get('total_files_tracked', 0)
+            completed_files = stats.get('completed_files_tracked', 0)
             stats_table.add_row("📂 Files: ", f"[white]{completed_files}/{total_files}[/]")
 
             # Compacted Time
@@ -462,7 +463,14 @@ class _ActiveTorrentsPanel:
             table.add_column() # Name & File List
 
             active_count = 0
-            for hash_, torrent in torrents.items():
+            # Optimized: Iterate only over active torrents
+            active_hashes = list(self.ui_manager._transferring_hashes)
+            # Sort by start time to maintain stable order
+            active_hashes.sort(key=lambda h: self.ui_manager._torrents[h]["start_time"])
+            
+            for hash_ in active_hashes:
+                torrent = torrents[hash_]
+                # Double check status (redundant but safe)
                 if torrent["status"] == "transferring":
                     active_count += 1
                     name = torrent["name"]
@@ -869,6 +877,9 @@ class UIManagerV2(BaseUIManager):
         self._file_lists: Dict[str, List[str]] = {} # torrent_hash -> [file_name_1, file_name_2, ...]
         self._file_status: Dict[str, Dict[str, str]] = {} # torrent_hash -> {file_name -> "queued" | "downloading" | "uploading" | "completed"}
         self._file_progress: Dict[str, Dict[str, Tuple[int, int]]] = {} # torrent_hash -> {file_name -> (transferred, total)}
+        
+        # Optimization: Track active hashes to avoid O(N) iteration
+        self._transferring_hashes: set = set()
 
 
         # Statistics
@@ -890,6 +901,9 @@ class UIManagerV2(BaseUIManager):
             "transferred_ul_bytes": 0,
             "last_dl_speed_check": time.time(),
             "last_ul_speed_check": time.time(),
+            # Optimization: Cached counters
+            "total_files_tracked": 0,
+            "completed_files_tracked": 0,
         }
         self._dl_speed_history = deque(maxlen=300)
         self._ul_speed_history = deque(maxlen=300)
@@ -1238,7 +1252,9 @@ class UIManagerV2(BaseUIManager):
             self._file_lists[torrent_hash] = all_files
             self._file_status[torrent_hash] = {file_name: "queued" for file_name in all_files}
             self._active_torrents.append(torrent_hash)
+            self._transferring_hashes.add(torrent_hash) # Add to active set
             self._stats["active_transfers"] += 1
+            self._stats["total_files_tracked"] = self._stats.get("total_files_tracked", 0) + total_files
 
     def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str, speed: float = 0.0, status_text: str = None, progress: float = None):
         """Updates the progress for a torrent and the overall progress bar.
@@ -1290,6 +1306,7 @@ class UIManagerV2(BaseUIManager):
                         # Prevent completed from exceeding total
                         if current_completed < total_files:
                             self._torrents[torrent_hash]["completed_files"] = current_completed + 1
+                            self._stats["completed_files_tracked"] = self._stats.get("completed_files_tracked", 0) + 1
 
     def fail_file_transfer(self, torrent_hash: str, file_path: str):
         """Marks an individual file as failed."""
@@ -1304,6 +1321,7 @@ class UIManagerV2(BaseUIManager):
                 try:
                     torrent = self._torrents[torrent_hash]
                     torrent["status"] = "completed" if success else "failed"
+                    self._transferring_hashes.discard(torrent_hash) # Remove from active set
                     self._completed_hashes.add(torrent_hash)
                     self._stats["active_transfers"] = max(0, self._stats["active_transfers"] - 1)
                     if success:

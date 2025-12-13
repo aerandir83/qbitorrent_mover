@@ -51,7 +51,7 @@ from resilient_queue import ResilientTransferQueue
 from ssh_manager import SSHConnectionPool, sftp_mkdir_p, _get_ssh_command
 from transfer_strategies import TransferFile
 from ui import UIManagerV2 as UIManager
-from utils import RemoteTransferError, retry, _create_safe_command_for_logging, Timeouts
+from utils import RemoteTransferError, retry, _create_safe_command_for_logging, Timeouts, ThrottledProgressUpdater
 from speed_monitor import SpeedMonitor
 
 
@@ -500,7 +500,10 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
         Exception: Propagates exceptions from the underlying SFTP operations.
     """
     try:
-        ui.start_file_transfer(torrent_hash, source_file_path, "downloading")
+        # Use ThrottledUpdater to reduce lock contention
+        updater = ThrottledProgressUpdater(ui, torrent_hash, update_interval=0.5)
+        updater.start(source_file_path, "downloading")
+        
         with source_pool.get_connection() as (sftp, ssh):
             remote_stat = sftp.stat(source_file_path)
             total_size = remote_stat.st_size
@@ -554,9 +557,10 @@ def _sftp_download_to_cache(source_pool: SSHConnectionPool, source_file_path: st
                         with ui._lock:
                             if torrent_hash in ui._file_progress:
                                 ui._file_progress[torrent_hash][source_file_path] = (local_size, total_size)
-                        ui.update_torrent_progress(torrent_hash, increment, transfer_type='download')
+                        updater.update(increment, transfer_type='download')
                         # ui.advance_overall_progress(increment)
                         file_tracker.record_file_progress(torrent_hash, source_file_path, local_size)
+        updater.flush() # Ensure final bytes are sent
         ui.complete_file_transfer(torrent_hash, source_file_path)
     except Exception as e:
         logging.error(f"Transfer failed for file '{source_file_path}' due to error: {e}", exc_info=True)
@@ -592,7 +596,9 @@ def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path
         # ui.update_file_status(torrent_hash, source_file_path, "[red]Cache file missing[/red]")
         raise FileNotFoundError(f"Local cache file not found: {local_cache_path}")
     try:
-        ui.start_file_transfer(torrent_hash, source_file_path, "uploading")
+        # Use ThrottledUpdater
+        updater = ThrottledProgressUpdater(ui, torrent_hash, update_interval=0.5)
+        updater.start(source_file_path, "uploading")
         total_size = local_cache_path.stat().st_size
         with ui._lock:
             if torrent_hash not in ui._file_progress:
@@ -628,7 +634,8 @@ def _sftp_upload_from_cache(dest_pool: SSHConnectionPool, local_cache_path: Path
                         with ui._lock:
                             if torrent_hash in ui._file_progress:
                                 ui._file_progress[torrent_hash][source_file_path] = (dest_size, total_size)
-                        ui.update_torrent_progress(torrent_hash, increment, transfer_type='upload')
+                        updater.update(increment, transfer_type='upload')
+            updater.flush()
             if sftp.stat(dest_file_path).st_size != total_size:
                 raise Exception("Final size mismatch during cached upload.")
             # ui.update_file_status(torrent_hash, source_file_path, "[green]Completed[/green]")
@@ -665,7 +672,9 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
     """
     file_name = os.path.basename(source_file_path)
     try:
-        ui.start_file_transfer(torrent_hash, source_file_path, "uploading")
+        # Use ThrottledUpdater
+        updater = ThrottledProgressUpdater(ui, torrent_hash, update_interval=0.5)
+        updater.start(source_file_path, "uploading")
         with source_pool.get_connection() as (source_sftp, source_ssh), dest_pool.get_connection() as (dest_sftp, dest_ssh):
             start_time = time.time()
             try:
@@ -724,9 +733,10 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
                         with ui._lock:
                             if torrent_hash in ui._file_progress:
                                 ui._file_progress[torrent_hash][source_file_path] = (dest_size, total_size)
-                        ui.update_torrent_progress(torrent_hash, increment, transfer_type='upload')
+                        updater.update(increment, transfer_type='upload')
                         # ui.advance_overall_progress(increment)
                         file_tracker.record_file_progress(torrent_hash, source_file_path, dest_size)
+            updater.flush()
             final_dest_size = dest_sftp.stat(dest_file_path).st_size
             if final_dest_size == total_size:
                 end_time = time.time()
@@ -792,7 +802,13 @@ def _sftp_download_file_core(pool: SSHConnectionPool, file: TransferFile, ui: UI
         if file_tracker.is_corrupted(torrent_hash, remote_file):
             raise Exception(f"File {file_name} is marked as corrupted, skipping.")
 
-        ui.start_file_transfer(torrent_hash, remote_file, "downloading")
+        if file_tracker.is_corrupted(torrent_hash, remote_file):
+            raise Exception(f"File {file_name} is marked as corrupted, skipping.")
+
+        # Use ThrottledUpdater
+        updater = ThrottledProgressUpdater(ui, torrent_hash, update_interval=0.5)
+        updater.start(remote_file, "downloading")
+        
         with pool.get_connection() as (sftp, ssh_client):
             remote_stat = sftp.stat(remote_file)
             total_size = remote_stat.st_size
