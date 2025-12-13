@@ -965,6 +965,18 @@ def _transfer_content_rsync_upload_from_cache(
         if '--checksum' not in rsync_flags and '-c' not in rsync_flags:
             rsync_flags.append('--checksum')
 
+    for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group", "-z", "--compress"]:
+        if flag in rsync_flags:
+             rsync_flags.remove(flag)
+        # Ensure we don't have short flags like -vz
+        rsync_flags = [f.replace('z', '') if f.startswith('-') and 'z' in f and f != '-z' else f for f in rsync_flags]
+
+    # Optimization for large files
+    if "--inplace" not in rsync_flags:
+        rsync_flags.append("--inplace")
+    if "--block-size" not in str(rsync_flags):
+         rsync_flags.append("--block-size=262144") 
+
     for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group"]:
         if flag not in rsync_flags:
             rsync_flags.append(flag)
@@ -1111,6 +1123,18 @@ def transfer_content_rsync(
         rsync_options_with_checksum.append("--info=progress2")
 
     # Add data-only flags to prevent permission errors
+    # Add data-only flags to prevent permission errors AND optimize for large media
+    # 1. Remove compression (bad for media)
+    if '-z' in rsync_options_with_checksum: rsync_options_with_checksum.remove('-z')
+    if '--compress' in rsync_options_with_checksum: rsync_options_with_checksum.remove('--compress')
+    rsync_options_with_checksum = [f.replace('z', '') if f.startswith('-') and 'z' in f and f != '-z' else f for f in rsync_options_with_checksum]
+
+    # 2. Add large file optimizations
+    if "--inplace" not in rsync_options_with_checksum:
+        rsync_options_with_checksum.append("--inplace")
+    if "--block-size" not in str(rsync_options_with_checksum):
+        rsync_options_with_checksum.append("--block-size=262144")
+
     for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group"]:
         if flag not in rsync_options_with_checksum:
             rsync_options_with_checksum.append(flag)
@@ -1171,7 +1195,6 @@ def transfer_content_rsync(
 
     MAX_RETRY_ATTEMPTS = 3
     adaptive_timeout = rsync_timeout
-    use_whole_file = False
 
     try:
         for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
@@ -1197,11 +1220,7 @@ def transfer_content_rsync(
                     except OSError as e:
                         logging.warning(f"Failed to remove corrupted/stalled file {local_path}: {e}")
 
-                cmd_options = list(rsync_command_base)
-                if use_whole_file:
-                    cmd_options.append('--whole-file')
-
-                rsync_command = [*cmd_options, remote_spec, local_parent_dir]
+                rsync_command = [*rsync_command_base, remote_spec, local_parent_dir]
 
                 if dry_run:
                     logging.info(f"[DRY_RUN] Would execute: {' '.join(rsync_command)}")
@@ -1261,8 +1280,7 @@ def transfer_content_rsync(
                             else:
                                 logging.warning(f"Size mismatch after rsync: {size_diff} bytes difference ({size_diff_percent:.2f}%)")
                                 if attempt < MAX_RETRY_ATTEMPTS:
-                                    logging.info("Will retry with whole-file sync to force correction...")
-                                    use_whole_file = True
+                                    logging.info("Will retry with delta sync (optimized block-size)...")
                                     continue
                                 else:
                                     raise Exception(f"Size verification failed after {MAX_RETRY_ATTEMPTS} attempts")
