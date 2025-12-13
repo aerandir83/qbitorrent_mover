@@ -975,7 +975,7 @@ def _transfer_content_rsync_upload_from_cache(
     if "--inplace" not in rsync_flags:
         rsync_flags.append("--inplace")
     if "--block-size" not in str(rsync_flags):
-         rsync_flags.append("--block-size=262144") 
+         rsync_flags.append("--block-size=131072") 
 
     for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group"]:
         if flag not in rsync_flags:
@@ -1133,7 +1133,7 @@ def transfer_content_rsync(
     if "--inplace" not in rsync_options_with_checksum:
         rsync_options_with_checksum.append("--inplace")
     if "--block-size" not in str(rsync_options_with_checksum):
-        rsync_options_with_checksum.append("--block-size=262144")
+        rsync_options_with_checksum.append("--block-size=131072")
 
     for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group"]:
         if flag not in rsync_options_with_checksum:
