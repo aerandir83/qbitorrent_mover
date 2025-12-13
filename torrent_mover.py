@@ -218,7 +218,7 @@ def _pre_transfer_setup(
                 status_message = (
                     f"Destination content exists but size mismatches "
                     f"(Source: {total_size} vs Dest: {destination_size}). "
-                    f"Will delete and re-transfer."
+                    f"Will attempt to resume/repair."
                 )
             logging.warning(status_message)
     else:
@@ -845,19 +845,11 @@ def transfer_torrent(
             ui.update_torrent_progress(hash_, total_size_calc * transfer_multiplier, transfer_type='download')
             transfer_executed = False
         elif pre_transfer_status == "exists_different_size":
-            if 'rsync' in transfer_mode:
-                logging.info(f"Rsync mode: Resuming transfer for mismatched content: {dest_content_path}")
-                # Do nothing, rsync will handle the delta
-            else:
-                # Original logic for SFTP
-                ui.log(f"[yellow]Mismatch size for {name}. Deleting destination content...[/yellow]")
-                logging.warning(f"Deleting mismatched destination content: {dest_content_path}")
-                try:
-                    delete_destination_content(dest_content_path, transfer_mode, ssh_connection_pools)
-                    ui.log(f"[green]Deleted mismatched content for {name}.[/green]")
-                except Exception as e:
-                    logging.exception(f"Failed to delete mismatched content for {name}")
-                    return "failed", f"Failed to delete mismatched content: {e}"
+            logging.info(f"Content exists with size mismatch for {name}. Attempting to resume/repair.")
+            ui.log(f"[yellow]Content exists with size mismatch. Resuming...[/yellow]")
+            # Do nothing here.
+            # SFTP strategies support file-level resume (if local < remote).
+            # Rsync strategies support delta transfer.
             # Fall through to execute the transfer below
 
         # --- 4. Execute Transfer if Needed ---
