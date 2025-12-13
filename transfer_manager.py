@@ -1171,6 +1171,7 @@ def transfer_content_rsync(
 
     MAX_RETRY_ATTEMPTS = 3
     adaptive_timeout = rsync_timeout
+    use_whole_file = False
 
     try:
         for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
@@ -1196,7 +1197,11 @@ def transfer_content_rsync(
                     except OSError as e:
                         logging.warning(f"Failed to remove corrupted/stalled file {local_path}: {e}")
 
-                rsync_command = [*rsync_command_base, remote_spec, local_parent_dir]
+                cmd_options = list(rsync_command_base)
+                if use_whole_file:
+                    cmd_options.append('--whole-file')
+
+                rsync_command = [*cmd_options, remote_spec, local_parent_dir]
 
                 if dry_run:
                     logging.info(f"[DRY_RUN] Would execute: {' '.join(rsync_command)}")
@@ -1256,7 +1261,8 @@ def transfer_content_rsync(
                             else:
                                 logging.warning(f"Size mismatch after rsync: {size_diff} bytes difference ({size_diff_percent:.2f}%)")
                                 if attempt < MAX_RETRY_ATTEMPTS:
-                                    logging.info("Will retry with delta sync...")
+                                    logging.info("Will retry with whole-file sync to force correction...")
+                                    use_whole_file = True
                                     continue
                                 else:
                                     raise Exception(f"Size verification failed after {MAX_RETRY_ATTEMPTS} attempts")
