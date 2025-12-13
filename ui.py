@@ -562,7 +562,7 @@ class _ActiveTorrentsPanel:
                         progress_display,
                         Group(
                             # --- UPDATE THIS LINE ---
-                            Text.from_markup(f"[{name_style}]{display_name}[/{name_style}]{repair_label} [dim]{files_display_str}[/dim] [bold yellow]{status_text} {progress:.1f}% {speed_str}[/bold yellow]"),
+                            Text.from_markup(f"[{name_style}]{display_name}[/{name_style}]{repair_label} [dim]{files_display_str}[/dim] [bold yellow]{status_text} {speed_str}[/bold yellow]"),
                             # --- END UPDATE ---
                             files_panel_content
                         )
