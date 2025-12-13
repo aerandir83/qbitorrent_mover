@@ -572,8 +572,6 @@ def _execute_transfer(
     # --- New Callbacks ---
     log_transfer: Callable,
     _update_transfer_progress: Callable,
-    log_transfer: Callable,
-    _update_transfer_progress: Callable,
     force_integrity_check: bool = False,
     max_concurrent_downloads_override: Optional[int] = None
 ) -> bool:
