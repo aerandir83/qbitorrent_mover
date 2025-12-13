@@ -290,9 +290,9 @@ class _StatsPanel:
 
             current_dl_speed = stats.get("current_dl_speed", 0.0)
             current_ul_speed = stats.get("current_ul_speed", 0.0)
-            avg_speed_hist = (sum(self.ui_manager._dl_speed_history) + sum(self.ui_manager._ul_speed_history)) / \
-                            (len(self.ui_manager._dl_speed_history) + len(self.ui_manager._ul_speed_history)) if \
-                            (self.ui_manager._dl_speed_history or self.ui_manager._ul_speed_history) else 1
+            avg_dl = sum(self.ui_manager._dl_speed_history) / len(self.ui_manager._dl_speed_history) if self.ui_manager._dl_speed_history else 0.0
+            avg_ul = sum(self.ui_manager._ul_speed_history) / len(self.ui_manager._ul_speed_history) if self.ui_manager._ul_speed_history else 0.0
+            avg_speed_hist = avg_dl + avg_ul
 
             stats_table = Table.grid(padding=(1, 0))
             stats_table.add_column(style="bold cyan", justify="right", no_wrap=True)

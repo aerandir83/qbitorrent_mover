@@ -74,7 +74,9 @@ def check_sshpass_installed() -> None:
 
 def _get_ssh_command(port: int) -> str:
     """Builds the SSH command for rsync, enabling connection multiplexing if available."""
-    base_ssh_cmd = f"ssh -p {port} -c aes128-ctr -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
+    # Use aes128-gcm@openssh.com for high performance (hardware accelerated)
+    # Disable compression (-o Compression=no) as it bottlenecks high-speed links
+    base_ssh_cmd = f"ssh -p {port} -c aes128-gcm@openssh.com,aes128-ctr -o Compression=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
     if SSH_CONTROL_PATH:
         multiplex_opts = f"-o ControlMaster=auto -o ControlPath={shlex.quote(SSH_CONTROL_PATH)} -o ControlPersist=60s"
         return f"{base_ssh_cmd} {multiplex_opts}"
