@@ -1249,7 +1249,7 @@ def transfer_content_rsync(
                     torrent_hash,
                     total_size,
                     log_transfer,
-                    lambda *args, **kwargs: None, # Disable process runner progress (SpeedMonitor handles bytes)
+                    _update_transfer_progress, # Enable process runner progress
                     heartbeat_callback=heartbeat_callback,
                     timeout_seconds=adaptive_timeout,
                     speed_callback=rsync_speed_cb # Wired up!
