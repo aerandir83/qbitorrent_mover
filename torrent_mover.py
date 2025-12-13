@@ -46,6 +46,7 @@ from system_manager import (
     recover_cached_torrents, delete_destination_content,
     delete_destination_files, force_remote_permissions
 )
+import process_runner
 from tracker_manager import (
     categorize_torrents,
     load_tracker_rules, save_tracker_rules, set_category_based_on_tracker,
@@ -1434,6 +1435,7 @@ class TorrentMover:
             except KeyboardInterrupt:
                 ui.log("[bold yellow]Process interrupted by user. Shutting down workers...[/]")
                 ui.set_final_status("Shutdown requested.")
+                process_runner.stop_all_processes()
                 if 'executor' in locals():
                     executor.shutdown(wait=False, cancel_futures=True)
                 raise

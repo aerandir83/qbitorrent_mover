@@ -8,10 +8,42 @@ try:
     import fcntl
 except ImportError:
     fcntl = None
-from typing import List, Callable, Any, Optional, Generator, IO
+from typing import List, Callable, Any, Optional, Generator, IO, Set
+import threading
 from utils import RemoteTransferError, _create_safe_command_for_logging
 
 logger = logging.getLogger(__name__)
+
+# Global state to track active processes for graceful shutdown
+_active_processes: Set[subprocess.Popen] = set()
+_process_lock = threading.Lock()
+_shutting_down = False
+
+def _register_process(process: subprocess.Popen) -> None:
+    """Registers a process as active."""
+    with _process_lock:
+        _active_processes.add(process)
+
+def _unregister_process(process: subprocess.Popen) -> None:
+    """Unregisters a process."""
+    with _process_lock:
+        _active_processes.discard(process)
+
+def stop_all_processes() -> None:
+    """
+     signals that the application is shutting down and terminates all tracked processes.
+    """
+    global _shutting_down
+    _shutting_down = True
+    logging.info("Stopping all active processes...")
+    with _process_lock:
+        for p in list(_active_processes): # Copy set to iterate
+            try:
+                if p.poll() is None:
+                    p.terminate()
+            except Exception as e:
+                logging.warning(f"Failed to terminate process: {e}")
+
 
 def _read_until_delimiter(stream: IO[bytes]) -> Generator[bytes, None, None]:
     """
@@ -56,8 +88,16 @@ def execute_streaming_command(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            bufsize=0
         )
+        
+        # Register the process immediately
+        _register_process(process)
+        
+        # Immediate check in case shutdown started while we were creating the process
+        if _shutting_down:
+            logger.warning("Shutdown detected during process creation. Terminating.")
+            process.terminate()
+            raise KeyboardInterrupt("Shutdown requested")
 
         # Set stdout to non-blocking
         fd_out = process.stdout.fileno()
@@ -246,12 +286,19 @@ def execute_streaming_command(
                     process.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     process.kill()
+            
+            if process:
+                _unregister_process(process)
 
         process.wait()
         # Use accumulated stderr
         stderr_output = stderr_buffer.decode('utf-8', errors='replace')
 
+        if _shutting_down:
+             raise KeyboardInterrupt("Shutdown requested")
+
         if process.returncode == 0 or process.returncode == 24: # 0=success, 24=vanished files
+
             return True
         else:
             log_transfer(torrent_hash, f"[bold red]Rsync FAILED (code {process.returncode})[/bold red]")
