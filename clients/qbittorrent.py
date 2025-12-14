@@ -317,3 +317,8 @@ class QBittorrentClient(TorrentClient):
             except Exception as e:
                 logging.error(f"Error while waiting for recheck on {torrent_hash[:10]}: {e}", exc_info=True)
                 return "FAILED_STATE"
+
+    def set_auto_management(self, torrent_hash: str, enable: bool = True) -> None:
+        """Sets Automatic Torrent Management for the specified torrent."""
+        if self.client:
+            self.client.torrents_set_auto_management(torrent_hashes=torrent_hash, enable=enable)

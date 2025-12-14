@@ -51,3 +51,7 @@ class TorrentClient(ABC):
     @abstractmethod
     def wait_for_recheck(self, torrent_hash: str, ui_manager: Any, stuck_timeout: int, stopped_timeout: int, grace_period: int = 0, dry_run: bool = False) -> str:
         pass
+
+    @abstractmethod
+    def set_auto_management(self, torrent_hash: str, enable: bool = True) -> None:
+        pass

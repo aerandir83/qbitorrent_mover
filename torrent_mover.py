@@ -328,7 +328,11 @@ def _post_transfer_actions(
                         category=torrent.category,
                         use_auto_tmm=True
                     )
-                    time.sleep(5) # Give client time to add it
+                    time.sleep(2) # Give client time to add it. Decreased from 5s to 2s for responsiveness.
+                    
+                    # Force enable Auto TMM to ensure it sticks (overriding any side-effect of save_path)
+                    destination_client.set_auto_management(torrent_hash=hash_, enable=True)
+                    
                 except Exception as e:
                     logging.error(f"Failed to add torrent to destination: {e}")
                     return False, f"Failed to add torrent to destination: {e}"
