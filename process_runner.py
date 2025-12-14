@@ -71,7 +71,8 @@ def execute_streaming_command(
     _update_transfer_progress: Callable[..., Any],
     heartbeat_callback: Optional[Callable[[], None]] = None,
     timeout_seconds: int = 60,
-    speed_callback: Optional[Callable[[float], None]] = None
+    speed_callback: Optional[Callable[[float], None]] = None,
+    current_file_callback: Optional[Callable[[str], None]] = None
 ) -> bool:
     logging.debug(f"DEBUG: execute_streaming_command called. Heartbeat: {'YES' if heartbeat_callback else 'NO'}")
     """
@@ -240,10 +241,25 @@ def execute_streaming_command(
 
                                     except ValueError:
                                         pass # Failed to parse numbers, ignore
-
-                                # Log trace at high verbosity ONLY if needed (disabled to prevent IO bottleneck)
-                                # logger.log(logging.NOTSET, f"({torrent_hash[:10]}) [RSYNC_STDOUT] {line}")
-                                pass
+                                else:
+                                    # Not a progress line. Could be a file name.
+                                    if current_file_callback:
+                                        # Basic filtering for rsync noise
+                                        ignore_prefixes = [
+                                            "sending incremental file list",
+                                            "sent ",
+                                            "total size is",
+                                            "received "
+                                        ]
+                                        should_ignore = False
+                                        for prefix in ignore_prefixes:
+                                            if line.startswith(prefix):
+                                                should_ignore = True
+                                                break
+                                        
+                                        if not should_ignore and not line.endswith('/'):
+                                            # Assume it's a file
+                                            current_file_callback(line)
 
                         else:
                             # EOF stdout

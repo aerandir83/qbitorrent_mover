@@ -825,7 +825,8 @@ def transfer_torrent(
         strategy = get_transfer_strategy(transfer_mode, config, ssh_connection_pools)
         if not dest_content_path: # Should not happen if status is not failed
              return "failed", "Destination content path could not be determined."
-        files: List[TransferFile] = strategy.prepare_files(torrent, dest_content_path)
+        # Pass the calculated source_content_path to ensure single-file-in-folder/renamed torrents are handled correctly
+        files: List[TransferFile] = strategy.prepare_files(torrent, dest_content_path, source_path_override=source_content_path)
 
         if not files and not dry_run:
             logging.warning(f"No files found to transfer for '{name}'. Skipping.")
@@ -872,6 +873,7 @@ def transfer_torrent(
             )
 
             if not transfer_success:
+                ui.complete_torrent_transfer(hash_, success=False) # Ensure UI is updated
                 return "failed", "Transfer failed during execution"
 
             transfer_executed = True

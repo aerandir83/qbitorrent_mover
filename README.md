@@ -10,11 +10,18 @@ This project follows a `MAJOR.MINOR.PATCH` versioning scheme:
 *   **MINOR**: Incremented when new, backward-compatible functionality is added.
 *   **PATCH**: Incremented for backward-compatible bug fixes or minor updates.
 
-The current version is **2.13.1**. To check your version, run: `python3 torrent_mover.py --version`.
+The current version is **2.14.0**. To check your version, run: `python3 torrent_mover.py --version`.
 
 ## Changelog
 
-### Version 2.13.1 (Latest)
+### Version 2.14.0 (Latest)
+* **feat(resilience):** Implemented "Pre-Flight Unlock" to fix Permission Denied loops by running `chmod 777` on the destination before transfer.
+* **feat(rsync):** Refactored `rsync_upload` to strict "Relay Mode" (Download -> Cache -> Upload) for better reliability.
+* **feat(config):** Added `local_cache_path` configuration for `rsync_upload` mode, allowing use of a specific drive for large temporary files.
+* **feat(checks):** Added pre-flight storage capacity checks to prevent filling up the disk.
+* **feat(ui):** Added weighted progress bars for `rsync_upload` (50% Download / 50% Upload) for smoother feedback.
+
+### Version 2.13.1
 * **fix(progress):** Refactored rsync progress parsing to directly handle `--info=progress2` output, resolving UI vs Log discrepancies.
 * **fix(ui):** Corrected "Peak Speed" calculation logic in the dashboard.
 * **style(ui):** Improved the layout of the Statistics panel and increased Network Graph visibility.

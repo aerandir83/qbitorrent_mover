@@ -1139,6 +1139,10 @@ def transfer_content_rsync(
     if "--info=progress2" not in rsync_options_with_checksum:
         rsync_options_with_checksum.append("--info=progress2")
 
+    # Add -v to enable filename output for UI
+    if '-v' not in rsync_options_with_checksum and '--verbose' not in rsync_options_with_checksum:
+        rsync_options_with_checksum.append('-v')
+
     # Add data-only flags to prevent permission errors
     # Add data-only flags to prevent permission errors AND optimize for large media
     # 1. Remove compression (bad for media)
@@ -1259,6 +1263,14 @@ def transfer_content_rsync(
                     if ui and hasattr(ui, 'update_external_speed'):
                         ui.update_external_speed(remote_path, speed_val)
 
+                def rsync_file_cb(filename: str):
+                    if ui:
+                        # Normalize path to match what UI expects (source_root + relative_path)
+                        full_path = os.path.join(remote_path, filename).replace('\\', '/')
+                        if full_path.endswith('/'): full_path = full_path[:-1]
+                        # Only update status, 0 bytes
+                        ui.update_torrent_progress(torrent_hash, 0, "download", file_name=full_path)
+
                 # Call the isolated process runner
                 success = process_runner.execute_streaming_command(
                     rsync_command,
@@ -1268,7 +1280,8 @@ def transfer_content_rsync(
                     _update_transfer_progress, # Enable process runner progress
                     heartbeat_callback=heartbeat_callback,
                     timeout_seconds=adaptive_timeout,
-                    speed_callback=rsync_speed_cb # Wired up!
+                    speed_callback=rsync_speed_cb,
+                    current_file_callback=rsync_file_cb
                 )
 
                 if success:

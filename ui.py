@@ -690,7 +690,7 @@ class BaseUIManager(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str, speed: float = 0.0, status_text: str = None, progress: float = None):
+    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str, speed: float = 0.0, status_text: str = None, progress: float = None, file_name: str = None):
         pass
 
     @abc.abstractmethod
@@ -791,7 +791,7 @@ class SimpleUIManager(BaseUIManager):
         else:
             logging.info(f"Starting Transfer: {torrent_name}")
 
-    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str, speed: float = 0.0, status_text: str = None, progress: float = None):
+    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str, speed: float = 0.0, status_text: str = None, progress: float = None, file_name: str = None):
         """A no-op to avoid overly verbose logging."""
         # We don't log every progress update in simple mode, too noisy.
         pass
@@ -1263,7 +1263,7 @@ class UIManagerV2(BaseUIManager):
             self._stats["active_transfers"] += 1
             self._stats["total_files_tracked"] = self._stats.get("total_files_tracked", 0) + total_files
 
-    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str, speed: float = 0.0, status_text: str = None, progress: float = None):
+    def update_torrent_progress(self, torrent_hash: str, bytes_transferred: float, transfer_type: str, speed: float = 0.0, status_text: str = None, progress: float = None, file_name: str = None):
         """Updates the progress for a torrent and the overall progress bar.
 
         # AI-CONTEXT: Delta Calculation
@@ -1276,6 +1276,7 @@ class UIManagerV2(BaseUIManager):
             speed: Current speed in bytes/sec (optional).
             status_text: Current status text (e.g. "Checking") (optional).
             progress: Explicit progress fraction (0.0-1.0) (optional).
+            file_name: The name/path of the file currently being transferred (optional).
         """
         with self._lock:
             if torrent_hash in self._torrents:
@@ -1286,6 +1287,13 @@ class UIManagerV2(BaseUIManager):
                     self._torrents[torrent_hash]["status_text"] = status_text
                 if progress is not None:
                     self._torrents[torrent_hash]["progress"] = progress
+                
+                # Update individual file status if provided
+                if file_name:
+                    # In case of rsync, we might have many files. 
+                    # If this file is known, mark it as downloading.
+                    # We reuse start_file_transfer which handles check.
+                    self.start_file_transfer(torrent_hash, file_name, "downloading")
 
                 if transfer_type == "download":
                     self._stats["transferred_dl_bytes"] = self._stats.get("transferred_dl_bytes", 0) + bytes_transferred
@@ -1297,8 +1305,11 @@ class UIManagerV2(BaseUIManager):
     def start_file_transfer(self, torrent_hash: str, file_path: str, status: str):
         """Sets the status of an individual file within a torrent (e.g., "downloading")."""
         with self._lock:
-            if torrent_hash in self._file_status and file_path in self._file_status[torrent_hash]:
+            if torrent_hash in self._file_status:
                 self._file_status[torrent_hash][file_path] = status
+            else:
+                 # Should not happen if start_torrent_transfer was called, but safety first
+                 self._file_status[torrent_hash] = {file_path: status}
 
     def complete_file_transfer(self, torrent_hash: str, file_path: str):
         """Marks an individual file as completed."""

@@ -32,7 +32,7 @@ class TransferStrategy(abc.ABC):
         self.ssh_connection_pools = ssh_connection_pools
 
     @abc.abstractmethod
-    def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
+    def prepare_files(self, torrent: "Torrent", dest_path: str, source_path_override: str = None) -> List[TransferFile]:
         """Prepare a list of files to be transferred for a given torrent."""
         pass
 
@@ -61,13 +61,13 @@ class SFTPStrategy(TransferStrategy):
     def supports_delta_correction(self) -> bool:
         return False
 
-    def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
+    def prepare_files(self, torrent: "Torrent", dest_path: str, source_path_override: str = None) -> List[TransferFile]:
         """
         Recursively lists all files from the source SFTP server and prepares them for transfer.
         Handles both single-file and multi-file (directory) torrents.
         """
         from ssh_manager import _get_all_files_recursive
-        source_path = torrent.content_path.rstrip('/\\')
+        source_path = source_path_override.rstrip('/\\') if source_path_override else torrent.content_path.rstrip('/\\')
         file_list_tuples: List[Tuple[str, str, int]] = []
 
         with self.pool.get_connection() as (sftp, ssh):
@@ -115,12 +115,12 @@ class RsyncStrategy(TransferStrategy):
     def supports_delta_correction(self) -> bool:
         return True
 
-    def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
+    def prepare_files(self, torrent: "Torrent", dest_path: str, source_path_override: str = None) -> List[TransferFile]:
         """
         Prepares a single TransferFile representing the entire torrent for rsync.
         """
         from ssh_manager import batch_get_remote_sizes
-        source_path = torrent.content_path.rstrip('/\\')
+        source_path = source_path_override.rstrip('/\\') if source_path_override else torrent.content_path.rstrip('/\\')
         with self.pool.get_connection() as (sftp, ssh):
             # batch_get_remote_sizes returns a dict, we need the value
             sizes = batch_get_remote_sizes(ssh, [source_path])
@@ -148,9 +148,9 @@ class SFTPUploadStrategy(TransferStrategy):
     def supports_delta_correction(self) -> bool:
         return False
 
-    def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
+    def prepare_files(self, torrent: "Torrent", dest_path: str, source_path_override: str = None) -> List[TransferFile]:
         from ssh_manager import _get_all_files_recursive
-        source_path = torrent.content_path.rstrip('/\\')
+        source_path = source_path_override.rstrip('/\\') if source_path_override else torrent.content_path.rstrip('/\\')
         file_list_tuples: List[Tuple[str, str, int]] = []
 
         with self.pool.get_connection() as (sftp, ssh):
@@ -193,9 +193,9 @@ class RsyncUploadStrategy(TransferStrategy):
     def supports_delta_correction(self) -> bool:
         return True
 
-    def prepare_files(self, torrent: "Torrent", dest_path: str) -> List[TransferFile]:
+    def prepare_files(self, torrent: "Torrent", dest_path: str, source_path_override: str = None) -> List[TransferFile]:
         from ssh_manager import batch_get_remote_sizes
-        source_path = torrent.content_path.rstrip('/\\')
+        source_path = source_path_override.rstrip('/\\') if source_path_override else torrent.content_path.rstrip('/\\')
         with self.pool.get_connection() as (sftp, ssh):
             sizes = batch_get_remote_sizes(ssh, [source_path])
             total_size = sizes.get(source_path, 0)
