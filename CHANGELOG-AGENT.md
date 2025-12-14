@@ -12,6 +12,8 @@ This log tracks architectural changes and refactors that significantly affect ho
 *   **Layout:** Statistics panel and Network Graph visibility have been improved.
 
 ## Unreleased
+ 
+## 2.14.0 - Permissions, Relay Mode, and Checks
 
 **Summary:** Fixed Permission Denied loops by implementing Pre-Flight Unlock (`chmod 777`) and disabling rsync metadata preservation. Refactored rsync_upload mode to 'Relay Mode'. Added local_cache_path configuration, pre-flight storage capacity checks, and weighted progress bars (50% DL / 50% UL) for smoother UI feedback.
 

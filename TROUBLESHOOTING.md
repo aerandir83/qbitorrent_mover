@@ -31,6 +31,23 @@ This guide helps diagnose and resolve common issues encountered during the opera
 *   **Explanation:** This occurs when the destination files are owned by `nobody` (common in Unraid/Docker) and the local user cannot overwrite them.
 *   **Solution:** The script now automatically performs a 'Pre-Flight Unlock' (chmod 777) via SSH before transfer. Ensure `DESTINATION_SERVER` is configured with a user that has `sudo` or ownership rights (or that the files are essentially public).
 
+### 5. SFTP Timeouts / Connection Failures
+
+*   **Symptom:** Logs show `TimeoutError`, `EOFError`, or `Secsh channel open FAILED`.
+*   **Root Cause:** Network instability, firewall dropping idle connections, or exceeding the SSH server's `MaxSessions` limit.
+*   **Solution:** 
+    *   Increase `pool_wait_timeout` in `config.ini` if parallel transfers are contending for connections.
+    *   Reduce `max_concurrent_ssh_sessions` in `config.ini`.
+    *   Check `watchdog_timeout` if large files are timing out during checksums.
+
+### 6. Storage Capacity Errors
+
+*   **Symptom:** Transfers fail to start with a "Insufficient disk space" error.
+*   **Root Cause:** The destination (or local cache for `rsync_upload`) does not have enough free space to hold the torrent.
+*   **Solution:**
+    *   Free up space on the destination drive.
+    *   For `rsync_upload` (Relay Mode), configure `local_cache_path` in `config.ini` to point to a drive with sufficient space, as it caches the entire torrent locally before uploading.
+
 ## Diagnostic Decision Trees
 
 ### Tree 1: 0% Progress Stalls

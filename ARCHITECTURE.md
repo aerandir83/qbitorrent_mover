@@ -41,7 +41,7 @@ Refactoring MUST preserve this sequence.
 1.  **Discovery:** `QbittorrentManager` fetches torrents completed > `min_seed_time`.
 2.  **Filtering:** `TorrentMover` excludes torrents based on `transfer_checkpoint.json` (already moved) AND Tracker Rules (ignored domains).
 3.  **Categorization:** `TrackerManager` applies rules to assign a category (modifying the torrent metadata in memory).
-4.  **Strategy Selection:** `TransferStrategies` selects the mode (`sftp`, `rsync`, `sftp_upload`).
+4.  **Strategy Selection:** `TransferStrategies` selects the mode (`sftp`, `rsync`, `sftp_upload`, `rsync_upload`).
 5.  **Pre-Flight Unlock:** Invoke `system_manager.force_remote_permissions` to ensure the destination path is writable.
 6.  **Execution:** `TransferManager` executes the strategy.
     * *Locking:* `SSHManager` acquires a slot from the pool.
