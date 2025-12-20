@@ -53,7 +53,8 @@ from transfer_strategies import TransferFile
 from ui import UIManagerV2 as UIManager
 from utils import RemoteTransferError, retry, _create_safe_command_for_logging, Timeouts, ThrottledProgressUpdater
 from speed_monitor import SpeedMonitor
-from rsync_manager import RsyncDownloader, RsyncSpeedOptimizer
+from rsync_manager import RsyncDownloader, RsyncUploader
+from sftp_manager import RateLimitedFile, SFTPDownloader
 
 if typing.TYPE_CHECKING:
     import qbittorrentapi
@@ -129,62 +130,6 @@ class SFTPSizeFetcher:
 def _is_sshpass_installed() -> bool:
     """Checks if sshpass is installed and available in the system's PATH."""
     return shutil.which("sshpass") is not None
-
-class RateLimitedFile:
-    """Wraps a file-like object to throttle read and write operations.
-
-    This class acts as a proxy to a file object, inserting delays into read()
-    and write() calls to ensure that the data transfer rate does not exceed a
-    specified maximum.
-
-    Attributes:
-        file: The underlying file-like object (e.g., from `open()` or SFTP).
-        max_bytes_per_sec: The maximum desired transfer speed in bytes per second.
-    """
-    def __init__(self, file_obj: Any, max_bytes_per_sec: float):
-        """Initializes the RateLimitedFile wrapper.
-
-        Args:
-            file_obj: The file-like object to wrap.
-            max_bytes_per_sec: The maximum transfer speed in bytes per second.
-                If 0 or None, the limit is infinite (no throttling).
-        """
-        self.file = file_obj
-        self.max_bytes_per_sec = max_bytes_per_sec if max_bytes_per_sec else float('inf')
-        self.last_time = time.time()
-        self.bytes_since_last = 0
-
-    def read(self, size: int) -> bytes:
-        data = self.file.read(size)
-        self._throttle(len(data))
-        return data
-
-    def write(self, data: bytes) -> int:
-        bytes_written = self.file.write(data)
-        if bytes_written:
-            self._throttle(bytes_written)
-        return bytes_written
-
-    def _throttle(self, bytes_transferred: int) -> None:
-        if self.max_bytes_per_sec == float('inf'):
-            return
-
-        self.bytes_since_last += bytes_transferred
-        elapsed = time.time() - self.last_time
-
-        if elapsed > 0:
-            required_time = self.bytes_since_last / self.max_bytes_per_sec
-            sleep_time = required_time - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-        if elapsed >= 1.0:
-            self.last_time = time.time()
-            self.bytes_since_last = 0
-
-    def __getattr__(self, attr: str) -> Any:
-        """Proxy other attributes to the wrapped file object."""
-        return getattr(self.file, attr)
 
 
 class TransferCheckpoint:
@@ -686,10 +631,7 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
             if total_size == 0:
                 logging.warning(f"Skipping zero-byte source file: {file_name}")
                 return
-            with ui._lock:
-                if torrent_hash not in ui._file_progress:
-                    ui._file_progress[torrent_hash] = {}
-                ui._file_progress[torrent_hash][source_file_path] = (0, total_size)
+            ui.update_file_progress(torrent_hash, source_file_path, 0, total_size)
             dest_size = file_tracker.get_file_progress(torrent_hash, source_file_path)
             try:
                 remote_dest_size = dest_sftp.stat(dest_file_path).st_size
@@ -730,9 +672,7 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
                         dest_f.write(chunk)
                         increment = len(chunk)
                         dest_size += increment
-                        with ui._lock:
-                            if torrent_hash in ui._file_progress:
-                                ui._file_progress[torrent_hash][source_file_path] = (dest_size, total_size)
+                        ui.update_file_progress(torrent_hash, source_file_path, dest_size, total_size)
                         updater.update(increment, transfer_type='upload')
                         # ui.advance_overall_progress(increment)
                         file_tracker.record_file_progress(torrent_hash, source_file_path, dest_size)
@@ -774,112 +714,6 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
         logging.error(f"Upload failed for {file_name}: {e}")
         raise
 
-def _sftp_download_file_worker(
-    pool: SSHConnectionPool,
-    file: TransferFile,
-    torrent_hash: str,
-    ui: UIManager,
-    file_tracker: FileTransferTracker,
-    dry_run: bool,
-    download_limit_bytes_per_sec: int,
-    sftp_chunk_size: int,
-    progress_callback: Callable[[int, int], None],
-    force_integrity_check: bool = False
-) -> None:
-    """
-    Worker function to download a single file via SFTP.
-    progress_callback signature: (current_total_bytes_for_file, network_bytes_delta)
-    """
-    remote_file = file.source_path
-    local_path = Path(file.dest_path)
-    file_name = os.path.basename(remote_file)
-
-    try:
-        if file_tracker.is_corrupted(torrent_hash, remote_file):
-            raise RemoteTransferError(f"File {file_name} is marked as corrupted, skipping.")
-
-        # Ensure parent directory
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with pool.get_connection() as (sftp, ssh):
-            # 1. Stat Remote
-            try:
-                remote_stat = sftp.stat(remote_file)
-                remote_size = remote_stat.st_size
-            except FileNotFoundError:
-                logging.error(f"Remote file not found: {remote_file}")
-                raise
-
-            if remote_size == 0:
-                logging.warning(f"Skipping zero-byte file: {file_name}")
-                progress_callback(0, 0) # Mark as done (0 bytes)
-                return
-
-            # 2. Check Local
-            local_size = 0
-            if local_path.exists():
-                local_size = local_path.stat().st_size
-
-            # 3. Resume Logic
-            if local_size == remote_size:
-                if not force_integrity_check:
-                    logging.info(f"Skipping (exists and size matches): {file_name}")
-                    progress_callback(remote_size, 0) # Mark full size as done, 0 network activity
-                    return
-                else:
-                    logging.info(f"Integrity check forced for {file_name}...")
-            
-            if local_size > remote_size:
-                logging.warning(f"Local file larger than remote ({local_size} > {remote_size}). Redownloading.")
-                local_size = 0
-                file_tracker.record_file_progress(torrent_hash, remote_file, 0)
-            elif local_size > 0:
-                logging.info(f"Resuming {file_name} from {local_size / (1024*1024):.2f} MB")
-                # Report initial progress (existing data, no network delta)
-                progress_callback(local_size, 0)
-
-            if dry_run:
-                logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
-                progress_callback(remote_size, 0)
-                return
-
-            # 4. Transfer
-            mode = 'ab' if local_size > 0 else 'wb'
-            start_time = time.time()
-            
-            with sftp.open(remote_file, 'rb') as remote_f_raw:
-                remote_f_raw.seek(local_size)
-                remote_f_raw.prefetch()
-                remote_f = RateLimitedFile(remote_f_raw, download_limit_bytes_per_sec)
-                
-                with open(local_path, mode) as local_f:
-                    while True:
-                        chunk = remote_f.read(sftp_chunk_size)
-                        if not chunk: 
-                            break
-                        local_f.write(chunk)
-                        chunk_len = len(chunk)
-                        local_size += chunk_len
-                        # Update Tracker & Callback
-                        file_tracker.record_file_progress(torrent_hash, remote_file, local_size)
-                        progress_callback(local_size, chunk_len) # Report Total Size + Network Delta
-
-            # 5. Verification
-            final_local_size = local_path.stat().st_size
-            if final_local_size != remote_size:
-                raise RemoteTransferError(f"Size mismatch: Expected {remote_size}, got {final_local_size}")
-
-            # Duration/Speed log
-            duration = time.time() - start_time
-            if duration > 0:
-                speed = (remote_size - (local_size - (final_local_size - local_size))) / duration
-                # logging.debug(f"Transfer speed for {file_name}: {speed/1024/1024:.2f} MB/s")
-
-    except Exception as e:
-        # Let the caller handle retries via the Queue
-        raise e
-
-
 
 def _transfer_content_rsync_upload_from_cache(
     dest_config: configparser.SectionProxy,
@@ -904,129 +738,34 @@ def _transfer_content_rsync_upload_from_cache(
     Updates:
         Heartbeat callback support integrated for watchdog petting.
     """
-    file_name = os.path.basename(local_path)
-    log_transfer(torrent_hash, f"Starting rsync upload from cache for '{file_name}'")
-
-    host = dest_config['host']
-    port = dest_config.getint('port')
-    username = dest_config['username']
-    password = dest_config['password']
-
-    remote_parent_dir = os.path.dirname(remote_path)
-    cleaned_remote_parent_dir = remote_parent_dir.strip('\'"')
-    remote_spec = f"{username}@{host}:{cleaned_remote_parent_dir}"
-
-    # --- Integrated Rsync Speed Fix ---
-    from rsync_manager import RsyncSpeedOptimizer
-
-    optimizer = RsyncSpeedOptimizer(
-        total_size_bytes=total_size,
-        is_repair=force_integrity_check
+    # Use RsyncUploader class
+    uploader = RsyncUploader(
+        torrent_hash=torrent_hash,
+        total_size=total_size,
+        log_transfer=log_transfer,
+        progress_callback=_update_transfer_progress,
+        file_tracker=None, 
+        heartbeat_callback=heartbeat_callback,
+        ui_actions=ui
     )
-    flags = optimizer.build_flags()
-    if rsync_options: flags.extend(rsync_options)
-    ssh_opts_str = optimizer.build_ssh_options(port)
-
-    # Reconstruct command
-    # Source is local_path
-    # Dest is remote_spec
     
-    rsync_cmd = [
-        "stdbuf", "-o0", "sshpass", "-p", password,
-        "rsync",
-        *flags,
-        "-e", ssh_opts_str,
-        local_path, # Source is local
-        remote_spec # Destination is remote
-    ]
-    safe_rsync_cmd = list(rsync_cmd)
-    safe_rsync_cmd[2] = "'********'"
-
-    if dry_run:
-        logging.info(f"[DRY RUN] Would execute rsync upload for: {file_name}")
-        logging.debug(f"[DRY RUN] Command: {' '.join(safe_rsync_cmd)}")
-        if total_size > 0:
-            _update_transfer_progress(torrent_hash, 1.0, total_size, total_size, status_text="Dry Run")
-        log_transfer(torrent_hash, f"[DRY RUN] Completed rsync upload for {file_name}")
-        return
-
-    # Monitor Setup
-    fetcher = SFTPSizeFetcher(dest_config)
-    def monitor_callback(delta, current, speed):
-        # Progress is now handled by rsync output parsing in process_runner
-        if monitor:
-            status = monitor.get_status()
-            history_data = status['history']
-            current_speed_val = status['current_speed']
-
-            if update_speed_callback:
-                try:
-                    update_speed_callback(history_data)
-                except Exception:
-                    pass
-
-            # 1. Update Sparkline History (Bridge established in Task 2)
-            if ui and hasattr(ui, 'update_speed_history'):
-                 ui.update_speed_history(history_data)
-
-            # 2. FORCE update the UI speed text (The Fix for 0.00)
-            if ui and isinstance(ui, UIManager): # Check type to be safe
-                ui.update_current_speed(download_speed=0.0, upload_speed=current_speed_val)
-
-    monitor = SpeedMonitor(
-        remote_path,
-        size_fetcher=lambda: fetcher.get_size(remote_path),
-        callback=monitor_callback
+    # Dummy tracker
+    class DummyTracker:
+        def is_corrupted(self, *args): return False
+        def record_corruption(self, *args): pass
+    
+    uploader.file_tracker = DummyTracker()
+    
+    uploader.transfer(
+        local_path=local_path,
+        remote_path=remote_path,
+        dest_config=dest_config,
+        rsync_options=rsync_options,
+        dry_run=dry_run,
+        timeout=rsync_timeout,
+        verify=False,
+        force_integrity=force_integrity_check
     )
-    monitor.start_monitoring()
-
-    MAX_RETRY_ATTEMPTS = 3
-    adaptive_timeout = rsync_timeout
-
-    try:
-        for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
-            logging.info(f"Starting rsync upload from cache for '{file_name}' (attempt {attempt}/{MAX_RETRY_ATTEMPTS})")
-            _update_transfer_progress(torrent_hash, 0, 0, total_size, status_text="Checking/Resuming")
-            logging.debug(f"Executing rsync upload: {' '.join(_create_safe_command_for_logging(rsync_cmd))}")
-
-            try:
-                # Call the isolated process runner
-                success = process_runner.execute_streaming_command(
-                    rsync_cmd,
-                    torrent_hash,
-                    total_size,
-                    log_transfer,
-                    _update_transfer_progress,
-                    heartbeat_callback=heartbeat_callback,
-                    timeout_seconds=adaptive_timeout
-                )
-
-                if success:
-                    logging.info(f"Rsync upload from cache completed for '{file_name}'.")
-                    log_transfer(torrent_hash, f"[green]Rsync upload complete: {file_name}[/green]")
-                    return
-                else:
-                    raise RemoteTransferError("Rsync upload execution failed.")
-
-            except (RemoteTransferError, subprocess.TimeoutExpired) as e:
-                logging.error(f"Rsync upload failed for '{file_name}': {e}")
-                if attempt < MAX_RETRY_ATTEMPTS:
-                    sleep_time = [10, 30, 60][min(attempt - 1, 2)]
-                    logging.warning(f"Rsync upload stalled. Retrying in {sleep_time} seconds with extended monitoring timeout...")
-                    time.sleep(sleep_time)
-                    adaptive_timeout += 60
-                    continue
-                raise RemoteTransferError(f"Rsync upload for '{file_name}' failed after retries") from e
-
-            except Exception as e:
-                logging.error(f"An exception occurred during rsync upload for '{file_name}': {e}", exc_info=True)
-                if attempt < MAX_RETRY_ATTEMPTS:
-                    time.sleep(RETRY_DELAY_SECONDS)
-                    continue
-                raise RemoteTransferError(f"Rsync upload for '{file_name}' failed") from e
-    finally:
-        monitor.stop_monitoring()
-        fetcher.close()
 
 
 def transfer_content_rsync(
@@ -1324,10 +1063,17 @@ def transfer_content_sftp(
             callback = create_progress_callback(file.source_path)
 
             try:
-                _sftp_download_file_worker(
-                    pool, file, torrent_hash, ui, file_tracker, dry_run,
-                    download_limit_bytes_per_sec, sftp_chunk_size,
-                    callback, force_integrity_check
+                downloader = SFTPDownloader(pool)
+                downloader.download_file(
+                    remote_path=file.source_path,
+                    local_path=Path(file.dest_path),
+                    file_tracker=file_tracker,
+                    torrent_hash=torrent_hash,
+                    progress_callback=callback,
+                    dry_run=dry_run,
+                    download_limit=download_limit_bytes_per_sec,
+                    chunk_size=sftp_chunk_size,
+                    force_integrity_check=force_integrity_check
                 )
                 queue.record_success(file, server_key)
                 

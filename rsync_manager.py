@@ -335,3 +335,74 @@ class RsyncDownloader:
                  file_name=full_path
              )
         return cb
+
+
+class RsyncUploader(RsyncDownloader):
+    """
+    Handles the execution of an Rsync Upload (Local -> Remote).
+    """
+    def transfer(
+        self,
+        local_path: str,
+        remote_path: str,
+        dest_config: Dict[str, Any], # host, port, username, password
+        rsync_options: List[str],
+        dry_run: bool = False,
+        timeout: int = 600,
+        verify: bool = True,
+        force_integrity: bool = False
+    ):
+        file_name = os.path.basename(local_path)
+        
+        # Unpack config
+        host = dest_config['host']
+        port = int(dest_config.get('port', 22))
+        username = dest_config['username']
+        password = dest_config['password']
+        
+        remote_parent_dir = os.path.dirname(remote_path)
+        cleaned_remote_parent_dir = remote_parent_dir.strip('\'"')
+        remote_spec = f"{username}@{host}:{cleaned_remote_parent_dir}"
+
+        # 1. Prepare Optimizer
+        optimizer = RsyncSpeedOptimizer(self.total_size, is_repair=force_integrity)
+        command_base = optimizer.build_command_base(password, port, rsync_options)
+        
+        adaptive_timeout = timeout
+
+        for attempt in range(1, self.MAX_RETRY_ATTEMPTS + 1):
+            try:
+                rsync_command = [*command_base, local_path, remote_spec]
+
+                if dry_run:
+                    self._handle_dry_run(rsync_command, file_name)
+                    return
+
+                self.log_transfer(self.torrent_hash, f"Starting rsync upload for '{file_name}' (attempt {attempt}/{self.MAX_RETRY_ATTEMPTS})")
+                
+                logger.debug(f"Executing rsync upload: {' '.join(_create_safe_command_for_logging(rsync_command))}")
+
+                success = process_runner.execute_streaming_command(
+                    command=rsync_command,
+                    torrent_hash=self.torrent_hash,
+                    total_size=self.total_size,
+                    log_transfer=self.log_transfer,
+                    _update_transfer_progress=self.progress_callback,
+                    heartbeat_callback=self.heartbeat_callback,
+                    timeout_seconds=adaptive_timeout,
+                    speed_callback=self._speed_handler(local_path),
+                    current_file_callback=None
+                )
+
+                if success:
+                    self.log_transfer(self.torrent_hash, f"[green]Rsync upload complete: {file_name}[/green]")
+                    return
+
+                raise RemoteTransferError("Rsync upload execution failed.")
+
+            except Exception as e:
+                 if not self._handle_exception(e, attempt, remote_path, file_name):
+                    raise
+                 adaptive_timeout += 60
+        
+        raise RemoteTransferError(f"Rsync upload failed after {self.MAX_RETRY_ATTEMPTS}")

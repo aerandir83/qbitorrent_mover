@@ -706,6 +706,10 @@ class BaseUIManager(abc.ABC):
         pass
 
     @abc.abstractmethod
+    def update_file_progress(self, torrent_hash: str, file_path: str, transferred: int, total: int):
+        pass
+
+    @abc.abstractmethod
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
         pass
 
@@ -807,6 +811,10 @@ class SimpleUIManager(BaseUIManager):
     def fail_file_transfer(self, torrent_hash: str, file_path: str):
         """Logs the failure of a file transfer as a warning."""
         logging.warning(f"File Transfer: [FAILED] {file_path}")
+
+    def update_file_progress(self, torrent_hash: str, file_path: str, transferred: int, total: int):
+        """No-op for simple UI."""
+        pass
 
     def complete_torrent_transfer(self, torrent_hash: str, success: bool = True):
         """Logs the completion or failure of a torrent's transfer."""
@@ -1325,6 +1333,13 @@ class UIManagerV2(BaseUIManager):
                         if current_completed < total_files:
                             self._torrents[torrent_hash]["completed_files"] = current_completed + 1
                             self._stats["completed_files_tracked"] = self._stats.get("completed_files_tracked", 0) + 1
+
+    def update_file_progress(self, torrent_hash: str, file_path: str, transferred: int, total: int):
+        """Updates the progress of a specific file."""
+        with self._lock:
+            if torrent_hash not in self._file_progress:
+                self._file_progress[torrent_hash] = {}
+            self._file_progress[torrent_hash][file_path] = (transferred, total)
 
     def fail_file_transfer(self, torrent_hash: str, file_path: str):
         """Marks an individual file as failed."""
