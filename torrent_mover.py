@@ -1272,7 +1272,7 @@ class TorrentMover:
 
                     # 3. Update the UI's global stats with the delta
                     transfer_mode = self.config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-                    if delta > 0:
+                    if delta != 0:
                         # FIX #1: Determine transfer type based on transfer mode
                         
                         if transfer_mode in ['rsync', 'rsync_upload']:
