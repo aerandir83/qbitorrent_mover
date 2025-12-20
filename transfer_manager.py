@@ -1540,12 +1540,14 @@ def transfer_content_sftp(
                 total_network_bytes += network_delta
 
                 # Update UI Progress Bar (Ratio based on TOTAL PROCESSED)
+                # Pass network_delta so UI knows if this is valid network traffic or just file skipping
                 _update_transfer_progress(
                     torrent_hash, 
                     total_processed / total_size if total_size else 0, 
                     total_processed, 
                     total_size, 
-                    status_text="Downloading"
+                    status_text="Downloading",
+                    network_delta=network_delta
                 )
         return worker_progress_callback
 

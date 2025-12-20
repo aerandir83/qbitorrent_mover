@@ -474,15 +474,65 @@ def _post_transfer_actions(
                 return False, "Automated correction failed final re-check."
 
         elif not strategy.supports_delta_correction():
-            logging.warning(f"Recheck failed and strategy '{transfer_mode}' does not support delta-correction.")
-            ui.log(f"[yellow]Recheck failed for {name}. No auto-repair possible.[/yellow]")
-            # Pause torrent, do not delete, return failure
+            logging.warning(f"Recheck failed via {transfer_mode} (No Delta Support). Initiating full re-download of corrupted content...")
+            ui.log(f"[yellow]Corruption detected. Auto-repairing via full re-download...[/yellow]")
+            
+            # 1. Delete destination content (Nuke it)
             if not dry_run:
                 try:
-                    destination_client.pause_torrent(torrent_hash=hash_)
+                    # We must delete the *entire* content to ensure a clean slate, 
+                    # as we don't know which specific files are corrupt.
+                    delete_destination_content(dest_content_path, ssh_connection_pools, config)
+                    logging.info(f"Deleted corrupted destination content: {dest_content_path}")
                 except Exception as e:
-                    logging.warning(f"Failed to pause torrent {name} after recheck failure: {e}")
-            return False, "Recheck failed, strategy does not support correction."
+                    logging.error(f"Failed to delete corrupted content: {e}")
+                    return False, "Auto-repair failed: Could not clean destination."
+
+            # 2. Force full re-transfer
+            # We explicitly pass force_integrity_check=True, although since we deleted the files
+            # it effectively acts as a fresh download.
+            repair_success = _execute_transfer(
+                transfer_mode, all_files, torrent, sum(f.size for f in all_files), config,
+                ui, file_tracker, ssh_connection_pools, dry_run,
+                log_transfer, _update_transfer_progress,
+                force_integrity_check=True 
+            )
+
+            if not repair_success:
+                 logging.error(f"Auto-repair re-download FAILED for {name}.")
+                 ui.log(f"[bold red]Auto-repair re-download FAILED for {name}.[/bold red]")
+                 if not dry_run:
+                     try:
+                         destination_client.pause_torrent(torrent_hash=hash_)
+                     except Exception: pass
+                 return False, "Auto-repair (re-download) failed."
+
+            logging.info(f"Auto-repair re-download complete. Triggering final re-check for {name}...")
+            if not dry_run:
+                destination_client.recheck_torrent(torrent_hash=hash_)
+                time.sleep(1)
+
+            # 3. Final Recheck Wait
+            final_recheck_status = destination_client.wait_for_recheck(
+                torrent_hash=torrent.hash,
+                ui_manager=ui,
+                stuck_timeout=recheck_stuck_timeout,
+                stopped_timeout=recheck_stopped_timeout,
+                grace_period=recheck_grace_period,
+                dry_run=dry_run
+            )
+
+            if final_recheck_status == "SUCCESS":
+                logging.info(f"Final re-check successful for {name} after full repair.")
+                recheck_status = "SUCCESS" # Success!
+            else:
+                logging.error(f"Final re-check FAILED for {name} after full repair (Status: {final_recheck_status}).")
+                ui.log(f"[bold red]Final re-check FAILED for {name} after full repair.[/bold red]")
+                if not dry_run:
+                    try:
+                        destination_client.pause_torrent(torrent_hash=hash_)
+                    except Exception: pass
+                return False, "Auto-repair failed final verification."
 
         else: # Is dry_run
             logging.info(f"[DRY RUN] Would attempt repair or pause torrent {name}.")
@@ -1248,12 +1298,18 @@ class TorrentMover:
 
         return analyzed_torrents, total_transfer_size, total_count
 
-    def _update_transfer_progress(self, torrent_hash: str, progress: float, transferred_bytes: int, total_size: int, speed: float = 0.0, status_text: str = None):
+    def _update_transfer_progress(self, torrent_hash: str, progress: float, transferred_bytes: int, total_size: int, speed: float = 0.0, status_text: str = None, network_delta: Optional[int] = None):
         """Callback to update torrent progress.
 
         # AI-GOTCHA: Transfer progress clamping
         # Progress > 100% breaks the UI progress bar and causes visual glitches.
         # AI-INVARIANT: Progress MUST be clamped to 100.0 (or 1.0 depending on scale) before setting.
+        
+        Args:
+            network_delta: (Optional) The specific amount of bytes transferred over the network in this update.
+                - If provided, this drives the "Speed/Network Graph".
+                - If None (legacy/rsync), we infer network activity from `delta` (transferred_bytes - last).
+                - For SFTP Skipping: Pass 0 to update progress bar without spiking the graph.
 
         DEBUGGING HINTS:
         - If progress > 100%: Check delta calculation logic.
@@ -1267,12 +1323,18 @@ class TorrentMover:
                     # 1. Get the last known bytes from the torrent's state
                     last_known_bytes = self.ui._torrents[torrent_hash].get("bytes_for_delta_calc", 0)
 
-                    # 2. Calculate the delta
+                    # 2. Calculate the "Process Delta" (Used for Progress Bar)
                     delta = transferred_bytes - last_known_bytes
 
-                    # 3. Update the UI's global stats with the delta
+                    # 3. Determine the "Network Delta" (Used for Graph/Stats)
+                    # If caller explicitly calculated network usage (SFTP Exact), use it.
+                    # Otherwise, fallback to Delta (Rsync/Approximate).
+                    stats_delta = network_delta if network_delta is not None else delta
+
+                    # 4. Update the UI's global stats with the STATS DELTA
                     transfer_mode = self.config['SETTINGS'].get('transfer_mode', 'sftp').lower()
-                    if delta != 0:
+                    
+                    if stats_delta != 0:
                         # FIX #1: Determine transfer type based on transfer mode
                         
                         if transfer_mode in ['rsync', 'rsync_upload']:
@@ -1282,30 +1344,32 @@ class TorrentMover:
                                 # Check if we're in download or upload phase based on progress
                                 # First half is download, second half is upload
                                 if transferred_bytes <= (total_size / 2):
-                                    self.ui._stats["transferred_dl_bytes"] += delta
+                                    self.ui._stats["transferred_dl_bytes"] += stats_delta
                                 else:
-                                    self.ui._stats["transferred_ul_bytes"] += delta
+                                    self.ui._stats["transferred_ul_bytes"] += stats_delta
                             else:
                                 # Pure rsync mode is download only
-                                self.ui._stats["transferred_dl_bytes"] += delta
+                                self.ui._stats["transferred_dl_bytes"] += stats_delta
                         elif transfer_mode == 'sftp_upload':
                             # SFTP upload mode - both phases happen
                             local_cache = self.config['SETTINGS'].getboolean('local_cache_sftp_upload', False)
                             if local_cache:
                                 # With cache: first half is DL, second half is UL
                                 if transferred_bytes <= (total_size / 2):
-                                    self.ui._stats["transferred_dl_bytes"] += delta
+                                    self.ui._stats["transferred_dl_bytes"] += stats_delta
                                 else:
-                                    self.ui._stats["transferred_ul_bytes"] += delta
+                                    self.ui._stats["transferred_ul_bytes"] += stats_delta
                             else:
                                 # Direct stream: count as upload only
-                                self.ui._stats["transferred_ul_bytes"] += delta
+                                self.ui._stats["transferred_ul_bytes"] += stats_delta
                         else:
                             # SFTP mode is download only
-                            self.ui._stats["transferred_dl_bytes"] += delta
+                            self.ui._stats["transferred_dl_bytes"] += stats_delta
                         
                         self.ui._stats["transferred_bytes"] = self.ui._stats.get("transferred_dl_bytes", 0) + self.ui._stats.get("transferred_ul_bytes", 0)
-                        # Update the overall progress bar
+                    
+                    # 5. Update the overall progress bar (Always uses Process Delta)
+                    if delta != 0:
                         self.ui.main_progress.update(self.ui.overall_task, advance=delta)
 
                     # 4. Update the individual torrent's progress bar with the new TOTAL
