@@ -934,7 +934,7 @@ def _transfer_content_rsync_upload_from_cache(
     if "--inplace" not in rsync_flags:
         rsync_flags.append("--inplace")
     if "--block-size" not in str(rsync_flags):
-         rsync_flags.append("--block-size=4194304") # 4MB blocks for better throughput 
+         rsync_flags.append("--block-size=131072") # Reverted to 128KB (max supported by this rsync version/protocol) 
 
     # Helper to check if a flag is enabled (explicitly or via -a)
     def is_flag_enabled(char: str, long_flag: str) -> bool:
@@ -1108,7 +1108,7 @@ def transfer_content_rsync(
     if "--inplace" not in rsync_options_with_checksum:
         rsync_options_with_checksum.append("--inplace")
     if "--block-size" not in str(rsync_options_with_checksum):
-        rsync_options_with_checksum.append("--block-size=4194304") # 4MB blocks for better throughput
+        rsync_options_with_checksum.append("--block-size=131072") # Reverted to 128KB (max supported by this rsync version/protocol)
 
     # Helper to check if a flag is enabled (explicitly or via -a)
     def is_flag_enabled(char: str, long_flag: str) -> bool:
