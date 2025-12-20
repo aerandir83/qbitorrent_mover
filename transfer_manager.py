@@ -774,7 +774,6 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
         logging.error(f"Upload failed for {file_name}: {e}")
         raise
 
-
 def _sftp_download_file_worker(
     pool: SSHConnectionPool,
     file: TransferFile,
