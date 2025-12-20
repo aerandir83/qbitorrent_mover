@@ -936,9 +936,26 @@ def _transfer_content_rsync_upload_from_cache(
     if "--block-size" not in str(rsync_flags):
          rsync_flags.append("--block-size=131072") 
 
-    for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group"]:
-        if flag not in rsync_flags:
-            rsync_flags.append(flag)
+    # Helper to check if a flag is enabled (explicitly or via -a)
+    def is_flag_enabled(char: str, long_flag: str) -> bool:
+        for opt in rsync_flags:
+            if opt == long_flag: return True
+            if not opt.startswith('--') and opt.startswith('-') and char in opt: return True
+        return False
+
+    # Only disable attributes if not explicitly enabled by the user
+    # Note: -a (archive) implies -t, -p, -o, -g
+    if not is_flag_enabled('t', '--times') and not is_flag_enabled('a', '--archive'):
+        if "--no-times" not in rsync_flags: rsync_flags.append("--no-times")
+    
+    if not is_flag_enabled('p', '--perms') and not is_flag_enabled('a', '--archive'):
+        if "--no-perms" not in rsync_flags: rsync_flags.append("--no-perms")
+
+    if not is_flag_enabled('o', '--owner') and not is_flag_enabled('a', '--archive'):
+        if "--no-owner" not in rsync_flags: rsync_flags.append("--no-owner")
+
+    if not is_flag_enabled('g', '--group') and not is_flag_enabled('a', '--archive'):
+        if "--no-group" not in rsync_flags: rsync_flags.append("--no-group")
 
     rsync_cmd = [
         "stdbuf", "-o0", "sshpass", "-p", password,
@@ -1099,9 +1116,25 @@ def transfer_content_rsync(
     if "--block-size" not in str(rsync_options_with_checksum):
         rsync_options_with_checksum.append("--block-size=131072")
 
-    for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group"]:
-        if flag not in rsync_options_with_checksum:
-            rsync_options_with_checksum.append(flag)
+    # Helper to check if a flag is enabled (explicitly or via -a)
+    def is_flag_enabled(char: str, long_flag: str) -> bool:
+        for opt in rsync_options_with_checksum:
+            if opt == long_flag: return True
+            if not opt.startswith('--') and opt.startswith('-') and char in opt: return True
+        return False
+
+    # Only disable attributes if not explicitly enabled by the user
+    if not is_flag_enabled('t', '--times') and not is_flag_enabled('a', '--archive'):
+        if "--no-times" not in rsync_options_with_checksum: rsync_options_with_checksum.append("--no-times")
+    
+    if not is_flag_enabled('p', '--perms') and not is_flag_enabled('a', '--archive'):
+        if "--no-perms" not in rsync_options_with_checksum: rsync_options_with_checksum.append("--no-perms")
+
+    if not is_flag_enabled('o', '--owner') and not is_flag_enabled('a', '--archive'):
+        if "--no-owner" not in rsync_options_with_checksum: rsync_options_with_checksum.append("--no-owner")
+
+    if not is_flag_enabled('g', '--group') and not is_flag_enabled('a', '--archive'):
+        if "--no-group" not in rsync_options_with_checksum: rsync_options_with_checksum.append("--no-group")
 
     ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
     rsync_command_base = [
