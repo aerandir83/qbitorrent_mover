@@ -916,47 +916,21 @@ def _transfer_content_rsync_upload_from_cache(
     cleaned_remote_parent_dir = remote_parent_dir.strip('\'"')
     remote_spec = f"{username}@{host}:{cleaned_remote_parent_dir}"
 
-    ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
-    # Add data-only flags to prevent permission errors
-    rsync_flags = list(rsync_options)
+    # --- Integrated Rsync Speed Fix ---
+    from rsync_speed_fix import RsyncSpeedOptimizer
 
-    if force_integrity_check:
-        if '--checksum' not in rsync_flags and '-c' not in rsync_flags:
-            rsync_flags.append('--checksum')
-
-    for flag in ["--no-times", "--no-perms", "--no-owner", "--no-group", "-z", "--compress"]:
-        if flag in rsync_flags:
-             rsync_flags.remove(flag)
-        # Ensure we don't have short flags like -vz
-        rsync_flags = [f.replace('z', '') if f.startswith('-') and 'z' in f and f != '-z' else f for f in rsync_flags]
-
-    # Optimization for large files
-    if "--inplace" not in rsync_flags:
-        rsync_flags.append("--inplace")
-    if "--block-size" not in str(rsync_flags):
-         rsync_flags.append("--block-size=131072") # Reverted to 128KB (max supported by this rsync version/protocol) 
-
-    # Helper to check if a flag is enabled (explicitly or via -a)
-    def is_flag_enabled(char: str, long_flag: str) -> bool:
-        for opt in rsync_flags:
-            if opt == long_flag: return True
-            if not opt.startswith('--') and opt.startswith('-') and char in opt: return True
-        return False
-
-    # Only disable attributes if not explicitly enabled by the user
-    # Note: -a (archive) implies -t, -p, -o, -g
-    # Removed manual "no-" flag additions. 
-    # Logic: Trusted user config. If -a is present, times/perms are transferred. 
-    # If user wanted to disable them with -a, they would add --no-times etc in config.
-    # If -a is NOT present, rsync acts as if they are disabled by default (mostly).
-    # This prevents "flag soup" and conflicts.
+    optimizer = RsyncSpeedOptimizer(
+        total_size_bytes=total_size,
+        is_repair=force_integrity_check
+    )
+    rsync_flags = optimizer.build_flags(rsync_options)
+    ssh_opts_str = optimizer.build_ssh_options(port)
 
     rsync_cmd = [
         "stdbuf", "-o0", "sshpass", "-p", password,
         "rsync",
         *rsync_flags,
-        "--info=progress2",
-        "-e", ssh_opts,
+        "-e", ssh_opts_str,
         local_path, # Source is local
         remote_spec # Destination is remote
     ]
@@ -1085,47 +1059,30 @@ def transfer_content_rsync(
     local_parent_dir = os.path.dirname(local_path)
     Path(local_parent_dir).mkdir(parents=True, exist_ok=True)
 
-    rsync_options_with_checksum = list(rsync_options)
-    if force_integrity_check:
-        if '--checksum' not in rsync_options_with_checksum and '-c' not in rsync_options_with_checksum:
-            rsync_options_with_checksum.append('--checksum')
+    # --- Integrated Rsync Speed Fix ---
+    from rsync_speed_fix import RsyncSpeedOptimizer
+    
+    # 1. Optimize Flags
+    optimizer = RsyncSpeedOptimizer(
+        total_size_bytes=total_size,
+        is_repair=force_integrity_check
+    )
+    rsync_flags = optimizer.build_flags(rsync_options) # Use user base options
 
-    if "--info=progress2" not in rsync_options_with_checksum:
-        rsync_options_with_checksum.append("--info=progress2")
+    # 2. Optimize SSH
+    # Note: process_runner expects the full ssh command in '-e', but without "ssh " prefix if using rsync's -e logic?
+    # Actually rsync -e takes the command. standard is "ssh -p ..."
+    ssh_opts_str = optimizer.build_ssh_options(port)
+    # The helper includes "ssh ", but rsync -e expects the program.
+    # However, our previous logic was passing "-e ssh -p ...".
+    # Let's verify _get_ssh_command logic. It returned "ssh -p ...".
+    # Replacing it with our optimizer output.
 
-    # Add -v to enable filename output for UI
-    if '-v' not in rsync_options_with_checksum and '--verbose' not in rsync_options_with_checksum:
-        rsync_options_with_checksum.append('-v')
-
-    # Add data-only flags to prevent permission errors
-    # Add data-only flags to prevent permission errors AND optimize for large media
-    # 1. Remove compression (bad for media)
-    if '-z' in rsync_options_with_checksum: rsync_options_with_checksum.remove('-z')
-    if '--compress' in rsync_options_with_checksum: rsync_options_with_checksum.remove('--compress')
-    rsync_options_with_checksum = [f.replace('z', '') if f.startswith('-') and 'z' in f and f != '-z' else f for f in rsync_options_with_checksum]
-
-    # 2. Add large file optimizations
-    if "--inplace" not in rsync_options_with_checksum:
-        rsync_options_with_checksum.append("--inplace")
-    if "--block-size" not in str(rsync_options_with_checksum):
-        rsync_options_with_checksum.append("--block-size=131072") # Reverted to 128KB (max supported by this rsync version/protocol)
-
-    # Helper to check if a flag is enabled (explicitly or via -a)
-    def is_flag_enabled(char: str, long_flag: str) -> bool:
-        for opt in rsync_options_with_checksum:
-            if opt == long_flag: return True
-            if not opt.startswith('--') and opt.startswith('-') and char in opt: return True
-        return False
-
-    # Only disable attributes if not explicitly enabled by the user
-    # Removed manual "no-" flag additions to avoid conflicts with user config (e.g. -a).
-
-    ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
     rsync_command_base = [
         "stdbuf", "-o0", "sshpass", "-p", password,
         "rsync",
-        *rsync_options_with_checksum,
-        "-e", ssh_opts
+        *rsync_flags,
+        "-e", ssh_opts_str
     ]
 
     remote_spec = f"{username}@{host}:{remote_path}"
