@@ -774,7 +774,6 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
         logging.error(f"Upload failed for {file_name}: {e}")
         raise
 
-
 def _sftp_download_file_worker(
     pool: SSHConnectionPool,
     file: TransferFile,
@@ -1492,8 +1491,30 @@ def transfer_content_sftp(
     Transfers content via SFTP with resilience, checking, and verification similar to Rsync mode.
     Orchestrates parallel downloads using ResilientTransferQueue.
     """
+    # Deduplicate files based on source_path to prevent parallel workers transferring the same file
+    # This prevents race conditions, bandwidth waste, and progress bar overflow.
+    unique_map = {}
+    for f in files:
+        if f.source_path not in unique_map:
+            unique_map[f.source_path] = f
+        else:
+            logging.warning(f"Duplicate file detected and ignored: {f.source_path}")
+    
+    unique_files = list(unique_map.values())
+    
+    if len(unique_files) < len(files):
+        logging.info(f"Deduplicated transfer list: {len(files)} -> {len(unique_files)} files.")
+    
+    files = unique_files
+
+    # Recalculate total size to match deduplicated files to ensure accurate progress reporting
+    real_total_size = sum(f.size for f in files)
+    if real_total_size != total_size and real_total_size > 0:
+         logging.warning(f"Adjusting total size from {total_size} to {real_total_size} after deduplication.")
+         total_size = real_total_size
+
     queue = ResilientTransferQueue(max_retries=5)
-    for file in files:
+    for file in unique_files:
         queue.add(file)
 
     server_key = f"{pool.host}:{pool.port}"
