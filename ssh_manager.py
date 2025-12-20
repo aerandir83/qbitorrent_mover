@@ -39,7 +39,8 @@ def setup_ssh_control_path() -> None:
         user = getpass.getuser()
         control_dir = os.path.join(tempfile.gettempdir(), f"torrent_mover_ssh_{user}")
         os.makedirs(control_dir, mode=0o700, exist_ok=True)
-        SSH_CONTROL_PATH = os.path.join(control_dir, "%r@%h:%p")
+        # Windows does not allow ':' in filenames. Use '-' instead.
+        SSH_CONTROL_PATH = os.path.join(control_dir, "%r@%h-%p")
         logging.debug(f"Using SSH control path: {SSH_CONTROL_PATH}")
     except Exception as e:
         logging.warning(f"Could not create SSH control path directory. Multiplexing will be disabled. Error: {e}")
@@ -76,7 +77,7 @@ def _get_ssh_command(port: int) -> str:
     """Builds the SSH command for rsync, enabling connection multiplexing if available."""
     # Use aes128-gcm@openssh.com for high performance (hardware accelerated)
     # Disable compression (-o Compression=no) as it bottlenecks high-speed links
-    base_ssh_cmd = f"ssh -p {port} -c aes128-gcm@openssh.com,aes128-ctr -o Compression=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
+    base_ssh_cmd = f"ssh -p {port} -c aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr -o Compression=no -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ServerAliveInterval=15"
     if SSH_CONTROL_PATH:
         multiplex_opts = f"-o ControlMaster=auto -o ControlPath={shlex.quote(SSH_CONTROL_PATH)} -o ControlPersist=60s"
         return f"{base_ssh_cmd} {multiplex_opts}"

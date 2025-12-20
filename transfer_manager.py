@@ -934,7 +934,7 @@ def _transfer_content_rsync_upload_from_cache(
     if "--inplace" not in rsync_flags:
         rsync_flags.append("--inplace")
     if "--block-size" not in str(rsync_flags):
-         rsync_flags.append("--block-size=131072") 
+         rsync_flags.append("--block-size=4194304") # 4MB blocks for better throughput 
 
     # Helper to check if a flag is enabled (explicitly or via -a)
     def is_flag_enabled(char: str, long_flag: str) -> bool:
@@ -945,17 +945,11 @@ def _transfer_content_rsync_upload_from_cache(
 
     # Only disable attributes if not explicitly enabled by the user
     # Note: -a (archive) implies -t, -p, -o, -g
-    if not is_flag_enabled('t', '--times') and not is_flag_enabled('a', '--archive'):
-        if "--no-times" not in rsync_flags: rsync_flags.append("--no-times")
-    
-    if not is_flag_enabled('p', '--perms') and not is_flag_enabled('a', '--archive'):
-        if "--no-perms" not in rsync_flags: rsync_flags.append("--no-perms")
-
-    if not is_flag_enabled('o', '--owner') and not is_flag_enabled('a', '--archive'):
-        if "--no-owner" not in rsync_flags: rsync_flags.append("--no-owner")
-
-    if not is_flag_enabled('g', '--group') and not is_flag_enabled('a', '--archive'):
-        if "--no-group" not in rsync_flags: rsync_flags.append("--no-group")
+    # Removed manual "no-" flag additions. 
+    # Logic: Trusted user config. If -a is present, times/perms are transferred. 
+    # If user wanted to disable them with -a, they would add --no-times etc in config.
+    # If -a is NOT present, rsync acts as if they are disabled by default (mostly).
+    # This prevents "flag soup" and conflicts.
 
     rsync_cmd = [
         "stdbuf", "-o0", "sshpass", "-p", password,
@@ -1114,7 +1108,7 @@ def transfer_content_rsync(
     if "--inplace" not in rsync_options_with_checksum:
         rsync_options_with_checksum.append("--inplace")
     if "--block-size" not in str(rsync_options_with_checksum):
-        rsync_options_with_checksum.append("--block-size=131072")
+        rsync_options_with_checksum.append("--block-size=4194304") # 4MB blocks for better throughput
 
     # Helper to check if a flag is enabled (explicitly or via -a)
     def is_flag_enabled(char: str, long_flag: str) -> bool:
@@ -1124,17 +1118,7 @@ def transfer_content_rsync(
         return False
 
     # Only disable attributes if not explicitly enabled by the user
-    if not is_flag_enabled('t', '--times') and not is_flag_enabled('a', '--archive'):
-        if "--no-times" not in rsync_options_with_checksum: rsync_options_with_checksum.append("--no-times")
-    
-    if not is_flag_enabled('p', '--perms') and not is_flag_enabled('a', '--archive'):
-        if "--no-perms" not in rsync_options_with_checksum: rsync_options_with_checksum.append("--no-perms")
-
-    if not is_flag_enabled('o', '--owner') and not is_flag_enabled('a', '--archive'):
-        if "--no-owner" not in rsync_options_with_checksum: rsync_options_with_checksum.append("--no-owner")
-
-    if not is_flag_enabled('g', '--group') and not is_flag_enabled('a', '--archive'):
-        if "--no-group" not in rsync_options_with_checksum: rsync_options_with_checksum.append("--no-group")
+    # Removed manual "no-" flag additions to avoid conflicts with user config (e.g. -a).
 
     ssh_opts = _get_ssh_command(port).replace("-o ServerAliveInterval=15", "-o ServerAliveInterval=60 -o ServerAliveCountMax=30")
     rsync_command_base = [

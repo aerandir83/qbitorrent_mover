@@ -185,7 +185,11 @@ def execute_streaming_command(
                                 # logging.info(f"DEBUG_PARSE: '{line}'")
 
                                 # Parse progress
-                                match = progress_pattern.search(line)
+                                # OPTIMIZATION: Check for '%' before running regex
+                                if '%' in line: 
+                                    match = progress_pattern.search(line)
+                                else:
+                                    match = None
                                 if match:
                                     try:
                                         # Parse Bytes (Group 1) which might be human readable (577.83M)
