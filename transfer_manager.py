@@ -774,168 +774,112 @@ def _sftp_upload_file(source_pool: SSHConnectionPool, dest_pool: SSHConnectionPo
         logging.error(f"Upload failed for {file_name}: {e}")
         raise
 
-def _sftp_download_file_core(pool: SSHConnectionPool, file: TransferFile, ui: UIManager, file_tracker: FileTransferTracker, dry_run: bool = False, download_limit_bytes_per_sec: int = 0, sftp_chunk_size: int = 65536) -> None:
-    """Downloads a single file from a remote SFTP server to a local path.
 
-    This function is used for the `sftp` transfer mode. It is wrapped in a
-    retry decorator and handles its own SFTP session to ensure thread safety.
-    It supports resuming and progress reporting.
-
-    Args:
-        pool: The SSHConnectionPool for the source server.
-        file: The TransferFile object with source, dest, and size.
-        ui: The UI manager for progress updates.
-        file_tracker: The tracker for recording file progress.
-        dry_run: If True, simulates the transfer.
-        download_limit_bytes_per_sec: The download speed limit in bytes per second.
-        sftp_chunk_size: The size of data chunks for SFTP transfers.
-
-    Raises:
-        Exception: Propagates exceptions from the underlying SFTP operations.
+def _sftp_download_file_worker(
+    pool: SSHConnectionPool,
+    file: TransferFile,
+    torrent_hash: str,
+    ui: UIManager,
+    file_tracker: FileTransferTracker,
+    dry_run: bool,
+    download_limit_bytes_per_sec: int,
+    sftp_chunk_size: int,
+    progress_callback: Callable[[int, int], None],
+    force_integrity_check: bool = False
+) -> None:
+    """
+    Worker function to download a single file via SFTP.
+    progress_callback signature: (current_total_bytes_for_file, network_bytes_delta)
     """
     remote_file = file.source_path
-    local_file = file.dest_path
-    torrent_hash = file.torrent_hash
-    local_path = Path(local_file)
+    local_path = Path(file.dest_path)
     file_name = os.path.basename(remote_file)
+
     try:
         if file_tracker.is_corrupted(torrent_hash, remote_file):
-            raise Exception(f"File {file_name} is marked as corrupted, skipping.")
+            raise RemoteTransferError(f"File {file_name} is marked as corrupted, skipping.")
 
-        if file_tracker.is_corrupted(torrent_hash, remote_file):
-            raise Exception(f"File {file_name} is marked as corrupted, skipping.")
+        # Ensure parent directory
+        local_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Use ThrottledUpdater
-        updater = ThrottledProgressUpdater(ui, torrent_hash, update_interval=0.5)
-        updater.start(remote_file, "downloading")
-        
-        with pool.get_connection() as (sftp, ssh_client):
-            remote_stat = sftp.stat(remote_file)
-            total_size = remote_stat.st_size
-            logging.debug(f"SFTP Check: Remote file '{remote_file}' size: {total_size}")
-            if total_size == 0:
+        with pool.get_connection() as (sftp, ssh):
+            # 1. Stat Remote
+            try:
+                remote_stat = sftp.stat(remote_file)
+                remote_size = remote_stat.st_size
+            except FileNotFoundError:
+                logging.error(f"Remote file not found: {remote_file}")
+                raise
+
+            if remote_size == 0:
                 logging.warning(f"Skipping zero-byte file: {file_name}")
+                progress_callback(0, 0) # Mark as done (0 bytes)
                 return
+
+            # 2. Check Local
             local_size = 0
             if local_path.exists():
-                try:
-                    local_size = local_path.stat().st_size
-                except FileNotFoundError:
-                    local_size = 0
-            else:
-                file_tracker.record_file_progress(torrent_hash, remote_file, 0)
-            with ui._lock:
-                if torrent_hash not in ui._file_progress:
-                    ui._file_progress[torrent_hash] = {}
-                ui._file_progress[torrent_hash][remote_file] = (local_size, total_size)
-            if local_size == total_size:
-                logging.info(f"Skipping (exists and size matches): {file_name}")
-                ui.update_torrent_progress(torrent_hash, total_size - local_size, transfer_type='download')
-                return
-            elif local_size > total_size:
-                logging.warning(f"Local file '{file_name}' is larger than remote ({local_size} > {total_size}), re-downloading from scratch.")
-                local_size = 0
-            elif local_size > 0:
-                logging.info(f"Resuming download for {file_name} from {local_size / (1024*1024):.2f} MB.")
+                local_size = local_path.stat().st_size
 
-            if local_size > 0:
-                ui.update_torrent_progress(torrent_hash, local_size, transfer_type='download')
-                # ui.advance_overall_progress(local_size)
+            # 3. Resume Logic
+            if local_size == remote_size:
+                if not force_integrity_check:
+                    logging.info(f"Skipping (exists and size matches): {file_name}")
+                    progress_callback(remote_size, 0) # Mark full size as done, 0 network activity
+                    return
+                else:
+                    logging.info(f"Integrity check forced for {file_name}...")
+            
+            if local_size > remote_size:
+                logging.warning(f"Local file larger than remote ({local_size} > {remote_size}). Redownloading.")
+                local_size = 0
+                file_tracker.record_file_progress(torrent_hash, remote_file, 0)
+            elif local_size > 0:
+                logging.info(f"Resuming {file_name} from {local_size / (1024*1024):.2f} MB")
+                # Report initial progress (existing data, no network delta)
+                progress_callback(local_size, 0)
+
             if dry_run:
                 logging.info(f"[DRY RUN] Would download: {remote_file} -> {local_path}")
-                remaining_size = total_size - local_size
-                ui.update_torrent_progress(torrent_hash, remaining_size, transfer_type='download')
-                # ui.advance_overall_progress(remaining_size)
+                progress_callback(remote_size, 0)
                 return
-            local_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # 4. Transfer
             mode = 'ab' if local_size > 0 else 'wb'
+            start_time = time.time()
+            
             with sftp.open(remote_file, 'rb') as remote_f_raw:
                 remote_f_raw.seek(local_size)
                 remote_f_raw.prefetch()
                 remote_f = RateLimitedFile(remote_f_raw, download_limit_bytes_per_sec)
+                
                 with open(local_path, mode) as local_f:
                     while True:
                         chunk = remote_f.read(sftp_chunk_size)
-                        if not chunk: break
+                        if not chunk: 
+                            break
                         local_f.write(chunk)
-                        increment = len(chunk)
-                        local_size += increment
-                        with ui._lock:
-                            if torrent_hash in ui._file_progress:
-                                ui._file_progress[torrent_hash][remote_file] = (local_size, total_size)
-                        ui.update_torrent_progress(torrent_hash, increment, transfer_type='download')
-                        # ui.advance_overall_progress(increment)
+                        chunk_len = len(chunk)
+                        local_size += chunk_len
+                        # Update Tracker & Callback
                         file_tracker.record_file_progress(torrent_hash, remote_file, local_size)
+                        progress_callback(local_size, chunk_len) # Report Total Size + Network Delta
 
-            if not file_tracker.verify_file_integrity(local_path, total_size):
-                file_tracker.record_corruption(torrent_hash, remote_file)
-                raise Exception(f"File integrity check failed for {file_name}")
-        ui.complete_file_transfer(torrent_hash, remote_file)
-    except PermissionError as e:
-        file_tracker.record_corruption(torrent_hash, remote_file)
-        logging.error(f"Transfer failed for file '{remote_file}' due to error: {e}", exc_info=True)
-        ui.fail_file_transfer(torrent_hash, remote_file)
-        logging.error(f"Permission denied while trying to write to local path: {local_path.parent}\n"
-                      "Please check that the user running the script has write permissions for this directory.\n"
-                      "If you intended to transfer to another remote server, use 'transfer_mode = sftp_upload' in your config.")
-        raise e
-    except FileNotFoundError as e:
-        file_tracker.record_corruption(torrent_hash, remote_file)
-        logging.error(f"Transfer failed for file '{remote_file}' due to error: {e}", exc_info=True)
-        ui.fail_file_transfer(torrent_hash, remote_file)
-        logging.error(f"Source file not found: {remote_file}")
-        logging.error("This can happen if the file was moved or deleted on the source before transfer.")
-        raise e
-    except (socket.timeout, TimeoutError) as e:
-        file_tracker.record_corruption(torrent_hash, remote_file)
-        logging.error(f"Transfer failed for file '{remote_file}' due to error: {e}", exc_info=True)
-        ui.fail_file_transfer(torrent_hash, remote_file)
-        logging.error(f"Network timeout during download of file: {file_name}")
-        logging.error("The script will retry, but check your network stability if this persists.")
-        raise e
+            # 5. Verification
+            final_local_size = local_path.stat().st_size
+            if final_local_size != remote_size:
+                raise RemoteTransferError(f"Size mismatch: Expected {remote_size}, got {final_local_size}")
+
+            # Duration/Speed log
+            duration = time.time() - start_time
+            if duration > 0:
+                speed = (remote_size - (local_size - (final_local_size - local_size))) / duration
+                # logging.debug(f"Transfer speed for {file_name}: {speed/1024/1024:.2f} MB/s")
+
     except Exception as e:
-        file_tracker.record_corruption(torrent_hash, remote_file)
-        logging.error(f"Transfer failed for file '{remote_file}' due to error: {e}", exc_info=True)
-        ui.fail_file_transfer(torrent_hash, remote_file)
-        logging.error(f"Download failed for {file_name}: {e}")
-        raise
+        # Let the caller handle retries via the Queue
+        raise e
 
-
-def _sftp_download_file_resilient(
-    pool: SSHConnectionPool,
-    file: TransferFile,
-    queue: ResilientTransferQueue,
-    ui: UIManager,
-    file_tracker: FileTransferTracker,
-    attempt_count: int,
-    server_key: str,
-    dry_run: bool = False,
-    download_limit_bytes_per_sec: int = 0,
-    sftp_chunk_size: int = 65536
-) -> None:
-    """Wrapper for _sftp_download_file_core that integrates with ResilientTransferQueue."""
-    try:
-        _sftp_download_file_core(
-            pool, file, ui, file_tracker, dry_run,
-            download_limit_bytes_per_sec, sftp_chunk_size
-        )
-        queue.record_success(file, server_key)
-    except (socket.timeout, TimeoutError, paramiko.SSHException) as e:
-        should_retry = queue.record_failure(file, server_key, e, attempt_count)
-        if not should_retry:
-            logging.error(f"SFTP download failed permanently for {file.source_path} due to network error: {e}", exc_info=True)
-            raise  # Re-raise to signal permanent failure
-    except (PermissionError, FileNotFoundError) as e:
-        # These are permanent failures, do not retry
-        queue.record_failure(file, server_key, e, 999) # 999 ensures it's marked as failed
-        logging.error(f"SFTP download failed permanently for {file.source_path} due to file/permission error: {e}", exc_info=True)
-        raise
-    except Exception as e:
-        # For other unexpected errors, treat as potentially transient
-        should_retry = queue.record_failure(file, server_key, e, attempt_count)
-        if not should_retry:
-            logging.error(f"SFTP download failed permanently for {file.source_path} due to unexpected error: {e}", exc_info=True)
-            raise
 
 
 def _transfer_content_rsync_upload_from_cache(
@@ -1527,58 +1471,157 @@ def transfer_content_rsync_upload(
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def transfer_content_with_queue(
+
+def transfer_content_sftp(
     pool: SSHConnectionPool,
-    all_files: List[TransferFile],
+    files: List[TransferFile],
     torrent_hash: str,
+    total_size: int,
+    log_transfer: Callable,
+    _update_transfer_progress: Callable,
     ui: UIManager,
     file_tracker: FileTransferTracker,
     max_concurrent_downloads: int,
     dry_run: bool = False,
     download_limit_bytes_per_sec: int = 0,
-    sftp_chunk_size: int = 65536
+    sftp_chunk_size: int = 65536,
+    heartbeat_callback: Optional[Callable[[], None]] = None,
+    force_integrity_check: bool = False
 ) -> None:
-    """Transfers torrent content using a resilient queue."""
+    """
+    Transfers content via SFTP with resilience, checking, and verification similar to Rsync mode.
+    Orchestrates parallel downloads using ResilientTransferQueue.
+    """
     queue = ResilientTransferQueue(max_retries=5)
-    for file in all_files:
+    for file in files:
         queue.add(file)
 
-    # Simplified server key for now
     server_key = f"{pool.host}:{pool.port}"
+    
+    # Shared State for Progress
+    progress_lock = threading.Lock()
+    file_progress_map = {f.source_path: 0 for f in files}
+    total_network_bytes = 0
+
+    # Initialize Progress UI
+    _update_transfer_progress(torrent_hash, 0, 0, total_size, status_text="Checking/Resuming")
+
+    def create_progress_callback(file_path: str):
+        def worker_progress_callback(current_size: int, network_delta: int):
+            nonlocal total_network_bytes
+            with progress_lock:
+                # Update specific file progress
+                file_progress_map[file_path] = current_size
+                # Aggregate total processed (network + existing)
+                total_processed = sum(file_progress_map.values())
+                
+                # Update monotonic network counter
+                total_network_bytes += network_delta
+
+                # Update UI Progress Bar (Ratio based on TOTAL PROCESSED)
+                _update_transfer_progress(
+                    torrent_hash, 
+                    total_processed / total_size if total_size else 0, 
+                    total_processed, 
+                    total_size, 
+                    status_text="Downloading"
+                )
+        return worker_progress_callback
+
 
     def worker():
         while True:
+            # Pet the watchdog if provided
+            if heartbeat_callback:
+                heartbeat_callback()
+
             result = queue.get_next(server_key)
             if not result:
-                # Check if there are still pending items (e.g. in backoff)
                 stats = queue.get_stats()
                 if stats["pending"] > 0:
-                    time.sleep(1) # Wait for items in backoff
+                    time.sleep(1)
                     continue
-                break # No more items to process
+                break
 
             file, attempt_count = result
-            try:
-                _sftp_download_file_resilient(
-                    pool, file, queue, ui, file_tracker, attempt_count,
-                    server_key, dry_run, download_limit_bytes_per_sec, sftp_chunk_size
-                )
-            except Exception:
-                # Permanent failures are logged in _resilient wrapper
-                # And re-raised to stop the executor
-                pass # Continue to next file
+            
+            # Create a bound callback for this specific file
+            callback = create_progress_callback(file.source_path)
 
-    with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as executor:
-        futures = [executor.submit(worker) for _ in range(max_concurrent_downloads)]
-        for future in as_completed(futures):
-            # This will re-raise exceptions from workers if any occurred
-            future.result()
+            try:
+                _sftp_download_file_worker(
+                    pool, file, torrent_hash, ui, file_tracker, dry_run,
+                    download_limit_bytes_per_sec, sftp_chunk_size,
+                    callback, force_integrity_check
+                )
+                queue.record_success(file, server_key)
+                
+                # Update file status in UI (Success)
+                ui.complete_file_transfer(torrent_hash, file.source_path)
+
+            except (socket.timeout, TimeoutError, paramiko.SSHException) as e:
+                should_retry = queue.record_failure(file, server_key, e, attempt_count)
+                if not should_retry:
+                    logging.error(f"SFTP download failed permanently for {file.source_path}: {e}")
+                    ui.fail_file_transfer(torrent_hash, file.source_path)
+            except (RemoteTransferError, PermissionError, FileNotFoundError) as e:
+                # Permanent failures
+                queue.record_failure(file, server_key, e, 999) 
+                logging.error(f"SFTP download failed permanently for {file.source_path}: {e}")
+                ui.fail_file_transfer(torrent_hash, file.source_path)
+            except Exception as e:
+                should_retry = queue.record_failure(file, server_key, e, attempt_count)
+                if not should_retry:
+                    logging.error(f"SFTP download failed permanently for {file.source_path}: {e}", exc_info=True)
+                    ui.fail_file_transfer(torrent_hash, file.source_path)
+
+    # Use SpeedMonitor logic internally (simplified thread)
+    stop_speed_monitor = threading.Event()
+    
+    def speed_monitor_loop():
+        last_val = 0
+        last_time = time.time()
+        while not stop_speed_monitor.is_set():
+            time.sleep(1)
+            with progress_lock:
+                current_val = total_network_bytes
+            
+            now = time.time()
+            delta_bytes = current_val - last_val
+            delta_time = now - last_time
+            
+            if delta_time > 0:
+                speed = delta_bytes / delta_time
+                if ui and hasattr(ui, 'update_current_speed'):
+                     ui.update_current_speed(download_speed=speed, upload_speed=0.0)
+            
+            last_val = current_val
+            last_time = now
+
+    speed_thread = threading.Thread(target=speed_monitor_loop, daemon=True)
+    if not dry_run:
+        speed_thread.start()
+
+    try:
+        with ThreadPoolExecutor(max_workers=max_concurrent_downloads) as executor:
+            futures = [executor.submit(worker) for _ in range(max_concurrent_downloads)]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logging.error(f"Worker thread crashed: {e}", exc_info=True)
+    finally:
+        stop_speed_monitor.set()
+        if speed_thread.is_alive():
+             try: # Join with timeout
+                  speed_thread.join(timeout=2)
+             except: pass
 
     final_stats = queue.get_stats()
     if final_stats["failed"] > 0:
-        logging.error(f"{final_stats['failed']} files failed to transfer for torrent {torrent_hash}.")
-        # Optionally, you can raise an exception to mark the whole torrent failed
-        raise RemoteTransferError(f"{final_stats['failed']} files failed for torrent {torrent_hash}")
+        raise RemoteTransferError(f"{final_stats['failed']} files failed to transfer via SFTP for torrent {torrent_hash}")
+
+    log_transfer(torrent_hash, "SFTP transfer completed successfully.")
 
 
 def transfer_content_sftp_upload(
