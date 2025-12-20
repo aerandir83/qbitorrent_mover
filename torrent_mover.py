@@ -36,7 +36,7 @@ from clients.factory import get_client
 from clients.base import TorrentClient
 from transfer_manager import (
     FileTransferTracker, TransferCheckpoint, transfer_content_rsync,
-    transfer_content_with_queue, transfer_content_sftp_upload,
+    transfer_content_sftp, transfer_content_sftp_upload,
     transfer_content_rsync_upload, RemoteTransferError
 )
 from utils import Timeouts
@@ -639,10 +639,13 @@ def _execute_transfer(
             max_concurrent_downloads = config['SETTINGS'].getint('max_concurrent_downloads', 4)
             if max_concurrent_downloads_override:
                 max_concurrent_downloads = max_concurrent_downloads_override
-            transfer_content_with_queue(
-                source_pool, files, hash_, ui, file_tracker,
+            transfer_content_sftp(
+                source_pool, files, hash_, total_size_calc, log_transfer,
+                _update_transfer_progress, ui, file_tracker,
                 max_concurrent_downloads, dry_run,
-                download_limit_bytes, sftp_chunk_size
+                download_limit_bytes, sftp_chunk_size,
+                heartbeat_callback=ui.pet_watchdog,
+                force_integrity_check=force_integrity_check
             )
         elif transfer_mode == 'sftp_upload':
             source_pool = ssh_connection_pools.get(config['SETTINGS']['source_server_section'])
