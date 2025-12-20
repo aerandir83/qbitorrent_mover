@@ -138,7 +138,7 @@ class RsyncSpeedOptimizer:
             '-o ConnectTimeout=30',
         ]
         
-        return ' '.join(opts)
+        return 'ssh ' + ' '.join(opts)
     
     def build_command(
         self,
