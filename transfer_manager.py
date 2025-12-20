@@ -923,13 +923,18 @@ def _transfer_content_rsync_upload_from_cache(
         total_size_bytes=total_size,
         is_repair=force_integrity_check
     )
-    rsync_flags = optimizer.build_flags(rsync_options)
+    flags = optimizer.build_flags()
+    if rsync_options: flags.extend(rsync_options)
     ssh_opts_str = optimizer.build_ssh_options(port)
 
+    # Reconstruct command
+    # Source is local_path
+    # Dest is remote_spec
+    
     rsync_cmd = [
         "stdbuf", "-o0", "sshpass", "-p", password,
         "rsync",
-        *rsync_flags,
+        *flags,
         "-e", ssh_opts_str,
         local_path, # Source is local
         remote_spec # Destination is remote
@@ -1057,31 +1062,59 @@ def transfer_content_rsync(
     password = sftp_config['password']
 
     local_parent_dir = os.path.dirname(local_path)
-    Path(local_parent_dir).mkdir(parents=True, exist_ok=True)
-
     # --- Integrated Rsync Speed Fix ---
-    from rsync_speed_fix import RsyncSpeedOptimizer
-    
-    # 1. Optimize Flags
-    optimizer = RsyncSpeedOptimizer(
+    from rsync_speed_fix import build_optimized_rsync_command
+
+    # Determine remote spec (Source)
+    # The remote path might need quoting handling if it has spaces, but rsync handles it usually.
+    # However, for ssh syntax: user@host:path.
+    remote_spec = f"{username}@{host}:{remote_path}"
+
+    rsync_command_base = build_optimized_rsync_command(
+        source_path=remote_spec,
+        dest_path=local_parent_dir,
         total_size_bytes=total_size,
-        is_repair=force_integrity_check
+        port=port,
+        password=password,
+        is_repair=force_integrity_check,
+        extra_flags=list(rsync_options) # Preserve user config flags as extras
     )
-    rsync_flags = optimizer.build_flags(rsync_options) # Use user base options
-
-    # 2. Optimize SSH
-    # Note: process_runner expects the full ssh command in '-e', but without "ssh " prefix if using rsync's -e logic?
-    # Actually rsync -e takes the command. standard is "ssh -p ..."
+    
+    # Identify the actual rsync process command logic in process_runner relies on this list.
+    # NOTE: build_optimized_rsync_command returns the FULL command including [stdbuf, sshpass, ..., rsync, args, src, dst]
+    # In the original code, `rsync_command_base` was everything EXCEPT user@host:path and local_path.
+    # It was: [stdbuf... rsync... flags... -e ssh... ]
+    # And then later: `rsync_command = [*rsync_command_base, remote_spec, local_parent_dir]`
+    
+    # So we need to separate it or just use the full result.
+    # Let's see below how it is used.
+    # line 1221: `rsync_command = [*rsync_command_base, remote_spec, local_parent_dir]`
+    
+    # We should assign the result of build_... to `rsync_command` DIRECTLY below, 
+    # but `rsync_command_base` is used in a retry loop.
+    
+    # Hack: The `build_optimized_rsync_command` puts src/dest at the end.
+    # We can slice them off to get the "base"? Or just regenerate in loop?
+    # Regenerating in loop is safer if we want to support fallback/retry logic properly.
+    # But wait, the retry logic just modifies `rsync_command_base` by appending src/target?
+    # Yes.
+    
+    # So let's generate the base WITHOUT src/dest, by passing dummy strings or slicing?
+    # Or better yet, change the logic below to NOT append them if they are already there.
+    
+    # Option: Use RsyncSpeedOptimizer directly to build base.
+    from rsync_speed_fix import RsyncSpeedOptimizer
+    optimizer = RsyncSpeedOptimizer(total_size, force_integrity_check)
+    
+    # Build parts manually to match existing structure
+    cmd_prefix = ["stdbuf", "-o0", "sshpass", "-p", password, "rsync"]
+    flags = optimizer.build_flags()
+    if rsync_options: flags.extend(rsync_options)
     ssh_opts_str = optimizer.build_ssh_options(port)
-    # The helper includes "ssh ", but rsync -e expects the program.
-    # However, our previous logic was passing "-e ssh -p ...".
-    # Let's verify _get_ssh_command logic. It returned "ssh -p ...".
-    # Replacing it with our optimizer output.
-
+    
     rsync_command_base = [
-        "stdbuf", "-o0", "sshpass", "-p", password,
-        "rsync",
-        *rsync_flags,
+        *cmd_prefix,
+        *flags,
         "-e", ssh_opts_str
     ]
 
