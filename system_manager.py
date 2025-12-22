@@ -7,7 +7,10 @@ import tempfile
 import getpass
 import time
 import shlex
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import atexit
 import errno
 import typing

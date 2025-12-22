@@ -105,8 +105,12 @@ def test_rsync_delta_transfer_logic(
     assert mock_execute_command.call_count == 1
 
     # 2. Get the command that was passed to the runner
-    call_args = mock_execute_command.call_args[0]
-    called_command = call_args[0] # The 'command' list
+    # execute_streaming_command is called with kwargs in RsyncDownloader
+    args, kwargs = mock_execute_command.call_args
+    if args:
+        called_command = args[0]
+    else:
+        called_command = kwargs['command']
 
     # 3. Verify the command (Directive 4 - Delta Transfer & Integrity)
 
@@ -117,7 +121,8 @@ def test_rsync_delta_transfer_logic(
     assert "--info=progress2" in called_command
 
     # Assert data-only flags (Directive: No Metadata)
-    assert "--no-times" in called_command
+    assert "-t" in called_command # Preserving times is required for delta sync
+    # assert "--no-times" in called_command # REMOVED: Conflicted with -t
     assert "--no-perms" in called_command
     assert "--no-owner" in called_command
     assert "--no-group" in called_command
@@ -190,8 +195,10 @@ class TestRsyncCommandConstruction:
         )
 
         # --- Assert ---
+        # --- Assert ---
         mock_execute_command.assert_called_once()
-        called_command = mock_execute_command.call_args[0][0]
+        args, kwargs = mock_execute_command.call_args
+        called_command = args[0] if args else kwargs['command']
 
         # 1. Assert essential flags
         assert "rsync" in called_command
@@ -215,10 +222,8 @@ class TestRsyncCommandConstruction:
     @patch('process_runner.execute_streaming_command', return_value=True)
     @patch('transfer_manager.SSHConnectionPool') # Patch the pool where it's used for verification
     @patch('ssh_manager.batch_get_remote_sizes')
-    @patch('transfer_manager._get_ssh_command') # <-- CORRECTED PATCH TARGET
     def test_rsync_ssh_command_construction(
         self,
-        mock_get_ssh_cmd,
         mock_batch_get_sizes,
         MockSshPool,
         mock_execute_command,
@@ -227,11 +232,10 @@ class TestRsyncCommandConstruction:
         fs # Add pyfakefs fixture
     ):
         """
-        Verifies that the -e option correctly uses the ssh_manager._get_ssh_command.
+        Verifies that the -e option uses the optimized internal logic.
         """
         # --- Setup ---
         fs.create_dir("/local") # Create directory in fake filesystem
-        mock_get_ssh_cmd.return_value = "ssh -p 2222 -o CustomOption"
         mock_sftp_config = rsync_config['SOURCE_SERVER']
         mock_callbacks = (MagicMock(), MagicMock())
         mock_batch_get_sizes.return_value = {"/remote/file": 100}
@@ -261,17 +265,20 @@ class TestRsyncCommandConstruction:
 
         # --- Assert ---
         mock_execute_command.assert_called_once()
-        called_command = mock_execute_command.call_args[0][0]
+        args, kwargs = mock_execute_command.call_args
+        called_command = args[0] if args else kwargs['command']
 
         # 1. Assert that the -e flag is present
         assert "-e" in called_command
 
-        # 2. Assert that our mocked ssh command is the value for -e
+        # 2. Assert that the command contains optimized options
         e_index = called_command.index("-e")
-        assert called_command[e_index + 1] == "ssh -p 2222 -o CustomOption"
-
-        # 3. Assert that _get_ssh_command was called with the correct port
-        mock_get_ssh_cmd.assert_called_once_with(2222)
+        ssh_cmd = called_command[e_index + 1]
+        
+        assert "ssh" in ssh_cmd
+        assert "-p 2222" in ssh_cmd
+        assert "Compression=no" in ssh_cmd
+        assert "StrictHostKeyChecking=no" in ssh_cmd
 
     @patch('process_runner.execute_streaming_command', return_value=True)
     @patch('ssh_manager.SSHConnectionPool')
@@ -323,8 +330,10 @@ class TestRsyncResilience:
     @patch('transfer_manager.SSHConnectionPool')
     @patch('ssh_manager.batch_get_remote_sizes')
     @patch('process_runner.execute_streaming_command')
+    @patch('time.sleep')
     def test_rsync_success_on_first_try(
         self,
+        mock_sleep,
         mock_execute_command,
         mock_batch_get_sizes,
         MockSshPool,
@@ -372,8 +381,10 @@ class TestRsyncResilience:
     @patch('transfer_manager.SSHConnectionPool')
     @patch('ssh_manager.batch_get_remote_sizes')
     @patch('process_runner.execute_streaming_command', side_effect=RemoteTransferError("Rsync failed"))
+    @patch('time.sleep')
     def test_rsync_failure_after_max_retries(
         self,
+        mock_sleep,
         mock_execute_command,
         mock_batch_get_sizes,
         MockSshPool,
@@ -413,8 +424,10 @@ class TestRsyncResilience:
     @patch('transfer_manager.SSHConnectionPool')
     @patch('ssh_manager.batch_get_remote_sizes')
     @patch('process_runner.execute_streaming_command')
+    @patch('time.sleep')
     def test_rsync_success_after_retries(
         self,
+        mock_sleep,
         mock_execute_command,
         mock_batch_get_sizes,
         MockSshPool,
@@ -741,8 +754,10 @@ class TestRsyncUploadWorkflow:
         )
 
         # --- Assert ---
+        # --- Assert ---
         mock_execute_command.assert_called_once()
-        called_command = mock_execute_command.call_args[0][0]
+        args, kwargs = mock_execute_command.call_args
+        called_command = args[0] if args else kwargs['command']
 
         # 1. Verify direction: local source, remote destination
         assert local_path in called_command
@@ -755,7 +770,8 @@ class TestRsyncUploadWorkflow:
         assert "--custom-flag" in called_command # User option
 
         # Assert data-only flags
-        assert "--no-times" in called_command
+        assert "-t" in called_command
+        # assert "--no-times" in called_command
         assert "--no-perms" in called_command
         assert "--no-owner" in called_command
         assert "--no-group" in called_command

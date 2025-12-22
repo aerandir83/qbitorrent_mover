@@ -1,12 +1,12 @@
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch, call, ANY
 import configparser
 from pathlib import Path
 import os
 from concurrent.futures import Future
 
 from transfer_manager import (
-    transfer_content_with_queue,
+    transfer_content_sftp,
     transfer_content_sftp_upload,
     FileTransferTracker
 )
@@ -47,8 +47,8 @@ def mock_file_tracker():
 
 class TestSFTPModes:
 
-    @patch('transfer_manager._sftp_download_file_core')
-    def test_sftp_download_mode(self, mock_download_core, mock_sftp_pool, mock_ui, mock_file_tracker):
+    @patch('transfer_manager.SFTPDownloader')
+    def test_sftp_download_mode(self, mock_downloader_cls, mock_sftp_pool, mock_ui, mock_file_tracker):
         """Test the 'sftp' mode (download via queue)."""
         pool, _ = mock_sftp_pool
         files = [
@@ -56,27 +56,36 @@ class TestSFTPModes:
             TransferFile(source_path="/remote/file2", dest_path="/local/file2", size=200, torrent_hash="hash")
         ]
         
-        # We Mock the actual download core to avoid file I/O
-        # The key logic in transfer_content_with_queue is the ResilientTransferQueue and threading
+        # Mock the SFTPDownloader instance
+        mock_downloader = mock_downloader_cls.return_value
+        mock_downloader.download_file.return_value = None
+
+        log_transfer = MagicMock()
+        update_progress = MagicMock()
         
-        transfer_content_with_queue(
+        transfer_content_sftp(
             pool=pool,
-            all_files=files,
+            files=files,
             torrent_hash="hash",
+            total_size=300,
+            log_transfer=log_transfer,
+            _update_transfer_progress=update_progress,
             ui=mock_ui,
             file_tracker=mock_file_tracker,
             max_concurrent_downloads=2
         )
         
-        # Verify that download core was called for each file
-        assert mock_download_core.call_count == 2
+        # Verify that SFTPDownloader was instantiated
+        assert mock_downloader_cls.call_count >= 1 # Could be once per file or once total depending on implementation, actually once per worker usually
         
-        # Verify calls
-        # Note: Order might vary due to threading, so check any order
-        args_list = [call[0] for call in mock_download_core.call_args_list]
-        src_paths = [args[1].source_path for args in args_list]
-        assert "/remote/file1" in src_paths
-        assert "/remote/file2" in src_paths
+        # Verify download_file calls
+        # Since it uses threads, order is not guaranteed.
+        # But we expect 2 calls total.
+        assert mock_downloader.download_file.call_count == 2
+        
+        args_list = [call.kwargs['remote_path'] for call in mock_downloader.download_file.call_args_list]
+        assert "/remote/file1" in args_list
+        assert "/remote/file2" in args_list
 
     @patch('transfer_manager._sftp_upload_file')
     def test_sftp_upload_direct_mode(self, mock_upload_file, mock_sftp_pool, mock_ui, mock_file_tracker):
